@@ -1,0 +1,723 @@
+openapi: 3.0.3
+info:
+  title: Freda Pay Issuing API
+  version: "1.0.0"
+  description: |
+    API de paiement (MonCash, Natcash, carte) et d'émission de cartes virtuelles
+    Visa/Mastercard pour Haïti.
+
+    Toutes les routes listées ici vivent sous `/v1` et sont authentifiées par
+    clé API (`Authorization: Bearer sk_test_...` ou `sk_live_...`), pour un
+    usage server-to-server. Le tableau de bord utilise les mêmes actions sous
+    `/dashboard/...`, authentifiées par session à la place.
+
+    ## Sandbox et Live
+    Une seule API pour tous les services : le préfixe de la clé choisit
+    l'environnement. `sk_test_...` = Sandbox (argent fictif), `sk_live_...` =
+    Live (argent réel). Les données (soldes, paiements, retraits, cartes,
+    titulaires) sont totalement séparées entre les deux. Une clé live est
+    créée après approbation KYC/KYB et donne accès aux paiements. L'émission
+    de cartes en Live (`/v1/cards`) demande une autorisation Issuing séparée :
+    sans elle, ces routes répondent `403 ISSUING_LIVE_NOT_ENABLED` alors que les
+    paiements continuent de fonctionner avec la même clé.
+
+    Erreurs liées aux environnements : `LIVE_NOT_ENABLED` (403),
+    `ISSUING_LIVE_NOT_ENABLED` (403), `BELOW_MINIMUM_BALANCE` (400),
+    `HOLDER_MODE_MISMATCH` (409), `CARD_LIVE_NOT_CONFIGURED` (503, rien n'est débité),
+    `CARD_PROVIDER_AUTH` (503, service momentanément indisponible, montant remboursé).
+  contact:
+    email: issuing@fredapay.com
+servers:
+  - url: https://api.fredapay.com/v1
+    description: Production / Sandbox (selon la clé utilisée)
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Paiements
+  - name: Retraits
+  - name: Solde
+  - name: Cartes
+  - name: Webhooks
+
+paths:
+  /payments:
+    get:
+      tags: [Paiements]
+      summary: Lister les paiements (du plus récent au plus ancien)
+      description: Paginé. Ne renvoie que l'environnement de la clé (`sk_test_` = Sandbox, `sk_live_` = Live).
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: Liste paginée
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payments: { type: array, items: { $ref: "#/components/schemas/Payment" } }
+                  pagination: { type: object, properties: { page: { type: integer }, page_size: { type: integer }, has_more: { type: boolean } } }
+                  mode: { type: string, enum: [sandbox, live] }
+    post:
+      tags: [Paiements]
+      summary: Créer un paiement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, method, reference]
+              properties:
+                amount: { type: number, example: 1000, description: "Montant en HTG, minimum 20" }
+                method: { type: string, enum: [moncash, natcash, moncash_ussd, all], example: moncash }
+                reference: { type: string, example: "CMD-1001" }
+                currency: { type: string, default: HTG }
+                phone: { type: string, description: "Requis pour moncash_ussd, format 509XXXXXXXX", example: "50931234567" }
+      responses:
+        "201":
+          description: Paiement créé
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /payments/{id}:
+    get:
+      tags: [Paiements]
+      summary: Vérifier un paiement
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Statut à jour du paiement
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payment" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /payouts:
+    get:
+      tags: [Retraits]
+      summary: Lister les retraits (du plus récent au plus ancien)
+      description: Paginé. Ne renvoie que l'environnement de la clé.
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: Liste paginée
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payouts: { type: array, items: { $ref: "#/components/schemas/Payout" } }
+                  pagination: { type: object, properties: { page: { type: integer }, page_size: { type: integer }, has_more: { type: boolean } } }
+                  mode: { type: string, enum: [sandbox, live] }
+    post:
+      tags: [Retraits]
+      summary: Envoyer de l'argent (MonCash / Natcash)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, method, recipient, reference]
+              properties:
+                amount: { type: number, example: 500 }
+                method: { type: string, enum: [moncash, natcash] }
+                recipient: { type: string, example: "50931234567" }
+                reference: { type: string, example: "PAYOUT-1001" }
+      responses:
+        "202":
+          description: Retrait mis en file d'attente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payout" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /payouts/{id}:
+    get:
+      tags: [Retraits]
+      summary: Vérifier un retrait
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Statut à jour du retrait
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payout" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /balance:
+    get:
+      tags: [Solde]
+      summary: Consulter les soldes
+      responses:
+        "200":
+          description: Soldes Gateway (HTG) et Master Wallet (USD)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gateway: { type: object, properties: { available: { type: number }, currency: { type: string, example: HTG } } }
+                  master_wallet: { type: object, properties: { available: { type: number }, currency: { type: string, example: USD } } }
+
+  /cards/holder-profile:
+    get:
+      tags: [Cartes]
+      summary: Voir le profil du titulaire
+      responses:
+        "200": { description: Profil actuel }
+    post:
+      tags: [Cartes]
+      summary: Enregistrer le profil du titulaire (requis une fois avant la première carte individuelle)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [firstName, lastName, email, country, dob, identificationNumber, phoneShortCode, phoneNumber, address]
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string }
+                country: { type: string, example: HT }
+                dob: { type: string, example: "1990-05-12" }
+                identificationNumber: { type: string }
+                phoneShortCode: { type: string, example: "+509" }
+                phoneNumber: { type: string }
+                address:
+                  type: object
+                  required: [street, city, state, postalCode, country]
+                  properties:
+                    street: { type: string, example: "12 Rue Example" }
+                    city: { type: string, example: "Port-au-Prince" }
+                    state: { type: string, example: "Ouest" }
+                    postalCode: { type: string, example: "HT6110" }
+                    country: { type: string, example: HT }
+      responses:
+        "201": { description: Profil enregistré }
+
+  /cards/holders:
+    get:
+      tags: [Cartes]
+      summary: Lister vos titulaires de carte
+      responses:
+        "200":
+          description: Tous les titulaires enregistrés
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holders: { type: array, items: { $ref: "#/components/schemas/CardHolder" } }
+    post:
+      tags: [Cartes]
+      summary: Enregistrer un nouveau titulaire (plusieurs autorisés)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [firstName, lastName, email, country, dob, identificationNumber, phoneShortCode, phoneNumber, address]
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string }
+                country: { type: string, example: HT }
+                dob: { type: string, example: "1990-05-12" }
+                identificationNumber: { type: string }
+                phoneShortCode: { type: string, example: "+509" }
+                phoneNumber: { type: string }
+                address:
+                  type: object
+                  required: [street, city, state, postalCode, country]
+                  properties:
+                    street: { type: string, example: "12 Rue Example" }
+                    city: { type: string, example: "Port-au-Prince" }
+                    state: { type: string, example: "Ouest" }
+                    postalCode: { type: string, example: "HT6110" }
+                    country: { type: string, example: HT }
+                photoUrl: { type: string, description: "Facultatif. Image (data URL png/jpeg/webp, moins de 200 Ko) ou URL https. Affichée uniquement dans le tableau de bord." }
+      responses:
+        "201":
+          description: Titulaire créé
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holder: { $ref: "#/components/schemas/CardHolder" }
+
+  /cards/holders/{id}:
+    get:
+      tags: [Cartes]
+      summary: Voir un titulaire
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Le titulaire
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holder: { $ref: "#/components/schemas/CardHolder" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cards:
+    post:
+      tags: [Cartes]
+      summary: Créer une carte virtuelle Visa/Mastercard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reference, amount]
+              properties:
+                reference: { type: string }
+                kind: { type: string, enum: [individual, business], default: individual }
+                brand: { type: string, enum: [VISA, MASTERCARD], default: VISA }
+                amount: { type: number, description: "En dollars, débité du Master Wallet" }
+                business_name: { type: string, description: "Requis si kind=business" }
+                holder_id: { type: string, description: "Carte individuelle : id du titulaire (voir /cards/holders). Par défaut, le dernier titulaire créé." }
+      responses:
+        "202":
+          description: Création initiée (asynchrone - voir status)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Card" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    get:
+      tags: [Cartes]
+      summary: Lister les cartes
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Page de cartes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cards: { type: array, items: { $ref: "#/components/schemas/Card" } }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
+
+  /cards/{id}:
+    get:
+      tags: [Cartes]
+      summary: Voir une carte
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Détails de la carte
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Card" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cards/{id}/transactions:
+    get:
+      tags: [Cartes]
+      summary: Historique des transactions de la carte
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Transactions et dépense du mois en cours
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        type: { type: string }
+                        mode: { type: string, enum: [CREDIT, DEBIT] }
+                        amount: { type: number }
+                        currency: { type: string }
+                        merchant_name: { type: string, nullable: true }
+                        merchant_city: { type: string, nullable: true }
+                        date: { type: string, format: date-time }
+                  month_spend: { type: number }
+                  currency: { type: string }
+
+  /cards/{id}/fund:
+    post:
+      tags: [Cartes]
+      summary: Ajouter des fonds à la carte
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [amount], properties: { amount: { type: number, example: 10 } } }
+      responses:
+        "200": { description: Fonds ajoutés, content: { application/json: { schema: { $ref: "#/components/schemas/Card" } } } }
+        "409": { description: "CARD_FROZEN si la carte est gelée" }
+
+  /cards/{id}/withdraw:
+    post:
+      tags: [Cartes]
+      summary: Retirer des fonds de la carte
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [amount], properties: { amount: { type: number, example: 5 } } }
+      responses:
+        "200": { description: Fonds retirés }
+        "409": { description: "CARD_FROZEN si la carte est gelée" }
+
+  /cards/{id}/freeze:
+    post:
+      tags: [Cartes]
+      summary: Geler la carte
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: Carte gelée }
+
+  /cards/{id}/unfreeze:
+    post:
+      tags: [Cartes]
+      summary: Dégeler la carte
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: Carte réactivée }
+
+  /cards/{id}/terminate:
+    post:
+      tags: [Cartes]
+      summary: Fermer la carte définitivement
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: "Carte fermée, solde reversé au Master Wallet" }
+
+  /cards/{id}/reveal:
+    post:
+      tags: [Cartes]
+      summary: Voir le numéro complet, le CVV et la date d'expiration
+      description: |
+        Sert à afficher la carte à son titulaire. Ne jamais afficher ce résultat
+        à un tiers ni le stocker/logger. Dans le tableau de bord, seules les
+        cartes business ont un bouton Détails : la route du tableau de bord
+        répond 403 INDIVIDUAL_CARD_DETAILS_HIDDEN pour une carte individuelle.
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Détails sensibles de la carte
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  number: { type: string, example: "4242424242424242" }
+                  cvv: { type: string, example: "123" }
+                  expiry_month: { type: integer, example: 12 }
+                  expiry_year: { type: integer, example: 2029 }
+                  holder_name: { type: string }
+
+  /cards/{id}/simulate-transaction:
+    post:
+      tags: [Cartes]
+      summary: Simuler une transaction (sandbox uniquement)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, type]
+              properties:
+                amount: { type: number, example: 12.5 }
+                type: { type: string, enum: [CREDIT, DEBIT] }
+      responses:
+        "200": { description: Transaction simulée }
+        "403": { description: "LIVE_NOT_ALLOWED en mode Live" }
+
+  /webhooks:
+    post:
+      tags: [Webhooks]
+      summary: Enregistrer (ou remplacer) votre endpoint webhook
+      description: |
+        Événements envoyés : `payment.succeeded`, `payout.succeeded`, `payout.failed`, `card.created`, `card.failed`,
+        `card.frozen`, `card.unfrozen`, `card.terminated`, `card.transaction`, `card.funded`, `card.withdrawn`,
+        et `webhook.test` (test manuel). Corps : `{ id, event, created_at, data }`, signé par l'en-tête
+        `X-Freda-Signature: sha256=<HMAC-SHA256 du corps brut avec votre secret>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, example: "https://votre-site.com/webhooks/freda" }
+      responses:
+        "201":
+          description: Webhook créé - le secret n'est renvoyé qu'à cet instant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpointWithSecret" }
+        "200":
+          description: Webhook remplacé (nouveau secret)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpointWithSecret" }
+    get:
+      tags: [Webhooks]
+      summary: Voir l'endpoint actif (sans le secret)
+      responses:
+        "200":
+          description: Endpoint actuel, ou null si aucun
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoint: { $ref: "#/components/schemas/WebhookEndpoint" }
+    delete:
+      tags: [Webhooks]
+      summary: Désactiver l'endpoint webhook
+      responses:
+        "200": { description: Désactivé }
+
+  /ping:
+    get:
+      tags: [Webhooks]
+      summary: Tester ma clé API et la configuration de mon compte
+      description: |
+        Renvoie la liste de ce que votre clé peut faire (paiements, cartes, webhook). Une clé invalide, révoquée,
+        un compte suspendu ou une clé Live sans activation Live répondent avec une erreur précise
+        (`INVALID_API_KEY`, `ACCOUNT_SUSPENDED`, `LIVE_NOT_ENABLED`). Aucun secret n'est renvoyé.
+      responses:
+        "200":
+          description: Clé acceptée
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PingResult" }
+        "401": { description: "INVALID_API_KEY ou MISSING_API_KEY" }
+        "403": { description: "ACCOUNT_SUSPENDED ou LIVE_NOT_ENABLED" }
+
+  /webhooks/test:
+    post:
+      tags: [Webhooks]
+      summary: Envoyer un événement webhook.test à mon endpoint
+      description: |
+        Envoie tout de suite un événement signé `webhook.test` à l'URL enregistrée et indique si votre serveur a
+        répondu `2xx`. Limité à 10 tests par minute.
+      responses:
+        "200":
+          description: Résultat de la livraison (`sent`, `http_status`, `reason`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event: { type: string, example: webhook.test }
+                  sent: { type: boolean }
+                  http_status: { type: integer, example: 200 }
+                  reason: { type: string, nullable: true, example: null }
+        "409": { description: "NO_WEBHOOK_ENDPOINT : aucun endpoint enregistré" }
+        "429": { description: Trop de tests }
+
+  /webhooks/rotate-secret:
+    post:
+      tags: [Webhooks]
+      summary: Générer un nouveau secret de signature (même URL)
+      responses:
+        "200":
+          description: Nouveau secret - affiché une seule fois
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpointWithSecret" }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "sk_test_... / sk_live_..."
+      description: Clé API du tableau de bord Freda Pay (Développeurs > Clés API).
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    PageSize:
+      name: page_size
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+
+  schemas:
+    PingResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        mode: { type: string, enum: [test, live] }
+        merchant: { type: object, properties: { id: { type: string }, business_name: { type: string } } }
+        account:
+          type: object
+          properties:
+            gateway_live_enabled: { type: boolean }
+            issuing_live_enabled: { type: boolean }
+            gateway_plan: { type: string }
+            issuing_plan: { type: string }
+        webhook: { type: object, properties: { configured: { type: boolean }, url: { type: string, nullable: true } } }
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              ok: { type: boolean }
+              label: { type: string }
+              detail: { type: string }
+              optional: { type: boolean }
+    Payment:
+      type: object
+      properties:
+        id: { type: string, example: "pay_7c1a9e2f" }
+        reference: { type: string }
+        amount: { type: number }
+        currency: { type: string }
+        method: { type: string }
+        status: { type: string, enum: [pending, succeeded, failed] }
+        fee: { type: number, nullable: true }
+        net_amount: { type: number, nullable: true }
+        checkout_url: { type: string, nullable: true }
+        provider_transaction_id: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Payout:
+      type: object
+      properties:
+        id: { type: string }
+        reference: { type: string }
+        amount: { type: number }
+        method: { type: string, enum: [moncash, natcash, bank], description: "'bank' (virement bancaire) is requested from the dashboard only and processed by hand; the API creates moncash / natcash withdrawals." }
+        recipient: { type: string, description: "MonCash/Natcash number, or for a bank transfer the bank name and the last digits of the account." }
+        status: { type: string, enum: [pending, success, failed] }
+        fee: { type: number, nullable: true, description: "Freda Pay's fee for this withdrawal, charged on top of `amount`: 5 % of the amount for MonCash/Natcash, a fixed 100 HTG for a bank transfer (an admin can set custom values per merchant)." }
+        total_debited: { type: number, nullable: true, description: "amount + fee: what is taken from the Gateway balance. It is held when the withdrawal is accepted and given back if the withdrawal fails." }
+        bank_reference: { type: string, nullable: true, description: "Bank transfers only: the reference of the transfer once the team has sent it." }
+        provider_reference: { type: string, nullable: true }
+        provider_transaction_id: { type: string, nullable: true }
+        failure_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Card:
+      type: object
+      properties:
+        id: { type: string, example: "card_8f2a91c4d0e1" }
+        reference: { type: string }
+        kind: { type: string, enum: [individual, business] }
+        brand: { type: string, enum: [VISA, MASTERCARD] }
+        status: { type: string, enum: [pending, active, disabled, terminated, failed] }
+        masked_pan: { type: string, nullable: true, example: "5399**8499" }
+        balance: { type: number }
+        holder_name: { type: string, nullable: true }
+        failure_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    CardHolder:
+      type: object
+      properties:
+        id: { type: string, example: "mpc_1a2b3c4d" }
+        status: { type: string, enum: [pending, enrolled, failed] }
+        first_name: { type: string }
+        last_name: { type: string }
+        email: { type: string }
+        country: { type: string }
+        photo_url: { type: string, nullable: true }
+        failure_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        page_size: { type: integer }
+        has_more: { type: boolean }
+
+    WebhookEndpoint:
+      type: object
+      nullable: true
+      properties:
+        id: { type: string }
+        url: { type: string }
+        active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    WebhookEndpointWithSecret:
+      allOf:
+        - $ref: "#/components/schemas/WebhookEndpoint"
+        - type: object
+          properties:
+            secret: { type: string, example: "whsec_AXqw1W8MgMnIJ7nNVkTfcm1RG3qt6UZ6" }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: "INVALID_AMOUNT" }
+            message: { type: string, example: "amount doit être un nombre positif." }
+
+  responses:
+    BadRequest:
+      description: Requête invalide
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Limite de requêtes dépassée (100/minute par clé API)
+      headers:
+        Retry-After: { schema: { type: integer }, description: Secondes à attendre }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

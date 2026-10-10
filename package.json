@@ -1,0 +1,19 @@
+{
+  "name": "freda-pay-backend",
+  "version": "1.0.0",
+  "description": "Freda Pay Issuing backend: merchant auth, API keys, and a simplified payments/payouts API wrapping the PlopPlop MonCash/Natcash/carte provider.",
+  "private": true,
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "mock:plopplop": "node mock/plopplop-mock-server.js",
+    "mock:supabase": "node mock/supabase-mock-server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
