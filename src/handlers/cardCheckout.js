@@ -1,4 +1,5 @@
 'use strict';
+const config = require('../config');
 const crypto = require('crypto');
 const supabase = require('../lib/supabase');
 const paymentOrchestrator = require('../services/paymentOrchestrator');
@@ -36,6 +37,7 @@ async function get(ctx) {
       mode: payment.mode || 'sandbox',
       reference: payment.own_reference,
       return_url: payment.return_url || null,
+      rate_htg_per_usd: config.exchangeRateHtgPerUsd, // the page shows the amount in HTG and in USD
       card: payment.status === 'pending' ? { client_secret: payment.card_client_secret, publishable_key: payment.card_publishable_key } : undefined,
     },
   };

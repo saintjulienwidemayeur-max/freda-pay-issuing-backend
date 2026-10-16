@@ -15,11 +15,19 @@ function selfServe(plans) {
   return Object.fromEntries(Object.entries(plans).filter(([, p]) => !p.grantedOnly));
 }
 
+/** Adds each Gateway plan's card fee (percentage + fixed USD) so the pages can show it next to the mobile-money fee. */
+function withCardFees(plans) {
+  return Object.fromEntries(Object.entries(plans).map(([k, p]) => {
+    const c = config.gatewayCardPlans[k];
+    return [k, c ? Object.assign({}, p, { cardPct: c.pct, cardFixedUSD: c.fixedUSD }) : p];
+  }));
+}
+
 /** Returns the full plan catalog for both tracks, for the dashboard/landing page to render. */
 async function getPlans() {
   return {
     status: 200,
-    body: { gatewayPlans: selfServe(config.gatewayPlans), issuingPlans: selfServe(config.issuingPlans), exchange_rate_htg_per_usd: config.exchangeRateHtgPerUsd },
+    body: { gatewayPlans: withCardFees(selfServe(config.gatewayPlans)), issuingPlans: selfServe(config.issuingPlans), exchange_rate_htg_per_usd: config.exchangeRateHtgPerUsd },
   };
 }
 

@@ -174,13 +174,13 @@ const config = {
     },
   },
 
-  // Card payments (USD) on the Gateway: PROVISIONAL tariffs, to be confirmed by the founder before being published.
+  // Card payments (USD) on the Gateway (Standard 7 %, Pro 6 %, Business 5 %, each + 0.50 USD).
   // fee = amount x pct + fixedUSD, per Gateway plan. Can be overridden per merchant (merchant_pricing).
   gatewayCardPlans: {
     free: { pct: 0, fixedUSD: 0 },
-    standard: { pct: 0.06, fixedUSD: 0.50 },
-    pro: { pct: 0.052, fixedUSD: 0.40 },
-    business: { pct: 0.048, fixedUSD: 0.35 },
+    standard: { pct: 0.07, fixedUSD: 0.50 },
+    pro: { pct: 0.06, fixedUSD: 0.50 },
+    business: { pct: 0.05, fixedUSD: 0.50 },
   },
 
   // Issuing (virtual card issuance: Visa/Mastercard). Card creation, card
