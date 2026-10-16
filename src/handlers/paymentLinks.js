@@ -66,6 +66,7 @@ async function publicGet(ctx) {
         carte: chargeFor(Number(link.amount), link.currency, 'carte'),
       } : null,
       rate_htg_per_usd: config.exchangeRateHtgPerUsd,
+      mode: link.mode || 'sandbox', // the page shows the test card only in sandbox
       description: link.description,
     },
   };

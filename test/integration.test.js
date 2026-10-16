@@ -709,6 +709,7 @@ test('the public checkout page can fetch link details without any auth', async (
   assert.equal(r.data.amount, 2000);
   assert.equal(r.data.description, 'Facture #42');
   assert.equal(r.data.business_name, 'Boutique Lakay');
+  assert.ok(['sandbox', 'live'].includes(r.data.mode)); // the page shows the test card only in sandbox
 });
 
 test('a customer can pay a link with MonCash (payment is created against the link merchant)', async () => {
