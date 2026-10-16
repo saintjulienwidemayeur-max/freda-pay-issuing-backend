@@ -10,6 +10,12 @@ const revenue = require('./revenue');
 const { planKeyFor } = require('./plans');
 const { randomHex } = require('../utils/ids');
 
+/** What we keep about who is paying (shown to the merchant): trimmed and bounded, never trusted as markup. */
+function payerFields(customer, phone) {
+  const clean = (v, n) => (v == null || String(v).trim() === '' ? null : String(v).trim().slice(0, n));
+  return { customer_name: clean(customer && customer.name, 120), customer_email: clean(customer && customer.email, 160), customer_phone: clean(phone, 30) };
+}
+
 const VALID_METHODS = ['moncash', 'moncash_ussd', 'natcash', 'carte', 'all'];
 
 async function createPayment({ merchantId, id, ownReference, plopplopReference, amount, currency, method, phoneNumber, mode, customer, description, returnUrl }) {
@@ -56,6 +62,7 @@ async function createPayment({ merchantId, id, ownReference, plopplopReference, 
     currency: currency || 'HTG',
     method,
     checkout_url: res.data.url || null,
+    ...payerFields(customer, phoneNumber),
     status: 'pending',
     mode: mode || 'sandbox',
   });
@@ -119,6 +126,7 @@ async function createCardPayment({ merchantId, id, ownReference, reference, amou
     card_client_secret: created.clientSecret,
     card_publishable_key: created.publishableKey,
     return_url: returnUrl || null,
+    ...payerFields(customer, customer && customer.phone),
     status: 'pending',
     mode,
   });

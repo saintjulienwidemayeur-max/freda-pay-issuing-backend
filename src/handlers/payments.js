@@ -123,6 +123,9 @@ function toPublic(p) {
     provider_transaction_id: p.provider === 'tranzak' ? p.provider_transaction_id : p.plopplop_transaction_id,
     // Card payments: the two values the checkout page needs to show the card form. Only in the answer to the creation.
     card: p._card || undefined,
+    customer_name: p.customer_name || undefined,
+    customer_email: p.customer_email || undefined,
+    customer_phone: p.customer_phone || undefined,
     return_url: p.return_url || undefined,
     failure_reason: p.failure_reason || undefined,
     created_at: p.created_at,

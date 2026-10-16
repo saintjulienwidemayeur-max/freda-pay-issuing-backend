@@ -114,6 +114,9 @@ create table if not exists payments (
   fee numeric,
   net_amount numeric,
   checkout_url text,
+  customer_name text,
+  customer_email text,
+  customer_phone text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(merchant_id, own_reference)

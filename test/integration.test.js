@@ -5147,7 +5147,7 @@ async function providerRow(paymentId) {
   return { ...row, reference: row.plopplop_reference };
 }
 
-test('card payment: created in USD, the page gets the widget values, the sandbox key is used, the fee is 6 % + 0.50 USD', async () => {
+test('card payment: created in USD, the page gets the widget values, the sandbox key is used, the fee is 7 % + 0.50 USD', async () => {
   const m = await cardMerchant('cardbasic');
   await tzControl('reset', {});
   const bad1 = await m.pay(20, 'CARD-HTG', { currency: 'HTG' });
@@ -5196,19 +5196,19 @@ test('card webhook: bad signature refused; a signed success credits the USD bala
   assert.equal(ok.status, 200);
   const pay = (await api('GET', `/dashboard/payments`, { token: m.token })).data.payments.find((x) => x.id === r.data.id);
   assert.equal(pay.status, 'succeeded');
-  assert.equal(pay.fee, 1.7);
-  assert.equal(pay.net_amount, 18.3);
-  assert.equal(await usdBal(m.token), 18.3);
+  assert.equal(pay.fee, 1.9);
+  assert.equal(pay.net_amount, 18.1);
+  assert.equal(await usdBal(m.token), 18.1);
   assert.equal((await api('GET', '/dashboard/balance', { token: m.token })).data.gateway.available, 0);
 
   const dup = await sendCardHook('payment.success', p);
   assert.equal(dup.data.duplicate, true);
   await api('GET', `/dashboard/payments`, { token: m.token });
-  assert.equal(await usdBal(m.token), 18.3);
+  assert.equal(await usdBal(m.token), 18.1);
   // our income and the partner's cost (4 % + 0.30 USD) are both recorded
   const rev = mockTables.fee_revenue.filter((f) => f.related_id === r.data.id);
   assert.equal(rev.length, 1);
-  assert.equal(rev[0].amount, 1.7); assert.equal(rev[0].currency, 'USD'); assert.equal(rev[0].partner_cost_usd, 1.1);
+  assert.equal(rev[0].amount, 1.9); assert.equal(rev[0].currency, 'USD'); assert.equal(rev[0].partner_cost_usd, 1.1);
 });
 
 test('card polling path: the status read credits exactly once even when asked several times at once', async () => {
@@ -5220,11 +5220,11 @@ test('card polling path: the status read credits exactly once even when asked se
   const apiKey = (await api('POST', '/dashboard/api-keys', { token: m.token, body: { mode: 'test' } })).data.secret;
   const reads = await Promise.all([1, 2, 3, 4, 5].map(() => api('GET', `/v1/payments/${r.data.id}`, { token: apiKey })));
   assert.ok(reads.every((x) => x.data.status === 'succeeded'));
-  // Standard: 6 % of 50 = 3 + 0.50 -> 3.50 ; net 46.50, credited ONE time
-  assert.equal(await usdBal(m.token), 46.5);
+  // Standard: 7 % of 50 = 3.50 + 0.50 -> 4 ; net 46, credited ONE time
+  assert.equal(await usdBal(m.token), 46);
   const bal = (await api('GET', '/v1/balance', { token: apiKey })).data;
-  assert.equal(bal.gateway_usd.available, 46.5);
-  assert.deepEqual(bal.gateway_balances, { HTG: 0, USD: 46.5 });
+  assert.equal(bal.gateway_usd.available, 46);
+  assert.deepEqual(bal.gateway_balances, { HTG: 0, USD: 46 });
 });
 
 test('card: a declined payment is marked failed with no credit; money that does not match what we asked is never credited', async () => {
@@ -5260,7 +5260,7 @@ test('card in LIVE: the live key is used, only the live secret is accepted for a
   await sendCardHook('payment.success', p, { secret: 'whsec_test_card_secret' }); // a sandbox-signed event can not settle a live payment
   assert.equal(await usdBal(m.token), 0);
   assert.equal((await sendCardHook('payment.success', p, { secret: 'whsec_live_card_secret' })).status, 200);
-  assert.equal(await usdBal(m.token), 93.5); // 100 - (6 + 0.50)
+  assert.equal(await usdBal(m.token), 92.5); // 100 - (7 + 0.50)
   await api('PUT', '/dashboard/mode', { token: m.token, body: { mode: 'sandbox' } });
   assert.equal(await usdBal(m.token), 0); // sandbox and live never share a balance
 });
@@ -5319,7 +5319,7 @@ test('card reconciliation settles an old pending payment whose webhook never cam
   await tzControl('complete', { transaction_id: row.provider_transaction_id });
   const res = await orchestrator.reconcilePendingCards(50);
   assert.ok(res.settled >= 1);
-  assert.equal(await usdBal(m.token), 27.7); // 30 - (1.80 + 0.50)
+  assert.equal(await usdBal(m.token), 27.4); // 30 - (2.10 + 0.50)
 });
 
 test('payment links: ONE link accepts MonCash, Natcash and card; the amount is converted to the currency of the method chosen', async () => {
@@ -5340,7 +5340,7 @@ test('payment links: ONE link accepts MonCash, Natcash and card; the amount is c
   assert.equal([Number(row.amount), row.currency].join(' '), '20 USD');
   await tzControl('complete', { transaction_id: row.provider_transaction_id });
   assert.equal((await api('GET', `/public/payment-links/${htgLink.id}/payments/${card.data.id}`)).data.status, 'succeeded');
-  assert.equal(await usdBal(m.token), 18.3); // 20 - (1.20 + 0.50)
+  assert.equal(await usdBal(m.token), 18.1); // 20 - (1.20 + 0.50)
 
   // USD link paid by MonCash: charged 3538 HTG; and by card: 26.60 USD
   const mc = await api('POST', `/public/payment-links/${usdLink.id}/pay`, { body: { method: 'moncash' } });
@@ -5357,7 +5357,7 @@ test('USD withdrawal: bank/Zelle only, to a USD account, USD fee and minimum, he
   const p = await providerRow(r.data.id);
   await tzControl('complete', { transaction_id: p.provider_transaction_id });
   await sendCardHook('payment.success', p, { secret: 'whsec_live_card_secret' });
-  assert.equal(await usdBal(m.token), 187.5); // 200 - (12 + 0.50)
+  assert.equal(await usdBal(m.token), 185.5); // 200 - (14 + 0.50)
   await ledgerCredit(m.merchantId, 5000); // some HTG too
   const req = (extra = {}) => api('POST', '/dashboard/payouts', { token: m.token, body: { amount: 100, currency: 'USD', method: 'bank', reference: `PO-${Math.random().toString(16).slice(2)}`, ...extra } });
 
@@ -5369,7 +5369,7 @@ test('USD withdrawal: bank/Zelle only, to a USD account, USD fee and minimum, he
   assert.equal(zelle.status, 201);
   const accId = zelle.data.bank_account.id;
   assert.equal((await req({ amount: 5, bank_account_id: accId })).data.error.code, 'AMOUNT_TOO_LOW');
-  assert.equal((await req({ amount: 187, bank_account_id: accId })).data.error.code, 'INSUFFICIENT_BALANCE'); // 187 + 1 > 187.50
+  assert.equal((await req({ amount: 185, bank_account_id: accId })).data.error.code, 'INSUFFICIENT_BALANCE'); // 185 + 1 > 185.50
 
   const quote = (await api('GET', '/dashboard/payouts/quote?method=bank&currency=USD&amount=100', { token: m.token })).data;
   assert.deepEqual([quote.currency, quote.fee, quote.total, quote.minimum], ['USD', 1, 101, 10]);
@@ -5378,7 +5378,7 @@ test('USD withdrawal: bank/Zelle only, to a USD account, USD fee and minimum, he
   assert.equal(created.status, 202);
   assert.equal(created.data.currency, 'USD');
   assert.equal(created.data.fee, 1);
-  assert.equal(await usdBal(m.token), 86.5);                  // 187.50 - 101 held
+  assert.equal(await usdBal(m.token), 84.5);                  // 185.50 - 101 held
   assert.equal(await gw(m.token), 5000);                      // HTG balance untouched
   const queue = (await api('GET', '/admin/bank-payouts', { token: m.adminToken })).data.payouts.find((x) => x.id === created.data.id);
   assert.equal(queue.currency, 'USD');
@@ -5386,13 +5386,13 @@ test('USD withdrawal: bank/Zelle only, to a USD account, USD fee and minimum, he
 
   const rej = await api('POST', `/admin/bank-payouts/${created.data.id}/reject`, { token: m.adminToken, body: { reason: 'Zelle introuvable' } });
   assert.equal(rej.status, 200);
-  assert.equal(await usdBal(m.token), 187.5);                 // amount + fee given back, in USD
+  assert.equal(await usdBal(m.token), 185.5);                 // amount + fee given back, in USD
   assert.equal(await gw(m.token), 5000);
 
   const second = await req({ bank_account_id: accId });
   const done = await api('POST', `/admin/bank-payouts/${second.data.id}/complete`, { token: m.adminToken, body: { bank_reference: 'ZELLE-1' } });
   assert.equal(done.data.payout.status, 'success');
-  assert.equal(await usdBal(m.token), 86.5);
+  assert.equal(await usdBal(m.token), 84.5);
   assert.ok(sentEmails.some((e) => e.to === emailOf(m) && /virement bancaire a été envoyé/.test(e.subject) && /100,00 \$/.test(e.text)));
 });
 
@@ -5406,7 +5406,7 @@ test('USD withdrawal in sandbox completes at once with no real transfer, and HTG
   const po = await api('POST', '/dashboard/payouts', { token: m.token, body: { amount: 50, currency: 'USD', method: 'bank', reference: 'SBPO-1', bank_account_id: acc.data.bank_account.id } });
   assert.equal(po.status, 202);
   assert.equal((await api('GET', `/dashboard/payouts/${po.data.id}`, { token: m.token })).data.status, 'success');
-  assert.equal(await usdBal(m.token), 100 - 6.5 - 51);
+  assert.equal(await usdBal(m.token), 100 - 7.5 - 51);
 });
 
 test('admin: a custom card fee applies to that merchant, and the admin can credit the USD Gateway balance', async () => {
@@ -5448,7 +5448,7 @@ test('transactions summary: counters, monthly performance per currency, filters,
   assert.equal(s.month.attempts, 4);
   assert.equal(s.month.success_rate, 50);
   assert.equal(s.month.current.USD.volume, 40);
-  assert.equal(s.month.current.USD.net, 37.1); // 40 - (2.40 + 0.50)
+  assert.equal(s.month.current.USD.net, 36.7); // 40 - (2.80 + 0.50)
   assert.equal(s.month.current.HTG.volume, 1000);
   assert.equal(s.month.current.HTG.count, 1);
   assert.equal(s.month.previous.USD.volume, 0);
@@ -5483,7 +5483,7 @@ test('hosted card page: return_url is validated, returned after payment, and the
   assert.equal(st.data.return_url, 'https://boutique.example.com/commande/42');
   const page = await api('GET', `/public/card-checkout/${pid}?t=${tok}`);
   assert.ok(!page.data.card);
-  assert.equal(await usdBal(m.token), 8.9); // 10 - (0.60 + 0.50)
+  assert.equal(await usdBal(m.token), 8.8); // 10 - (0.70 + 0.50)
 });
 
 test('admin: the exchange rate is editable, validated, role-protected, logged, and drives every conversion', async () => {
@@ -5552,4 +5552,14 @@ test('plugin and SDK kits are served only to a logged-in merchant, from a fixed 
     const r = await fetch(baseUrl + '/dashboard/downloads/' + bad, { headers: { Authorization: `Bearer ${token}` } });
     assert.equal(r.status, 404, bad);
   }
+});
+
+test('the merchant sees who paid: the name and email entered by the customer are kept and returned', async () => {
+  const m = await cardMerchant('cardpayer');
+  const r = await m.pay(20, 'CARD-PAYER', { customer: { name: '  Marie Jean  ', email: 'marie@example.com' } });
+  assert.equal(r.status, 201);
+  assert.equal(r.data.customer_name, 'Marie Jean');
+  const g = await api('GET', `/dashboard/payments/${r.data.id}`, { token: m.token });
+  assert.equal(g.data.customer_name, 'Marie Jean');
+  assert.equal(g.data.customer_email, 'marie@example.com');
 });
