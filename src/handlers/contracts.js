@@ -90,7 +90,7 @@ function cleanSignerInputs(list, taken) {
     const side = it && SIDES.includes(it.side) ? it.side : null;
     const name = cleanText(it && it.name, 120);
     const email = cleanText(it && it.email, 200).toLowerCase();
-    if (!side) throw httpError(400, 'INVALID_SIGNERS', 'Choisissez le côté du signataire (Freda Pay ou partenaire).');
+    if (!side) throw httpError(400, 'INVALID_SIGNERS', 'Choisissez le côté du signataire (Freda Pay Issuing ou partenaire).');
     if (name.length < 2) throw httpError(400, 'MISSING_FIELDS', 'Le nom du signataire est requis.');
     if (!isEmail(email)) throw httpError(400, 'INVALID_EMAIL', `L'email « ${email || '-'} » n'est pas valide.`);
     if (seen.has(email)) throw httpError(400, 'DUPLICATE_SIGNER', `${email} est déjà signataire de ce contrat.`);
@@ -285,7 +285,7 @@ async function adminCreate(ctx) {
     title, body_html: html, merchant_id: merchantId,
     recipient_name: recipientName, recipient_email: recipientEmail, token_hash: sha256(token),
     status: STATUS.PENDING, created_by_admin_id: ctx.adminId || null,
-    admin_name: cleanText(b.admin_name, 120) || admin.name || 'Freda Pay', admin_email: admin.email || config.brevo.senderEmail,
+    admin_name: cleanText(b.admin_name, 120) || admin.name || 'Freda Pay Issuing', admin_email: admin.email || config.brevo.senderEmail,
     admin_signature: adminSig, admin_signed_at: now, admin_signed_ip: ipOf(ctx), fields: {},
   });
   const url = merchantId ? mail.dashboardUrl() : mail.signUrl(token);
