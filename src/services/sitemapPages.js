@@ -12,6 +12,8 @@
 const PAGES = [
   { path: '/', changefreq: 'weekly', priority: '1.0', updated: '2026-10-17' },
   { path: '/api-moncash-natcash', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
+  { path: '/en/', changefreq: 'weekly', priority: '0.8', updated: '2026-10-17' },
+  { path: '/en/card-payments-haiti', changefreq: 'monthly', priority: '0.8', updated: '2026-10-17' },
   { path: '/a-propos', changefreq: 'monthly', priority: '0.7', updated: '2026-10-17' },
   { path: '/paiement-par-carte-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
   { path: '/cartes-virtuelles-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
