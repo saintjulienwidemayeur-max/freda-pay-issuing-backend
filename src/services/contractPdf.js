@@ -199,34 +199,78 @@ async function buildPdf(c) {
   await sigBlock(MARGIN.l + colW + 24, 'LE SIGNATAIRE', c.signer_name || c.recipient_name, c.signer_email || c.recipient_email, c.signed_at, c.signer_signature, !c.signer_signature);
   y -= 16 + 74 + 14 + 13 + 12 + 12 + 12 + 14;
 
-  // ---- audit trail
-  const rows = [
-    ['Document', c.id],
-    ['Statut', status],
-    ['Empreinte SHA-256', c.content_hash || '(calculée à la signature)'],
-    ['Freda Pay', `${c.admin_name} <${c.admin_email}>`],
-    ['  signé le', `${fmtDate(c.admin_signed_at)}   IP ${c.admin_signed_ip || '-'}`],
-    ['Signataire', `${c.signer_name || c.recipient_name} <${c.signer_email || c.recipient_email}>`],
-    ['  signé le', c.signed_at ? `${fmtDate(c.signed_at)}   IP ${c.signed_ip || '-'}` : '-'],
-    ['  appareil', c.signed_user_agent ? String(c.signed_user_agent).slice(0, 80) : '-'],
-  ];
-  const auditH = 36 + rows.length * 12.5 + (c.content_hash ? 12.5 : 0);
-  ensure(auditH + 10);
-  const top = y;
-  page.drawRectangle({ x: MARGIN.l, y: top - auditH, width: contentW, height: auditH, color: rgb(0.965, 0.96, 0.97), borderColor: LINE, borderWidth: 0.6 });
-  page.drawText("Journal d'audit (piste de vérification)", { x: MARGIN.l + 12, y: top - 17, size: 9.5, font: f.b, color: INK });
-  let ay = top - 33;
-  for (const [k, v] of rows) {
-    page.drawText(safe(k), { x: MARGIN.l + 12, y: ay, size: 7.5, font: f.b, color: MUTED });
-    const text = safe(v);
-    if (k === 'Empreinte SHA-256' && text.length > 48) {
-      page.drawText(text.slice(0, 64), { x: MARGIN.l + 112, y: ay, size: 7.5, font: f.m, color: INK });
-    } else {
-      page.drawText(text, { x: MARGIN.l + 112, y: ay, size: 7.5, font: f.m, color: INK, maxWidth: contentW - 124 });
+  // ---- certificate of signature: its own page, so the contract itself stays clean
+  newPage();
+  page.drawRectangle({ x: 0, y: PAGE.h - 8, width: PAGE.w, height: 8, color: PINK });
+  page.drawText('FREDA PAY', { x: MARGIN.l, y: y + 14, size: 10, font: f.b, color: INK });
+  page.drawText('ISSUING', { x: MARGIN.l + f.b.widthOfTextAtSize('FREDA PAY', 10) + 5, y: y + 14, size: 10, font: f.b, color: PINK });
+  y -= 14;
+  page.drawText('Certificat de signature électronique', { x: MARGIN.l, y: y - 18, size: 18, font: f.b, color: INK });
+  y -= 30;
+  const lead = 'Ce certificat atteste que le document ci-dessous a été signé électroniquement sur la plateforme Freda Pay. Il consigne les éléments de preuve recueillis lors de chaque signature.';
+  const wrap = (text, font, size, width) => {
+    const out = []; let cur = '';
+    for (const w of safe(text).split(' ')) {
+      const t = cur ? `${cur} ${w}` : w;
+      if (cur && font.widthOfTextAtSize(t, size) > width) { out.push(cur); cur = w; } else cur = t;
     }
-    ay -= 12.5;
-  }
-  page.drawText('Signature électronique interne Freda Pay : date, heure et adresse IP enregistrées au moment de chaque signature.', { x: MARGIN.l + 12, y: top - auditH + 7, size: 6.8, font: f.i, color: MUTED });
+    if (cur) out.push(cur);
+    return out;
+  };
+  for (const ln of wrap(lead, f.r, 9.5, contentW)) { page.drawText(ln, { x: MARGIN.l, y: y - 9.5, size: 9.5, font: f.r, color: MUTED }); y -= 13.5; }
+  y -= 12;
+  const device = (ua) => {
+    const u = String(ua || '');
+    if (!u) return '-';
+    const br = /Edg\//.test(u) ? 'Microsoft Edge' : /OPR\/|Opera/.test(u) ? 'Opera' : /Firefox\//.test(u) ? 'Firefox' : /Chrome\//.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : 'Navigateur inconnu';
+    const os = /Windows/.test(u) ? 'Windows' : /Android/.test(u) ? 'Android' : /iPhone|iPad|iOS/.test(u) ? 'iOS' : /Mac OS X|Macintosh/.test(u) ? 'macOS' : /Linux/.test(u) ? 'Linux' : '';
+    return os ? `${br} sur ${os}` : br;
+  };
+  const LBL = 128;
+  const section = (title, rows) => {
+    const body = rows.map(([k, v, mono]) => {
+      const font = mono ? f.m : f.r, size = mono ? 8.5 : 9.5;
+      let lines;
+      if (mono) { const t = safe(v); lines = []; for (let i = 0; i < t.length; i += 32) lines.push(t.slice(i, i + 32)); if (!lines.length) lines = ['-']; }
+      else lines = wrap(v || '-', font, size, contentW - LBL - 24);
+      return { k, lines, font, size, h: Math.max(1, lines.length) * (size + 4) + 10 };
+    });
+    const total = 26 + body.reduce((n, r) => n + r.h, 0);
+    ensure(total + 14);
+    page.drawRectangle({ x: MARGIN.l, y: y - 22, width: contentW, height: 22, color: INK });
+    page.drawText(safe(title).toUpperCase(), { x: MARGIN.l + 12, y: y - 15, size: 8.5, font: f.b, color: rgb(1, 1, 1) });
+    y -= 22;
+    body.forEach((r, i) => {
+      page.drawRectangle({ x: MARGIN.l, y: y - r.h, width: contentW, height: r.h, color: i % 2 ? rgb(1, 1, 1) : rgb(0.975, 0.97, 0.975) });
+      page.drawText(safe(r.k), { x: MARGIN.l + 12, y: y - 5 - 9, size: 8.5, font: f.b, color: MUTED });
+      r.lines.forEach((ln, j) => page.drawText(ln, { x: MARGIN.l + LBL, y: y - 5 - r.size - j * (r.size + 4), size: r.size, font: r.font, color: INK }));
+      y -= r.h;
+    });
+    page.drawLine({ start: { x: MARGIN.l, y }, end: { x: PAGE.w - MARGIN.r, y }, thickness: 0.6, color: LINE });
+    y -= 16;
+  };
+  section('Document', [
+    ['Référence', c.id],
+    ['Titre', c.title],
+    ['Statut', status],
+    ['Empreinte SHA-256', c.content_hash || 'Calculée à la signature', true],
+  ]);
+  section('Signature de Freda Pay', [
+    ['Signataire', c.admin_name],
+    ['Adresse email', c.admin_email],
+    ['Date et heure', c.admin_signed_at ? fmtDate(c.admin_signed_at) : '-'],
+    ['Adresse IP', c.admin_signed_ip || '-'],
+    ['Méthode', c.admin_signature && c.admin_signature.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main'],
+  ]);
+  section('Signature du cosignataire', [
+    ['Signataire', c.signer_name || c.recipient_name],
+    ['Adresse email', c.signer_email || c.recipient_email],
+    ['Date et heure', c.signed_at ? fmtDate(c.signed_at) : 'En attente'],
+    ['Adresse IP', c.signed_at ? (c.signed_ip || '-') : '-'],
+    ['Appareil', c.signed_at ? device(c.signed_user_agent) : '-'],
+    ['Méthode', c.signer_signature ? (c.signer_signature.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main') : '-'],
+  ]);
+  for (const ln of wrap("Signature électronique interne Freda Pay : la date, l'heure (UTC) et l'adresse IP sont enregistrées au moment de chaque signature. L'empreinte SHA-256 identifie de façon unique le contenu signé : toute modification du document la changerait.", f.i, 8, contentW)) { ensure(11); page.drawText(ln, { x: MARGIN.l, y: y - 8, size: 8, font: f.i, color: MUTED }); y -= 11; }
 
   // ---- footer on every page
   pages.forEach((p, i) => {
