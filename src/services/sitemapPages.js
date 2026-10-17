@@ -12,6 +12,7 @@
 const PAGES = [
   { path: '/', changefreq: 'weekly', priority: '1.0', updated: '2026-10-17' },
   { path: '/api-moncash-natcash', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
+  { path: '/paiement-par-carte-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
   { path: '/cartes-virtuelles-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
   { path: '/docs', changefreq: 'weekly', priority: '0.9', updated: '2026-10-17' },
   // `images`: pictures that belong to the page, so Google Images finds every one of them (both team portraits).
