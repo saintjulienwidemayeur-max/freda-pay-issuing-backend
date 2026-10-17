@@ -41,6 +41,7 @@ const tables = {
   card_transactions: [],
   bank_accounts: [],
   site_visits: [],
+  contracts: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();
@@ -86,6 +87,9 @@ function parseFilters(searchParams) {
     } else if (value.startsWith('lt.')) {
       const target = value.slice(3);
       predicates.push((row) => String(row[key]) < target);
+    } else if (value.startsWith('in.(') && value.endsWith(')')) {
+      const set = new Set(value.slice(4, -1).split(','));
+      predicates.push((row) => set.has(String(row[key])));
     } else if (value.startsWith('neq.')) {
       const target = value.slice(4);
       predicates.push((row) => String(row[key]) !== target);
