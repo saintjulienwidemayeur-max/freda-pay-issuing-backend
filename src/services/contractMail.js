@@ -35,25 +35,52 @@ function sent(contract, url) {
   }), 'contract-sent');
 }
 
-/** Both parties get the signed PDF. */
+/** An extra signer is invited. Without a url the contract is not ready yet: they will get the link once it is. */
+function invited(contract, signer, url) {
+  const side = signer.side === 'FREDA' ? 'pour Freda Pay' : `pour ${contract.recipient_name}`;
+  return deliver(signer.email, signer.name, buildEmail({
+    subject: `Votre signature est demandée : ${contract.title}`,
+    eyebrow: 'Contrat à signer',
+    heading: url ? 'Votre signature est demandée' : 'Vous êtes invité à signer un contrat',
+    paragraphs: [
+      `Bonjour ${signer.name},`,
+      `Vous êtes invité à signer ${side} le contrat **${contract.title}**.`,
+      url
+        ? 'Ouvrez le lien ci-dessous, lisez le document puis signez directement en ligne. Aucun compte n\'est nécessaire.'
+        : `Le contrat sera prêt à signer dès que **${contract.recipient_name}** l'aura signé. Vous recevrez alors un second email avec votre lien de signature.`,
+    ],
+    button: url ? { label: 'Lire et signer le contrat', url } : undefined,
+    notice: url ? 'Ce lien est personnel : ne le transférez pas. Si vous ne connaissez pas Freda Pay, ignorez cet email.' : null,
+  }), 'contract-invited');
+}
+
+/** Everyone who signed gets the signed PDF. */
 async function completed(contract, pdf) {
   const attachments = [{ name: `contrat-${contract.id}.pdf`, content: pdf.toString('base64') }];
   const built = (who) => buildEmail({
     subject: `Contrat signé : ${contract.title}`,
     eyebrow: 'Contrat signé',
     tone: 'success',
-    heading: 'Le contrat est signé par les deux parties',
+    heading: 'Le contrat est signé par toutes les parties',
     paragraphs: [
       `Bonjour ${who},`,
-      `Le contrat **${contract.title}** a été signé par **${contract.signer_name}** et par **${contract.admin_name}** (Freda Pay).`,
-      'Vous trouverez le document PDF en pièce jointe, avec la signature des deux parties et le journal d\'audit (date, heure, adresse IP). Conservez-le précieusement.',
+      `Le contrat **${contract.title}** a été signé par toutes les parties.`,
+      'Vous trouverez le document PDF en pièce jointe, avec les signatures et le certificat de signature électronique (date, heure, adresse IP). Conservez-le précieusement.',
     ],
   });
-  const a = await deliver(contract.signer_email || contract.recipient_email, contract.signer_name, built(contract.signer_name), 'contract-completed-signer', attachments);
-  const b = contract.admin_email && contract.admin_email !== (contract.signer_email || contract.recipient_email)
-    ? await deliver(contract.admin_email, contract.admin_name, built(contract.admin_name), 'contract-completed-admin', attachments)
-    : true;
-  return a && b;
+  const people = [
+    { email: contract.signer_email || contract.recipient_email, name: contract.signer_name || contract.recipient_name },
+    { email: contract.admin_email, name: contract.admin_name },
+  ].concat((contract.signers || []).map((s) => ({ email: s.email, name: s.name })));
+  const seen = new Set();
+  let ok = true;
+  for (const p of people) {
+    const key = String(p.email || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    if (!(await deliver(p.email, p.name, built(p.name), 'contract-completed', attachments))) ok = false;
+  }
+  return ok;
 }
 
 function signUrl(token) {
@@ -63,4 +90,4 @@ function dashboardUrl() {
   return `${siteUrl.get()}/dashboard#contrats`;
 }
 
-module.exports = { sent, completed, signUrl, dashboardUrl };
+module.exports = { sent, invited, completed, signUrl, dashboardUrl };

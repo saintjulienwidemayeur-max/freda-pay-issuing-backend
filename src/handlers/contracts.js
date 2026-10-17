@@ -69,16 +69,65 @@ function cleanContent(body) {
   return { title, html };
 }
 
+const SIDES = ['FREDA', 'CLIENT'];
+const MAX_SIGNERS = 8;
+const signerTable = 'contract_signers';
+
+async function loadSigners(contractId) {
+  return supabase.select(signerTable, { contract_id: contractId }, { order: 'created_at.asc', limit: 50 });
+}
+async function withSigners(c) {
+  c.signers = await loadSigners(c.id);
+  return c;
+}
+/** Extra signers as {side,name,email}, checked: a valid side, a name, a valid and not-yet-used email. */
+function cleanSignerInputs(list, taken) {
+  if (list == null) return [];
+  if (!Array.isArray(list)) throw httpError(400, 'INVALID_SIGNERS', 'Liste de signataires invalide.');
+  const seen = new Set(taken.map((e) => String(e).toLowerCase()));
+  const out = [];
+  for (const it of list) {
+    const side = it && SIDES.includes(it.side) ? it.side : null;
+    const name = cleanText(it && it.name, 120);
+    const email = cleanText(it && it.email, 200).toLowerCase();
+    if (!side) throw httpError(400, 'INVALID_SIGNERS', 'Choisissez le côté du signataire (Freda Pay ou partenaire).');
+    if (name.length < 2) throw httpError(400, 'MISSING_FIELDS', 'Le nom du signataire est requis.');
+    if (!isEmail(email)) throw httpError(400, 'INVALID_EMAIL', `L'email « ${email || '-'} » n'est pas valide.`);
+    if (seen.has(email)) throw httpError(400, 'DUPLICATE_SIGNER', `${email} est déjà signataire de ce contrat.`);
+    seen.add(email);
+    out.push({ side, name, email });
+  }
+  return out;
+}
+function signerRow(contractId, input, adminId) {
+  const token = crypto.randomBytes(24).toString('hex');
+  return {
+    token,
+    row: { id: `sgn_${crypto.randomBytes(8).toString('hex')}`, contract_id: contractId, side: input.side, name: input.name, email: input.email, token_hash: sha256(token), status: 'PENDING', invited_by_admin_id: adminId || null },
+  };
+}
+const progress = (c, signers) => {
+  const list = signers || c.signers || [];
+  return { total: 2 + list.length, done: 1 + (c.signed_at ? 1 : 0) + list.filter((s) => s.status === 'SIGNED').length };
+};
+
 /** What a recipient sees: no token hash, no raw signature masks (pictures instead). */
 function publicView(c, opts) {
   const labels = fieldLabels(c.body_html);
+  const signed = !!c.signed_at;
+  const signers = (c.signers || []).map((s) => Object.assign(
+    { id: s.id, side: s.side, name: s.name, status: s.status, signed_at: s.signed_at || null, signature_png: s.status === 'SIGNED' ? signaturePng(s.signature) : null },
+    opts && opts.admin ? { email: s.email, signed_ip: s.signed_ip || null } : {},
+  ));
   return {
+    signers,
+    progress: progress(c),
     id: c.id,
     title: c.title,
     status: c.status,
     body_html: viewHtml(c.body_html),
     field_labels: labels,
-    fields: c.status === STATUS.DONE ? (c.fields || {}) : {},
+    fields: signed ? (c.fields || {}) : {},
     recipient_name: c.recipient_name,
     recipient_email: c.recipient_email,
     admin_name: c.admin_name,
@@ -86,7 +135,7 @@ function publicView(c, opts) {
     admin_signature_png: signaturePng(c.admin_signature),
     signed_at: c.signed_at || null,
     signer_name: c.signer_name || null,
-    signer_signature_png: c.status === STATUS.DONE ? signaturePng(c.signer_signature) : null,
+    signer_signature_png: signed ? signaturePng(c.signer_signature) : null,
     created_at: c.created_at,
     ...(opts && opts.admin ? { merchant_id: c.merchant_id, admin_email: c.admin_email, signed_ip: c.signed_ip, admin_signed_ip: c.admin_signed_ip, content_hash: c.content_hash, viewed_at: c.viewed_at } : {}),
   };
@@ -103,11 +152,34 @@ function sendPdf(ctx, c, pdf) {
   ctx.res.end(pdf);
 }
 
-/** Records the second signature. Only one caller can win the PENDING -> COMPLETED change, so a double click or two tabs sign once. */
+/** When the main recipient and every extra signer have signed, the contract is sealed: one caller wins PENDING -> COMPLETED. */
+async function finalize(contractId) {
+  const c = await withSigners(await supabase.selectOne('contracts', { id: contractId }));
+  if (c.status !== STATUS.PENDING || !c.signed_at) return c;
+  const waiting = c.signers.filter((s) => s.status !== 'SIGNED');
+  if (waiting.length) {
+    return c;
+  }
+  const hash = contentHash(Object.assign({}, c, { status: STATUS.DONE }));
+  const [won] = await supabase.update('contracts', { id: c.id, status: STATUS.PENDING }, { status: STATUS.DONE, content_hash: hash, updated_at: new Date().toISOString() });
+  if (!won) return c;
+  const full = Object.assign({}, c, won, { signers: c.signers });
+  // The PDF and the emails are built after the signatures are safely saved: a mail problem never undoes them.
+  try {
+    await mail.completed(full, await buildPdf(full));
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Contract completion email failed:', err.message);
+  }
+  return full;
+}
+
+/** Records the main recipient's signature (and the blanks they filled). A double click or two tabs sign once. */
 async function completeContract(c, { fieldsIn, signerName, signature, ip, ua, email }) {
   if (c.status !== STATUS.PENDING) {
     throw httpError(409, 'NOT_PENDING', c.status === STATUS.DONE ? 'Ce contrat est déjà signé.' : 'Ce contrat n\'est plus disponible pour signature.');
   }
+  if (c.signed_at) throw httpError(409, 'ALREADY_SIGNED', 'Vous avez déjà signé ce contrat.');
   const labels = fieldLabels(c.body_html);
   const fields = {};
   for (const label of labels) {
@@ -119,22 +191,43 @@ async function completeContract(c, { fieldsIn, signerName, signature, ip, ua, em
   if (name.length < 2) throw httpError(400, 'MISSING_FIELDS', 'Entrez votre nom complet.');
   const sig = cleanSignature(signature);
   const signedAt = new Date().toISOString();
-  const draft = Object.assign({}, c, { fields, signer_name: name, signer_email: email, signer_signature: sig, signed_at: signedAt, signed_ip: ip, signed_user_agent: cleanText(ua, 300), status: STATUS.DONE });
-  draft.content_hash = contentHash(draft);
-  const [won] = await supabase.update('contracts', { id: c.id, status: STATUS.PENDING }, {
-    status: STATUS.DONE, fields, signer_name: name, signer_email: email, signer_signature: sig,
-    signed_at: signedAt, signed_ip: ip, signed_user_agent: draft.signed_user_agent, content_hash: draft.content_hash, updated_at: signedAt,
+  const [won] = await supabase.update('contracts', { id: c.id, status: STATUS.PENDING, signed_at: 'is.null' }, {
+    fields, signer_name: name, signer_email: email, signer_signature: sig,
+    signed_at: signedAt, signed_ip: ip, signed_user_agent: cleanText(ua, 300), updated_at: signedAt,
   });
   if (!won) throw httpError(409, 'NOT_PENDING', 'Ce contrat vient d\'être signé ou annulé.');
-  // The PDF and the emails are built after the signature is safely saved: a mail problem never undoes it.
-  try {
-    const pdf = await buildPdf(Object.assign({}, c, won));
-    await mail.completed(Object.assign({}, c, won), pdf);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error('Contract completion email failed:', err.message);
+  const after = await finalize(c.id);
+  if (after.status !== STATUS.DONE) {
+    // Others still have to sign: invite them now that the text and the blanks are final.
+    for (const s of after.signers) if (s.status !== 'SIGNED') await resendInvite(after, s);
   }
-  return won;
+  return after;
+}
+
+/** An extra signer signs once the main recipient has (the text and the blanks are then final). */
+async function signerSign(c, s, { signerName, signature, ip, ua }) {
+  if (c.status !== STATUS.PENDING) throw httpError(409, 'NOT_PENDING', c.status === STATUS.DONE ? 'Ce contrat est déjà signé.' : 'Ce contrat n\'est plus disponible pour signature.');
+  if (!c.signed_at) throw httpError(409, 'WAITING', `Ce contrat sera prêt à signer dès que ${c.recipient_name} l'aura signé. Vous recevrez un email.`);
+  if (s.status === 'SIGNED') throw httpError(409, 'ALREADY_SIGNED', 'Vous avez déjà signé ce contrat.');
+  const name = cleanText(signerName, 120) || s.name;
+  const sig = cleanSignature(signature);
+  const [won] = await supabase.update(signerTable, { id: s.id, status: 'PENDING' }, {
+    status: 'SIGNED', name, signature: sig, signed_at: new Date().toISOString(), signed_ip: ip, signed_user_agent: cleanText(ua, 300),
+  });
+  if (!won) throw httpError(409, 'ALREADY_SIGNED', 'Vous avez déjà signé ce contrat.');
+  return finalize(c.id);
+}
+
+/**
+ * Emails a signer. Until the main recipient has signed the contract is not ready, so the email is only a heads-up with no
+ * link; once it is ready the signer gets a fresh private link (the previous one, if any, stops working).
+ */
+async function resendInvite(c, s) {
+  if (!c.signed_at) return { emailed: await mail.invited(c, s, null), sign_url: null };
+  const token = crypto.randomBytes(24).toString('hex');
+  await supabase.update(signerTable, { id: s.id }, { token_hash: sha256(token) });
+  const url = mail.signUrl(token);
+  return { emailed: await mail.invited(c, s, url), sign_url: url };
 }
 
 // =============================================================== admin
@@ -150,12 +243,18 @@ async function adminList(ctx) {
     const ms = await supabase.select('merchants', { id: `in.(${ids.join(',')})` }, { select: 'id,business_name' });
     for (const m of ms) names[m.id] = m.business_name;
   }
-  return { status: 200, body: { contracts: rows.map((r) => Object.assign({}, r, { merchant_name: r.merchant_id ? names[r.merchant_id] || null : null })) } };
+  const extras = {};
+  if (rows.length) {
+    const sg = await supabase.select(signerTable, { contract_id: `in.(${rows.map((r) => r.id).join(',')})` }, { select: 'contract_id,status', limit: 1000 });
+    for (const x of sg) (extras[x.contract_id] = extras[x.contract_id] || []).push(x);
+  }
+  return { status: 200, body: { contracts: rows.map((r) => Object.assign({}, r, { merchant_name: r.merchant_id ? names[r.merchant_id] || null : null, progress: progress(r, extras[r.id] || []) })) } };
 }
 
 async function adminGet(ctx) {
   const c = await supabase.selectOne('contracts', { id: ctx.params.id });
   if (!c) throw httpError(404, 'NOT_FOUND', 'Contrat introuvable.');
+  await withSigners(c);
   return { status: 200, body: { contract: publicView(c, { admin: true }) } };
 }
 
@@ -176,6 +275,8 @@ async function adminCreate(ctx) {
     if (recipientName.length < 2) throw httpError(400, 'MISSING_FIELDS', 'Le nom du destinataire est requis.');
     if (!isEmail(recipientEmail)) throw httpError(400, 'INVALID_EMAIL', "L'email du destinataire n'est pas valide.");
   }
+  const extraIn = cleanSignerInputs(b.signers, [recipientEmail, (ctx.admin && ctx.admin.email) || '']);
+  if (extraIn.length > MAX_SIGNERS) throw httpError(400, 'TOO_MANY_SIGNERS', `Maximum ${MAX_SIGNERS} signataires supplémentaires.`);
   const admin = ctx.admin || {};
   const token = crypto.randomBytes(24).toString('hex');
   const now = new Date().toISOString();
@@ -189,7 +290,16 @@ async function adminCreate(ctx) {
   });
   const url = merchantId ? mail.dashboardUrl() : mail.signUrl(token);
   const emailed = await mail.sent(row, url);
-  return { status: 201, body: { contract: publicView(row, { admin: true }), emailed, sign_url: merchantId ? null : url } };
+  // Extra signers are saved now and get a heads-up; their private link is sent once the main recipient has signed.
+  row.signers = [];
+  const invites = [];
+  for (const input of extraIn) {
+    const { row: sr } = signerRow(row.id, input, ctx.adminId);
+    const saved = await supabase.insert(signerTable, sr);
+    row.signers.push(saved);
+    invites.push({ id: saved.id, email: saved.email, emailed: (await resendInvite(row, saved)).emailed });
+  }
+  return { status: 201, body: { contract: publicView(row, { admin: true }), emailed, sign_url: merchantId ? null : url, invites } };
 }
 
 async function adminCancel(ctx) {
@@ -215,20 +325,60 @@ async function adminResend(ctx) {
 async function adminPdf(ctx) {
   const c = await supabase.selectOne('contracts', { id: ctx.params.id });
   if (!c) throw httpError(404, 'NOT_FOUND', 'Contrat introuvable.');
+  await withSigners(c);
   return sendPdf(ctx, c, await buildPdf(c));
+}
+
+async function adminAddSigner(ctx) {
+  const c = await supabase.selectOne('contracts', { id: ctx.params.id });
+  if (!c) throw httpError(404, 'NOT_FOUND', 'Contrat introuvable.');
+  if (c.status !== STATUS.PENDING) throw httpError(409, 'NOT_PENDING', 'On ne peut inviter un signataire que sur un contrat en attente de signature.');
+  await withSigners(c);
+  if (c.signers.length >= MAX_SIGNERS) throw httpError(400, 'TOO_MANY_SIGNERS', `Maximum ${MAX_SIGNERS} signataires supplémentaires.`);
+  const taken = [c.recipient_email, c.admin_email].concat(c.signers.map((x) => x.email));
+  const [input] = cleanSignerInputs([ctx.body || {}], taken);
+  const { row } = signerRow(c.id, input, ctx.adminId);
+  const saved = await supabase.insert(signerTable, row);
+  c.signers.push(saved);
+  const sent = await resendInvite(c, saved);
+  return { status: 201, body: { contract: publicView(c, { admin: true }), emailed: sent.emailed, sign_url: sent.sign_url } };
+}
+
+async function signerOf(ctx) {
+  const c = await supabase.selectOne('contracts', { id: ctx.params.id });
+  const s = c && await supabase.selectOne(signerTable, { id: ctx.params.sid, contract_id: c.id });
+  if (!c || !s) throw httpError(404, 'NOT_FOUND', 'Signataire introuvable.');
+  if (c.status !== STATUS.PENDING) throw httpError(409, 'NOT_PENDING', 'Ce contrat n\'est plus en attente de signature.');
+  return { c, s };
+}
+
+async function adminResendSigner(ctx) {
+  const { c, s } = await signerOf(ctx);
+  if (s.status === 'SIGNED') throw httpError(409, 'ALREADY_SIGNED', 'Ce signataire a déjà signé.');
+  const sent = await resendInvite(c, s);
+  return { status: 200, body: { emailed: sent.emailed, sign_url: sent.sign_url } };
+}
+
+async function adminRemoveSigner(ctx) {
+  const { c, s } = await signerOf(ctx);
+  if (s.status === 'SIGNED') throw httpError(409, 'ALREADY_SIGNED', 'Ce signataire a déjà signé : il ne peut plus être retiré.');
+  await supabase.delete(signerTable, { id: s.id });
+  // Removing the last person who had not signed completes the contract.
+  const after = await finalize(c.id);
+  return { status: 200, body: { contract: publicView(after, { admin: true }) } };
 }
 
 // =============================================================== merchant (dashboard)
 async function merchantContract(ctx) {
   const c = await supabase.selectOne('contracts', { id: ctx.params.id, merchant_id: ctx.merchantId });
   if (!c || c.status === STATUS.CANCELLED) throw httpError(404, 'NOT_FOUND', 'Contrat introuvable.');
-  return c;
+  return withSigners(c);
 }
 
 async function merchantList(ctx) {
   const rows = await supabase.select('contracts', { merchant_id: ctx.merchantId }, { select: LIST_COLUMNS, order: 'created_at.desc', limit: 100 });
   const visible = rows.filter((r) => r.status !== STATUS.CANCELLED);
-  return { status: 200, body: { contracts: visible, pending: visible.filter((r) => r.status === STATUS.PENDING).length } };
+  return { status: 200, body: { contracts: visible, pending: visible.filter((r) => r.status === STATUS.PENDING && !r.signed_at).length } };
 }
 
 async function merchantGet(ctx) {
@@ -243,11 +393,11 @@ async function merchantSign(ctx) {
   const c = await merchantContract(ctx);
   const b = ctx.body || {};
   const merchant = await supabase.selectOne('merchants', { id: ctx.merchantId });
-  const won = await completeContract(c, {
+  const after = await completeContract(c, {
     fieldsIn: b.fields, signerName: b.signer_name, signature: b.signature,
     ip: ipOf(ctx), ua: ctx.req.headers['user-agent'], email: (merchant && merchant.email) || c.recipient_email,
   });
-  return { status: 200, body: { contract: publicView(won) } };
+  return { status: 200, body: { contract: publicView(after) } };
 }
 
 async function merchantPdf(ctx) {
@@ -255,39 +405,59 @@ async function merchantPdf(ctx) {
   return sendPdf(ctx, c, await buildPdf(c));
 }
 
-// =============================================================== outside partner (private link)
+// =============================================================== private link (outside partner or extra signer)
+/** The link belongs either to the main recipient of an outside-partner contract, or to an extra signer. */
 async function byToken(ctx) {
   const token = String(ctx.params.token || '');
-  if (!/^[a-f0-9]{48}$/.test(token)) throw httpError(404, 'NOT_FOUND', 'Lien invalide ou expiré.');
-  const c = await supabase.selectOne('contracts', { token_hash: sha256(token) });
-  if (!c || c.merchant_id || c.status === STATUS.CANCELLED) throw httpError(404, 'NOT_FOUND', 'Lien invalide ou expiré.');
-  return c;
+  const bad = () => httpError(404, 'NOT_FOUND', 'Lien invalide ou expiré.');
+  if (!/^[a-f0-9]{48}$/.test(token)) throw bad();
+  const hash = sha256(token);
+  const main = await supabase.selectOne('contracts', { token_hash: hash });
+  if (main) {
+    if (main.merchant_id || main.status === STATUS.CANCELLED) throw bad();
+    return { c: await withSigners(main), signer: null };
+  }
+  const signer = await supabase.selectOne(signerTable, { token_hash: hash });
+  if (!signer) throw bad();
+  const c = await supabase.selectOne('contracts', { id: signer.contract_id });
+  if (!c || c.status === STATUS.CANCELLED) throw bad();
+  return { c: await withSigners(c), signer };
+}
+
+/** The contract as one link holder sees it, with who they are and whether it is their turn. */
+function linkView(c, signer) {
+  const view = publicView(c);
+  view.viewer = signer
+    ? { role: 'signer', name: signer.name, side: signer.side, signed: signer.status === 'SIGNED', can_sign: c.status === STATUS.PENDING && !!c.signed_at && signer.status !== 'SIGNED' }
+    : { role: 'recipient', name: c.recipient_name, side: 'CLIENT', signed: !!c.signed_at, can_sign: c.status === STATUS.PENDING && !c.signed_at };
+  return view;
 }
 
 async function publicGet(ctx) {
-  const c = await byToken(ctx);
-  if (!c.viewed_at) await supabase.update('contracts', { id: c.id }, { viewed_at: new Date().toISOString() });
-  return { status: 200, body: { contract: publicView(c) } };
+  const { c, signer } = await byToken(ctx);
+  if (!signer && !c.viewed_at) await supabase.update('contracts', { id: c.id }, { viewed_at: new Date().toISOString() });
+  return { status: 200, body: { contract: linkView(c, signer) } };
 }
 
 async function publicSign(ctx) {
-  const c = await byToken(ctx);
+  const { c, signer } = await byToken(ctx);
   const b = ctx.body || {};
-  const won = await completeContract(c, {
-    fieldsIn: b.fields, signerName: b.signer_name, signature: b.signature,
-    ip: ipOf(ctx), ua: ctx.req.headers['user-agent'], email: c.recipient_email,
-  });
-  return { status: 200, body: { contract: publicView(won) } };
+  const opts = { signerName: b.signer_name, signature: b.signature, ip: ipOf(ctx), ua: ctx.req.headers['user-agent'] };
+  const after = signer
+    ? await signerSign(c, signer, opts)
+    : await completeContract(c, Object.assign(opts, { fieldsIn: b.fields, email: c.recipient_email }));
+  const { signer: fresh } = signer ? { signer: await supabase.selectOne(signerTable, { id: signer.id }) } : { signer: null };
+  return { status: 200, body: { contract: linkView(after, fresh) } };
 }
 
 async function publicPdf(ctx) {
-  const c = await byToken(ctx);
-  if (c.status !== STATUS.DONE) throw httpError(409, 'NOT_COMPLETED', 'Le PDF est disponible une fois le contrat signé.');
+  const { c } = await byToken(ctx);
+  if (c.status !== STATUS.DONE) throw httpError(409, 'NOT_COMPLETED', 'Le PDF est disponible une fois le contrat signé par toutes les parties.');
   return sendPdf(ctx, c, await buildPdf(c));
 }
 
 module.exports = {
-  adminList, adminGet, adminCreate, adminCancel, adminResend, adminPdf,
+  adminList, adminGet, adminCreate, adminCancel, adminResend, adminPdf, adminAddSigner, adminResendSigner, adminRemoveSigner,
   merchantList, merchantGet, merchantSign, merchantPdf,
   publicGet, publicSign, publicPdf,
 };

@@ -281,6 +281,9 @@ router.get('/admin/contracts/:id', adminSession.requireAdminSession, contractsAd
 router.get('/admin/contracts/:id/pdf', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminPdf));
 router.post('/admin/contracts/:id/cancel', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminCancel));
 router.post('/admin/contracts/:id/resend', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminResend));
+router.post('/admin/contracts/:id/signers', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminAddSigner));
+router.post('/admin/contracts/:id/signers/:sid/resend', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminResendSigner));
+router.post('/admin/contracts/:id/signers/:sid/remove', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminRemoveSigner));
 router.get('/dashboard/contracts', session.requireSession, contractHandlers.merchantList);
 router.get('/dashboard/contracts/:id', session.requireSession, contractHandlers.merchantGet);
 router.get('/dashboard/contracts/:id/pdf', session.requireSession, contractHandlers.merchantPdf);

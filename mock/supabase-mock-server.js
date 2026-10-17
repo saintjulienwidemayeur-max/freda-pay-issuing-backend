@@ -42,6 +42,7 @@ const tables = {
   bank_accounts: [],
   site_visits: [],
   contracts: [],
+  contract_signers: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();
