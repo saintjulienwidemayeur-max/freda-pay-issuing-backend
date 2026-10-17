@@ -655,3 +655,35 @@ create table if not exists platform_settings (
   updated_at timestamptz not null default now()
 );
 alter table platform_settings enable row level security;
+
+-- Internal e-signature (see migrations/2026-10-19-contracts.sql).
+create table if not exists contracts (
+  id text primary key,
+  title text not null,
+  body_html text not null,
+  merchant_id text references merchants(id),
+  recipient_name text not null,
+  recipient_email text not null,
+  token_hash text unique not null,
+  status text not null default 'PENDING_SIGNATURE',
+  created_by_admin_id text,
+  admin_name text not null,
+  admin_email text not null,
+  admin_signature jsonb not null,
+  admin_signed_at timestamptz not null default now(),
+  admin_signed_ip text,
+  fields jsonb not null default '{}'::jsonb,
+  signer_name text,
+  signer_email text,
+  signer_signature jsonb,
+  signed_at timestamptz,
+  signed_ip text,
+  signed_user_agent text,
+  content_hash text,
+  viewed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists contracts_merchant_idx on contracts (merchant_id, created_at desc);
+create index if not exists contracts_status_idx on contracts (status, created_at desc);
+alter table contracts enable row level security;

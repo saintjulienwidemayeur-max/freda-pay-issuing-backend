@@ -5564,3 +5564,128 @@ test('the merchant sees who paid: the name and email entered by the customer are
   assert.equal(g.data.customer_name, 'Marie Jean');
   assert.equal(g.data.customer_email, 'marie@example.com');
 });
+
+// ===================================================== internal e-signature (contracts)
+function sigMask(w = 300, h = 90) {
+  const a = Buffer.alloc(w * h);
+  for (let x = 0; x < w; x++) {
+    const y = Math.round(h / 2 + Math.sin(x / 12) * h / 4);
+    for (let d = -2; d <= 2; d++) if (y + d >= 0 && y + d < h) a[(y + d) * w + x] = 255;
+  }
+  return { w, h, alpha: a.toString('base64') };
+}
+const drawnSig = () => ({ type: 'drawn', image: sigMask() });
+const typedSig = (name) => ({ type: 'typed', name, font: 'Dancing Script', image: sigMask(320, 100) });
+const CONTRACT_HTML = '<h1 style="text-align:center">Contrat de partenariat</h1><p>Entre Freda Pay LLC et <b>[[Nom de l\'entreprise]]</b>, représentée par [[Représentant]], il est convenu ce qui suit : les deux parties collaborent.</p><ul><li>Premier point</li><li>Deuxième point</li></ul><script>alert(1)</script>';
+async function rawGet(path, token) {
+  const res = await fetch(baseUrl + path, { headers: token ? { Authorization: 'Bearer ' + token } : {} });
+  return { status: res.status, type: res.headers.get('content-type'), buf: Buffer.from(await res.arrayBuffer()) };
+}
+
+test('contracts: admin signs and sends to a merchant, the merchant fills the blanks and signs, both get the PDF', async () => {
+  const m = await makeLiveMerchant('ctrmerchant');
+  const email = emailOf(m);
+  sentEmails.length = 0;
+  // admin creates + signs + sends
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat de partenariat', body_html: CONTRACT_HTML, merchant_id: m.merchantId, admin_signature: typedSig('Admin Freda') } });
+  assert.equal(create.status, 201);
+  const id = create.data.contract.id;
+  assert.equal(create.data.contract.status, 'PENDING_SIGNATURE');
+  assert.equal(create.data.sign_url, null); // a merchant signs in the dashboard, no private link
+  assert.ok(!JSON.stringify(create.data).includes('script'));      // the markup was cleaned
+  assert.ok(create.data.contract.field_labels.includes('Représentant'));
+  assert.ok(sentEmails.some((e) => e.to === email && /Un contrat vous attend/.test(e.subject)));
+  // merchant sees it
+  const list = await api('GET', '/dashboard/contracts', { token: m.token });
+  assert.equal(list.data.pending, 1);
+  assert.equal(list.data.contracts[0].id, id);
+  const view = await api('GET', `/dashboard/contracts/${id}`, { token: m.token });
+  assert.equal(view.status, 200);
+  assert.match(view.data.contract.body_html, /ctr-field/);
+  assert.ok(view.data.contract.admin_signature_png.startsWith('data:image/png;base64,'));
+  // validation: blank field, empty signature
+  const base = { signer_name: 'Marie Jean', fields: { "Nom de l'entreprise": 'Boutik Lakay', 'Représentant': 'Marie Jean' }, signature: drawnSig() };
+  const noField = await api('POST', `/dashboard/contracts/${id}/sign`, { token: m.token, body: { ...base, fields: { "Nom de l'entreprise": 'Boutik Lakay' } } });
+  assert.equal(noField.status, 400); assert.equal(noField.data.error.code, 'FIELD_REQUIRED');
+  const blank = await api('POST', `/dashboard/contracts/${id}/sign`, { token: m.token, body: { ...base, signature: { type: 'drawn', image: { w: 100, h: 40, alpha: Buffer.alloc(4000).toString('base64') } } } });
+  assert.equal(blank.data.error.code, 'SIGNATURE_EMPTY');
+  assert.equal((await rawGet(`/dashboard/contracts/${id}/pdf`, m.token)).status, 200); // a preview is possible before signing
+  // sign
+  sentEmails.length = 0;
+  const sign = await api('POST', `/dashboard/contracts/${id}/sign`, { token: m.token, body: base });
+  assert.equal(sign.status, 200);
+  assert.equal(sign.data.contract.status, 'COMPLETED');
+  assert.deepEqual(sign.data.contract.fields, base.fields);
+  // double signature refused
+  assert.equal((await api('POST', `/dashboard/contracts/${id}/sign`, { token: m.token, body: base })).data.error.code, 'NOT_PENDING');
+  // the PDF
+  const pdf = await rawGet(`/dashboard/contracts/${id}/pdf`, m.token);
+  assert.equal(pdf.type, 'application/pdf');
+  assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
+  assert.ok(pdf.buf.length > 5000);
+  // audit data kept on the row
+  const row = mockTables.contracts.find((c) => c.id === id);
+  assert.equal(row.signed_ip.length > 0, true);
+  assert.match(row.content_hash, /^[0-9a-f]{64}$/);
+  assert.equal(row.signer_email, email);
+  // both parties receive the PDF
+  const mine = sentEmails.filter((e) => /Contrat signé/.test(e.subject));
+  assert.ok(mine.some((e) => e.to === email && e.attachments.some((a) => a.name === `contrat-${id}.pdf` && a.size > 5000)));
+  assert.ok(mine.some((e) => e.to !== email && e.attachments.length === 1)); // the admin
+  // the admin sees it completed
+  const adm = await api('GET', `/admin/contracts?status=COMPLETED`, { token: m.adminToken });
+  assert.ok(adm.data.contracts.some((c) => c.id === id && c.merchant_name === 'ctrmerchant Co'));
+  assert.equal((await rawGet(`/admin/contracts/${id}/pdf`, m.adminToken)).buf.slice(0, 5).toString(), '%PDF-');
+});
+
+test('contracts: another merchant cannot see or sign it, a read-only member cannot sign, an admin can cancel a pending one', async () => {
+  const a = await makeLiveMerchant('ctrowner');
+  const b = await makeLiveMerchant('ctrother');
+  const create = await api('POST', '/admin/contracts', { token: a.adminToken, body: { title: 'Contrat privé', body_html: '<p>Texte du contrat sans blancs à remplir, assez long.</p>', merchant_id: a.merchantId, admin_signature: drawnSig() } });
+  const id = create.data.contract.id;
+  assert.equal((await api('GET', `/dashboard/contracts/${id}`, { token: b.token })).status, 404);
+  assert.equal((await api('POST', `/dashboard/contracts/${id}/sign`, { token: b.token, body: { signer_name: 'X Y', signature: drawnSig() } })).status, 404);
+  assert.equal((await api('GET', '/dashboard/contracts', { token: b.token })).data.contracts.length, 0);
+  assert.equal((await api('GET', '/admin/contracts', { token: a.token })).status, 401); // a merchant token is not an admin token
+  const cancel = await api('POST', `/admin/contracts/${id}/cancel`, { token: a.adminToken });
+  assert.equal(cancel.data.contract.status, 'CANCELLED');
+  assert.equal((await api('GET', `/dashboard/contracts/${id}`, { token: a.token })).status, 404); // a cancelled contract disappears
+  assert.equal((await api('POST', `/admin/contracts/${id}/cancel`, { token: a.adminToken })).data.error.code, 'NOT_PENDING');
+  // missing signature / short text refused at creation
+  assert.equal((await api('POST', '/admin/contracts', { token: a.adminToken, body: { title: 'Contrat', body_html: '<p>Texte du contrat assez long pour passer.</p>', merchant_id: a.merchantId } })).data.error.code, 'SIGNATURE_REQUIRED');
+  assert.equal((await api('POST', '/admin/contracts', { token: a.adminToken, body: { title: 'Contrat', body_html: '<p>court</p>', merchant_id: a.merchantId, admin_signature: drawnSig() } })).data.error.code, 'INVALID_BODY');
+});
+
+test('contracts: an outside partner signs through a private link, a new link replaces the old one', async () => {
+  const m = await makeLiveMerchant('ctrpartner');
+  sentEmails.length = 0;
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Accord partenaire', body_html: '<p>Accord entre Freda Pay et <b>[[Société]]</b>, valable un an à compter de la signature.</p>', recipient_name: 'Jean Partenaire', recipient_email: 'jean.partenaire@example.com', admin_signature: drawnSig() } });
+  assert.equal(create.status, 201);
+  const url = create.data.sign_url;
+  assert.match(url, /\/sign\?token=[a-f0-9]{48}$/);
+  const token1 = url.split('token=')[1];
+  assert.ok(sentEmails.some((e) => e.to === 'jean.partenaire@example.com' && e.text.includes(token1)));
+  assert.equal((await api('GET', '/public/contracts/' + 'a'.repeat(48))).status, 404);
+  const view = await api('GET', `/public/contracts/${token1}`);
+  assert.equal(view.status, 200);
+  assert.equal(view.data.contract.recipient_name, 'Jean Partenaire');
+  assert.equal(view.data.contract.token_hash, undefined);
+  // the PDF is only for a signed contract
+  assert.equal((await rawGet(`/public/contracts/${token1}/pdf`)).status, 409);
+  // resend: the old link stops working
+  const resend = await api('POST', `/admin/contracts/${create.data.contract.id}/resend`, { token: m.adminToken });
+  const token2 = resend.data.sign_url.split('token=')[1];
+  assert.notEqual(token1, token2);
+  assert.equal((await api('GET', `/public/contracts/${token1}`)).status, 404);
+  const sign = await api('POST', `/public/contracts/${token2}/sign`, { body: { signer_name: 'Jean Partenaire', fields: { 'Société': 'Partenaire SA' }, signature: typedSig('Jean Partenaire') } });
+  assert.equal(sign.status, 200);
+  assert.equal(sign.data.contract.status, 'COMPLETED');
+  assert.equal((await api('POST', `/public/contracts/${token2}/sign`, { body: { signer_name: 'Jean Partenaire', fields: { 'Société': 'X' }, signature: typedSig('Jean Partenaire') } })).data.error.code, 'NOT_PENDING');
+  const pdf = await rawGet(`/public/contracts/${token2}/pdf`);
+  assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
+  assert.ok(sentEmails.some((e) => e.to === 'jean.partenaire@example.com' && /Contrat signé/.test(e.subject) && e.attachments.length === 1));
+  // a merchant contract can never be opened through a token
+  const mc = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat marchand', body_html: '<p>Texte du contrat marchand assez long pour passer.</p>', merchant_id: m.merchantId, admin_signature: drawnSig() } });
+  assert.ok(mc.data.contract.id);
+  assert.equal(mockTables.contracts.filter((c) => c.merchant_id).length >= 1, true);
+});

@@ -51,6 +51,7 @@ const bankAccountHandlers = require('./handlers/bankAccount');
 const adminBankPayoutHandlers = require('./handlers/adminBankPayouts');
 const siteUrl = require('./services/siteUrl');
 const walletSummaryHandlers = require('./handlers/walletSummary');
+const contractHandlers = require('./handlers/contracts');
 const adminSession = require('./middleware/adminSession');
 
 const router = new Router();
@@ -272,6 +273,22 @@ router.post('/admin/inbox/:id/reply', adminSession.requireAdminSession, (ctx) =>
 router.get('/admin/messages', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.history(ctx); });
 router.get('/admin/messages/audience', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.audience(ctx); });
 router.post('/admin/messages', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.send(ctx); });
+// ---- Internal e-signature: contracts ----
+const contractsAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
+router.get('/admin/contracts', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminList));
+router.post('/admin/contracts', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminCreate));
+router.get('/admin/contracts/:id', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminGet));
+router.get('/admin/contracts/:id/pdf', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminPdf));
+router.post('/admin/contracts/:id/cancel', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminCancel));
+router.post('/admin/contracts/:id/resend', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminResend));
+router.get('/dashboard/contracts', session.requireSession, contractHandlers.merchantList);
+router.get('/dashboard/contracts/:id', session.requireSession, contractHandlers.merchantGet);
+router.get('/dashboard/contracts/:id/pdf', session.requireSession, contractHandlers.merchantPdf);
+router.post('/dashboard/contracts/:id/sign', session.requireSession, rateLimit.middleware('contract-sign', 30, 15 * 60 * 1000), contractHandlers.merchantSign);
+router.get('/public/contracts/:token', rateLimit.middleware('contract-view', 60, 15 * 60 * 1000), contractHandlers.publicGet);
+router.get('/public/contracts/:token/pdf', rateLimit.middleware('contract-pdf', 30, 15 * 60 * 1000), contractHandlers.publicPdf);
+router.post('/public/contracts/:token/sign', rateLimit.middleware('contract-sign-public', 20, 15 * 60 * 1000), contractHandlers.publicSign);
+
 router.get('/admin/deposits', adminSession.requireAdminSession, adminDepositHandlers.list);
 router.get('/admin/deposits/:id/receipt', adminSession.requireAdminSession, adminDepositHandlers.receipt);
 router.post('/admin/deposits/:id/approve', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDepositHandlers.approve(ctx); });

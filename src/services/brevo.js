@@ -5,7 +5,7 @@ const config = require('../config');
  * Brevo (formerly Sendinblue) transactional email API.
  * https://developers.brevo.com/reference/sendtransacemail
  */
-async function sendEmail({ to, toName, subject, html, text, senderEmail, senderName, replyTo, headers }) {
+async function sendEmail({ to, toName, subject, html, text, senderEmail, senderName, replyTo, headers, attachments }) {
   if (!config.brevo.apiKey) {
     const err = new Error("L'envoi d'email n'est pas configuré côté serveur (BREVO_API_KEY manquante).");
     err.code = 'EMAIL_NOT_CONFIGURED';
@@ -26,6 +26,7 @@ async function sendEmail({ to, toName, subject, html, text, senderEmail, senderN
         sender: { name: senderName || config.brevo.senderName, email: senderEmail || config.brevo.senderEmail },
         ...(replyTo ? { replyTo: { email: replyTo } } : {}),
         ...(headers ? { headers } : {}),
+        ...(attachments && attachments.length ? { attachment: attachments.map((a) => ({ name: a.name, content: a.content })) } : {}),
         to: [{ email: to, name: toName || to }],
         subject,
         htmlContent: html,

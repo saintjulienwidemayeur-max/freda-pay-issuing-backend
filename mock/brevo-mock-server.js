@@ -60,6 +60,7 @@ const server = http.createServer(async (req, res) => {
       subject: body.subject,
       html: body.htmlContent,
       text: body.textContent,
+      attachments: (body.attachment || []).map((a) => ({ name: a.name, size: Buffer.from(a.content || '', 'base64').length, content: a.content })),
       sentAt: new Date().toISOString(),
     });
     return send(res, 201, { messageId: `mock-${crypto.randomBytes(6).toString('hex')}` });
