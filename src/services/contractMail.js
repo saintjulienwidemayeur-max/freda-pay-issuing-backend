@@ -25,19 +25,19 @@ function sent(contract, url) {
     heading: 'Un contrat attend votre signature',
     paragraphs: [
       `Bonjour ${contract.recipient_name},`,
-      `**${contract.admin_name}** (Freda Pay) vous a envoyé le contrat **${contract.title}**. Freda Pay l'a déjà signé.`,
+      `**${contract.admin_name}** (Freda Pay Issuing) vous a envoyé le contrat **${contract.title}**. Freda Pay Issuing l'a déjà signé.`,
       merchant
         ? 'Connectez-vous à votre tableau de bord, ouvrez la rubrique **Contrats**, lisez le document, remplissez les champs demandés puis signez.'
         : 'Ouvrez le lien ci-dessous, lisez le document, remplissez les champs demandés puis signez directement en ligne. Aucun compte n\'est nécessaire.',
     ],
     button: { label: merchant ? 'Ouvrir mes contrats' : 'Lire et signer le contrat', url },
-    notice: merchant ? null : 'Ce lien est personnel : ne le transférez pas. Si vous ne connaissez pas Freda Pay, ignorez cet email.',
+    notice: merchant ? null : 'Ce lien est personnel : ne le transférez pas. Si vous ne connaissez pas Freda Pay Issuing, ignorez cet email.',
   }), 'contract-sent');
 }
 
 /** An extra signer is invited. Without a url the contract is not ready yet: they will get the link once it is. */
 function invited(contract, signer, url) {
-  const side = signer.side === 'FREDA' ? 'pour Freda Pay' : `pour ${contract.recipient_name}`;
+  const side = signer.side === 'FREDA' ? 'pour Freda Pay Issuing' : `pour ${contract.recipient_name}`;
   return deliver(signer.email, signer.name, buildEmail({
     subject: `Votre signature est demandée : ${contract.title}`,
     eyebrow: 'Contrat à signer',
@@ -50,7 +50,7 @@ function invited(contract, signer, url) {
         : `Le contrat sera prêt à signer dès que **${contract.recipient_name}** l'aura signé. Vous recevrez alors un second email avec votre lien de signature.`,
     ],
     button: url ? { label: 'Lire et signer le contrat', url } : undefined,
-    notice: url ? 'Ce lien est personnel : ne le transférez pas. Si vous ne connaissez pas Freda Pay, ignorez cet email.' : null,
+    notice: url ? 'Ce lien est personnel : ne le transférez pas. Si vous ne connaissez pas Freda Pay Issuing, ignorez cet email.' : null,
   }), 'contract-invited');
 }
 

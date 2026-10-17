@@ -59,9 +59,9 @@ async function buildPdf(c) {
     return out;
   };
   doc.setTitle(safe(c.title));
-  doc.setAuthor('Freda Pay');
-  doc.setProducer('Freda Pay e-signature');
-  doc.setCreator('Freda Pay');
+  doc.setAuthor('Freda Pay Issuing');
+  doc.setProducer('Freda Pay Issuing e-signature');
+  doc.setCreator('Freda Pay Issuing');
   const when = new Date(c.signed_at || c.admin_signed_at || Date.now());
   doc.setCreationDate(when); doc.setModificationDate(when);
 
@@ -197,8 +197,8 @@ async function buildPdf(c) {
     if (sig) { page.drawText(sig.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main', { x, y: ty, size: 8, font: f.i, color: MUTED }); }
   };
   const extras = c.signers || [];
-  const left = [{ label: 'POUR FREDA PAY', name: c.admin_name, email: c.admin_email, at: c.admin_signed_at, sig: c.admin_signature, pending: false }]
-    .concat(extras.filter((x) => x.side === 'FREDA').map((x) => ({ label: 'POUR FREDA PAY', name: x.name, email: x.email, at: x.signed_at, sig: x.signature, pending: !x.signature })));
+  const left = [{ label: 'POUR FREDA PAY ISSUING', name: c.admin_name, email: c.admin_email, at: c.admin_signed_at, sig: c.admin_signature, pending: false }]
+    .concat(extras.filter((x) => x.side === 'FREDA').map((x) => ({ label: 'POUR FREDA PAY ISSUING', name: x.name, email: x.email, at: x.signed_at, sig: x.signature, pending: !x.signature })));
   const right = [{ label: 'LE SIGNATAIRE', name: c.signer_name || c.recipient_name, email: c.signer_email || c.recipient_email, at: c.signed_at, sig: c.signer_signature, pending: !c.signer_signature }]
     .concat(extras.filter((x) => x.side !== 'FREDA').map((x) => ({ label: 'LE SIGNATAIRE', name: x.name, email: x.email, at: x.signed_at, sig: x.signature, pending: !x.signature })));
   for (let r = 0; r < Math.max(left.length, right.length); r++) {
@@ -218,7 +218,7 @@ async function buildPdf(c) {
   y -= 14;
   page.drawText('Certificat de signature électronique', { x: MARGIN.l, y: y - 18, size: 18, font: f.b, color: INK });
   y -= 30;
-  const lead = 'Ce certificat atteste que le document ci-dessous a été signé électroniquement sur la plateforme Freda Pay. Il consigne les éléments de preuve recueillis lors de chaque signature.';
+  const lead = 'Ce certificat atteste que le document ci-dessous a été signé électroniquement sur la plateforme Freda Pay Issuing. Il consigne les éléments de preuve recueillis lors de chaque signature.';
   const wrap = (text, font, size, width) => {
     const out = []; let cur = '';
     for (const w of safe(text).split(' ')) {
@@ -279,13 +279,13 @@ async function buildPdf(c) {
     ...(p.main ? [] : [['Appareil', p.at && p.ua ? device(p.ua) : '-']]),
     ['Méthode', method(p.sig)],
   ]));
-  sectionFor('Signature de Freda Pay', fredaList);
+  sectionFor('Signature de Freda Pay Issuing', fredaList);
   sectionFor('Signature du cosignataire', clientList);
-  for (const ln of wrap("Signature électronique interne Freda Pay : la date, l'heure (UTC) et l'adresse IP sont enregistrées au moment de chaque signature. L'empreinte SHA-256 identifie de façon unique le contenu signé : toute modification du document la changerait.", f.i, 8, contentW)) { ensure(11); page.drawText(ln, { x: MARGIN.l, y: y - 8, size: 8, font: f.i, color: MUTED }); y -= 11; }
+  for (const ln of wrap("Signature électronique interne Freda Pay Issuing : la date, l'heure (UTC) et l'adresse IP sont enregistrées au moment de chaque signature. L'empreinte SHA-256 identifie de façon unique le contenu signé : toute modification du document la changerait.", f.i, 8, contentW)) { ensure(11); page.drawText(ln, { x: MARGIN.l, y: y - 8, size: 8, font: f.i, color: MUTED }); y -= 11; }
 
   // ---- footer on every page
   pages.forEach((p, i) => {
-    const t = safe(`Freda Pay · ${c.id}${c.content_hash ? ` · ${c.content_hash.slice(0, 16)}` : ''}`);
+    const t = safe(`Freda Pay Issuing · ${c.id}${c.content_hash ? ` · ${c.content_hash.slice(0, 16)}` : ''}`);
     p.drawLine({ start: { x: MARGIN.l, y: 46 }, end: { x: PAGE.w - MARGIN.r, y: 46 }, thickness: 0.5, color: LINE });
     p.drawText(t, { x: MARGIN.l, y: 33, size: 7.5, font: f.r, color: MUTED });
     const pn = `Page ${i + 1} / ${pages.length}`;
