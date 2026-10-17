@@ -5689,3 +5689,69 @@ test('contracts: an outside partner signs through a private link, a new link rep
   assert.ok(mc.data.contract.id);
   assert.equal(mockTables.contracts.filter((c) => c.merchant_id).length >= 1, true);
 });
+
+test('contracts: several signers on each side, links go out once the main recipient signed, completed when everyone signed', async () => {
+  const m = await makeLiveMerchant('ctrmulti');
+  sentEmails.length = 0;
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: {
+    title: 'Contrat multi-signataires', body_html: '<p>Accord entre Freda Pay et <b>[[Société]]</b>, signé par plusieurs personnes.</p>', merchant_id: m.merchantId, admin_signature: drawnSig(),
+    signers: [{ side: 'FREDA', name: 'Co Directeur', email: 'co.directeur@fredapay.example' }, { side: 'CLIENT', name: 'Associé Lakay', email: 'associe@lakay.example' }],
+  } });
+  assert.equal(create.status, 201);
+  const id = create.data.contract.id;
+  assert.equal(create.data.contract.progress.total, 4);
+  assert.equal(create.data.invites.length, 2);
+  // heads-up only: no private link yet
+  const early = sentEmails.filter((e) => e.to === 'associe@lakay.example');
+  assert.equal(early.length, 1);
+  assert.ok(!/sign\?token=/.test(early[0].text));
+  assert.equal((await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Doublon', body_html: '<p>Texte du contrat assez long pour passer.</p>', merchant_id: m.merchantId, admin_signature: drawnSig(), signers: [{ side: 'FREDA', name: 'Dup', email: emailOf(m) }] } })).data.error.code, 'DUPLICATE_SIGNER');
+  // the merchant signs: still pending, the extra signers now get their link
+  sentEmails.length = 0;
+  const sign = await api('POST', `/dashboard/contracts/${id}/sign`, { token: m.token, body: { signer_name: 'Marie Jean', fields: { 'Société': 'Lakay SA' }, signature: typedSig('Marie Jean') } });
+  assert.equal(sign.status, 200);
+  assert.equal(sign.data.contract.status, 'PENDING_SIGNATURE');
+  assert.equal(sign.data.contract.progress.done, 2);
+  assert.equal((await api('GET', '/dashboard/contracts', { token: m.token })).data.pending, 0);
+  const linkOf = (to) => sentEmails.filter((e) => e.to === to).map((e) => (e.text.match(/sign\?token=([a-f0-9]{48})/) || [])[1]).filter(Boolean).pop();
+  const t1 = linkOf('co.directeur@fredapay.example'), t2 = linkOf('associe@lakay.example');
+  assert.ok(t1 && t2 && t1 !== t2);
+  assert.equal((await rawGet(`/public/contracts/${t1}/pdf`)).status, 409);
+  const v1 = await api('GET', `/public/contracts/${t1}`);
+  assert.equal(v1.data.contract.viewer.role, 'signer');
+  assert.equal(v1.data.contract.viewer.can_sign, true);
+  assert.equal(v1.data.contract.fields['Société'], 'Lakay SA');
+  const s1 = await api('POST', `/public/contracts/${t1}/sign`, { body: { signer_name: 'Co Directeur', signature: typedSig('Co Directeur') } });
+  assert.equal(s1.status, 200);
+  assert.equal(s1.data.contract.status, 'PENDING_SIGNATURE');
+  assert.equal(s1.data.contract.viewer.signed, true);
+  assert.equal((await api('POST', `/public/contracts/${t1}/sign`, { body: { signature: typedSig('Co Directeur') } })).data.error.code, 'ALREADY_SIGNED');
+  const s2 = await api('POST', `/public/contracts/${t2}/sign`, { body: { signer_name: 'Associé Lakay', signature: drawnSig() } });
+  assert.equal(s2.data.contract.status, 'COMPLETED');
+  const doneMails = sentEmails.filter((e) => /Contrat signé/.test(e.subject));
+  assert.deepEqual(doneMails.map((e) => e.to).sort(), [emailOf(m), 'associe@lakay.example', 'co.directeur@fredapay.example', mockTables.contracts.find((c) => c.id === id).admin_email].filter((v, i, a) => a.indexOf(v) === i).sort());
+  assert.ok(doneMails.every((e) => e.attachments.length === 1));
+  const pdf = await rawGet(`/public/contracts/${t2}/pdf`);
+  assert.equal(pdf.status, 200);
+  assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
+  assert.ok(mockTables.contracts.find((c) => c.id === id).content_hash);
+});
+
+test('contracts: the admin invites a signer later, can resend and remove; removing the last unsigned one completes the contract', async () => {
+  const m = await makeLiveMerchant('ctrlate');
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat invitation', body_html: '<p>Texte du contrat sans blancs à remplir, assez long.</p>', merchant_id: m.merchantId, admin_signature: drawnSig() } });
+  const id = create.data.contract.id;
+  const add = await api('POST', `/admin/contracts/${id}/signers`, { token: m.adminToken, body: { side: 'FREDA', name: 'Nouveau Signataire', email: 'nouveau@fredapay.example' } });
+  assert.equal(add.status, 201);
+  assert.equal(add.data.sign_url, null); // the merchant has not signed yet
+  assert.equal((await api('POST', `/admin/contracts/${id}/signers`, { token: m.adminToken, body: { side: 'FREDA', name: 'Nouveau', email: 'NOUVEAU@fredapay.example' } })).data.error.code, 'DUPLICATE_SIGNER');
+  assert.equal((await api('POST', `/admin/contracts/${id}/signers`, { token: m.adminToken, body: { side: 'X', name: 'Nouveau', email: 'x@y.example' } })).data.error.code, 'INVALID_SIGNERS');
+  assert.equal((await api('POST', `/admin/contracts/${id}/signers`, { token: m.token, body: { side: 'FREDA', name: 'Nouveau', email: 'z@y.example' } })).status, 401);
+  const sid = add.data.contract.signers[0].id;
+  await api('POST', `/dashboard/contracts/${id}/sign`, { token: m.token, body: { signer_name: 'Marie Jean', signature: drawnSig() } });
+  const resend = await api('POST', `/admin/contracts/${id}/signers/${sid}/resend`, { token: m.adminToken });
+  assert.match(resend.data.sign_url, /\/sign\?token=[a-f0-9]{48}$/);
+  const removed = await api('POST', `/admin/contracts/${id}/signers/${sid}/remove`, { token: m.adminToken });
+  assert.equal(removed.data.contract.status, 'COMPLETED');
+  assert.equal((await api('POST', `/admin/contracts/${id}/signers`, { token: m.adminToken, body: { side: 'FREDA', name: 'Tard Venu', email: 'tard@fredapay.example' } })).data.error.code, 'NOT_PENDING');
+});

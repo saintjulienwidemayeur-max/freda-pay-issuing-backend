@@ -32,6 +32,7 @@ function contentHash(c) {
     id: c.id, title: c.title, body_html: c.body_html, fields: c.fields || {},
     admin: { name: c.admin_name, email: c.admin_email, signed_at: c.admin_signed_at, signature: sigFp(c.admin_signature) },
     signer: { name: c.signer_name, email: c.signer_email, signed_at: c.signed_at, signature: sigFp(c.signer_signature) },
+    extra: (c.signers || []).map((x) => ({ id: x.id, side: x.side, name: x.name, email: x.email, signed_at: x.signed_at, signature: sigFp(x.signature) })).sort((p, q) => (p.id < q.id ? -1 : 1)),
   });
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
@@ -175,29 +176,39 @@ async function buildPdf(c) {
   page.drawText('Signatures', { x: MARGIN.l, y: y - 13, size: 13, font: f.b, color: INK });
   y -= 30;
   const colW = (contentW - 24) / 2;
+  const BOX_H = 74, BLOCK_H = 16 + BOX_H + 14 + 13 + 12 + 12 + 12 + 18;
   const sigBlock = async (x, label, name, email, signedAt, sig, pending) => {
     page.drawText(safe(label), { x, y: y - 9, size: 9, font: f.b, color: MUTED });
-    const boxTop = y - 16, boxH = 74;
-    page.drawRectangle({ x, y: boxTop - boxH, width: colW, height: boxH, borderColor: LINE, borderWidth: 0.8, color: rgb(0.995, 0.995, 0.995) });
+    const boxTop = y - 16;
+    page.drawRectangle({ x, y: boxTop - BOX_H, width: colW, height: BOX_H, borderColor: LINE, borderWidth: 0.8, color: rgb(0.995, 0.995, 0.995) });
     if (sig && sig.image) {
       const png = maskToPng(sig.image.w, sig.image.h, Buffer.from(sig.image.alpha, 'base64'));
       const img = await doc.embedPng(png);
-      const scale = Math.min((colW - 16) / sig.image.w, (boxH - 12) / sig.image.h);
+      const scale = Math.min((colW - 16) / sig.image.w, (BOX_H - 12) / sig.image.h);
       const dw = sig.image.w * scale, dh = sig.image.h * scale;
-      page.drawImage(img, { x: x + (colW - dw) / 2, y: boxTop - boxH + (boxH - dh) / 2, width: dw, height: dh });
+      page.drawImage(img, { x: x + (colW - dw) / 2, y: boxTop - BOX_H + (BOX_H - dh) / 2, width: dw, height: dh });
     } else {
-      const t = pending ? 'En attente de signature' : '';
-      page.drawText(t, { x: x + 10, y: boxTop - boxH / 2 - 3, size: 9, font: f.i, color: MUTED });
+      page.drawText(pending ? 'En attente de signature' : '', { x: x + 10, y: boxTop - BOX_H / 2 - 3, size: 9, font: f.i, color: MUTED });
     }
-    let ty = boxTop - boxH - 14;
+    let ty = boxTop - BOX_H - 14;
     page.drawText(safe(name || ''), { x, y: ty, size: 10.5, font: f.b, color: INK }); ty -= 13;
     if (email) { page.drawText(safe(email), { x, y: ty, size: 9, font: f.r, color: MUTED }); ty -= 12; }
     if (signedAt) { page.drawText(`Signé le ${fmtDate(signedAt)}`, { x, y: ty, size: 8.5, font: f.r, color: MUTED }); ty -= 12; }
     if (sig) { page.drawText(sig.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main', { x, y: ty, size: 8, font: f.i, color: MUTED }); }
   };
-  await sigBlock(MARGIN.l, 'POUR FREDA PAY', c.admin_name, c.admin_email, c.admin_signed_at, c.admin_signature, false);
-  await sigBlock(MARGIN.l + colW + 24, 'LE SIGNATAIRE', c.signer_name || c.recipient_name, c.signer_email || c.recipient_email, c.signed_at, c.signer_signature, !c.signer_signature);
-  y -= 16 + 74 + 14 + 13 + 12 + 12 + 12 + 14;
+  const extras = c.signers || [];
+  const left = [{ label: 'POUR FREDA PAY', name: c.admin_name, email: c.admin_email, at: c.admin_signed_at, sig: c.admin_signature, pending: false }]
+    .concat(extras.filter((x) => x.side === 'FREDA').map((x) => ({ label: 'POUR FREDA PAY', name: x.name, email: x.email, at: x.signed_at, sig: x.signature, pending: !x.signature })));
+  const right = [{ label: 'LE SIGNATAIRE', name: c.signer_name || c.recipient_name, email: c.signer_email || c.recipient_email, at: c.signed_at, sig: c.signer_signature, pending: !c.signer_signature }]
+    .concat(extras.filter((x) => x.side !== 'FREDA').map((x) => ({ label: 'LE SIGNATAIRE', name: x.name, email: x.email, at: x.signed_at, sig: x.signature, pending: !x.signature })));
+  for (let r = 0; r < Math.max(left.length, right.length); r++) {
+    ensure(BLOCK_H);
+    for (const [col, list] of [[0, left], [1, right]]) {
+      const it = list[r];
+      if (it) await sigBlock(MARGIN.l + col * (colW + 24), it.label, it.name, it.email, it.at, it.sig, it.pending);
+    }
+    y -= BLOCK_H;
+  }
 
   // ---- certificate of signature: its own page, so the contract itself stays clean
   newPage();
@@ -255,21 +266,21 @@ async function buildPdf(c) {
     ['Statut', status],
     ['Empreinte SHA-256', c.content_hash || 'Calculée à la signature', true],
   ]);
-  section('Signature de Freda Pay', [
-    ['Signataire', c.admin_name],
-    ['Adresse email', c.admin_email],
-    ['Date et heure', c.admin_signed_at ? fmtDate(c.admin_signed_at) : '-'],
-    ['Adresse IP', c.admin_signed_ip || '-'],
-    ['Méthode', c.admin_signature && c.admin_signature.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main'],
-  ]);
-  section('Signature du cosignataire', [
-    ['Signataire', c.signer_name || c.recipient_name],
-    ['Adresse email', c.signer_email || c.recipient_email],
-    ['Date et heure', c.signed_at ? fmtDate(c.signed_at) : 'En attente'],
-    ['Adresse IP', c.signed_at ? (c.signed_ip || '-') : '-'],
-    ['Appareil', c.signed_at ? device(c.signed_user_agent) : '-'],
-    ['Méthode', c.signer_signature ? (c.signer_signature.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main') : '-'],
-  ]);
+  const method = (sg) => (sg ? (sg.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main') : '-');
+  const fredaList = [{ name: c.admin_name, email: c.admin_email, at: c.admin_signed_at, ip: c.admin_signed_ip, sig: c.admin_signature, main: true }]
+    .concat(extras.filter((x) => x.side === 'FREDA').map((x) => ({ name: x.name, email: x.email, at: x.signed_at, ip: x.signed_ip, ua: x.signed_user_agent, sig: x.signature })));
+  const clientList = [{ name: c.signer_name || c.recipient_name, email: c.signer_email || c.recipient_email, at: c.signed_at, ip: c.signed_ip, ua: c.signed_user_agent, sig: c.signer_signature }]
+    .concat(extras.filter((x) => x.side !== 'FREDA').map((x) => ({ name: x.name, email: x.email, at: x.signed_at, ip: x.signed_ip, ua: x.signed_user_agent, sig: x.signature })));
+  const sectionFor = (title, list) => list.forEach((p, i) => section(list.length > 1 ? `${title} (${i + 1}/${list.length})` : title, [
+    ['Signataire', p.name],
+    ['Adresse email', p.email],
+    ['Date et heure', p.at ? fmtDate(p.at) : 'En attente'],
+    ['Adresse IP', p.at ? (p.ip || '-') : '-'],
+    ...(p.main ? [] : [['Appareil', p.at && p.ua ? device(p.ua) : '-']]),
+    ['Méthode', method(p.sig)],
+  ]));
+  sectionFor('Signature de Freda Pay', fredaList);
+  sectionFor('Signature du cosignataire', clientList);
   for (const ln of wrap("Signature électronique interne Freda Pay : la date, l'heure (UTC) et l'adresse IP sont enregistrées au moment de chaque signature. L'empreinte SHA-256 identifie de façon unique le contenu signé : toute modification du document la changerait.", f.i, 8, contentW)) { ensure(11); page.drawText(ln, { x: MARGIN.l, y: y - 8, size: 8, font: f.i, color: MUTED }); y -= 11; }
 
   // ---- footer on every page
