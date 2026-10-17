@@ -53,7 +53,7 @@ async function create({ subjectType, subjectId, merchantId, role, email }) {
   });
 
   const built = buildEmail({
-    subject: `${code} : Votre code de connexion Freda Pay`,
+    subject: `${code} : Votre code de connexion Freda Pay Issuing`,
     eyebrow: 'Connexion',
     heading: 'Confirmez votre connexion',
     paragraphs: [
@@ -61,7 +61,7 @@ async function create({ subjectType, subjectId, merchantId, role, email }) {
       `Utilisez le code ci-dessous pour terminer votre connexion. Il expire dans **${config.otp.expiryMinutes} minutes**.`,
     ],
     code,
-    notice: "Freda Pay ne vous demandera jamais ce code par téléphone, WhatsApp ou email. Si vous n'êtes pas à l'origine de cette connexion, ignorez ce message et changez votre mot de passe.",
+    notice: "Freda Pay Issuing ne vous demandera jamais ce code par téléphone, WhatsApp ou email. Si vous n'êtes pas à l'origine de cette connexion, ignorez ce message et changez votre mot de passe.",
   });
   // Make the plain-text alternative carry the code in a stable, greppable form.
   built.text = `Confirmez votre connexion\n\nVotre code de connexion : ${code}\n\nIl expire dans ${config.otp.expiryMinutes} minutes. Si vous n'êtes pas à l'origine de cette connexion, ignorez ce message et changez votre mot de passe.`;

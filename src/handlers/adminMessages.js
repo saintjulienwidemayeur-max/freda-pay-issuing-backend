@@ -48,7 +48,7 @@ function buildMessage(merchant, subject, message) {
   const paragraphs = personalise(message).split(/\n\s*\n/).map((p) => p.trim().replace(/\n/g, ' ')).filter(Boolean);
   return buildEmail({
     subject,
-    eyebrow: 'Message de Freda Pay',
+    eyebrow: 'Message de Freda Pay Issuing',
     heading: subject,
     paragraphs: [`Bonjour ${name || ''},`.replace(/\s+,/, ','), ...paragraphs],
     tone: 'info',
