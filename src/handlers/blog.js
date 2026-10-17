@@ -11,7 +11,7 @@ const LOGO_URL = config.emailLogoUrl;
 
 /**
  * An image in structured data, with the metadata Google's "Image metadata" report asks for (creator, credit, copyright).
- * Blog images are Freda Pay's own publication, so Freda Pay LLC is the creator and the rights holder.
+ * Blog images are Freda Pay Issuing's own publication, so Freda Pay LLC is the creator and the rights holder.
  */
 function imageObject(url, year) {
   const owner = 'Freda Pay LLC';
@@ -132,19 +132,19 @@ async function listPage(ctx) {
   const body = `
     <div class="wrap" style="padding-top:36px">
       <span class="eyebrow">Blog</span>
-      <h1>Actualités et ressources Freda Pay</h1>
-      <p style="color:var(--muted)">Paiements, cartes virtuelles et fintech : l'actualité de Freda Pay.</p>
+      <h1>Actualités et ressources Freda Pay Issuing</h1>
+      <p style="color:var(--muted)">Paiements, cartes virtuelles et fintech : l'actualité de Freda Pay Issuing.</p>
       <div class="plist">${cards}</div>
     </div>`;
 
   const html = layout({
-    title: 'Blog Freda Pay : paiements, cartes virtuelles et fintech',
-    description: "Articles de Freda Pay sur les paiements, les cartes virtuelles Visa et Mastercard, MonCash et Natcash, et l'actualité de la fintech.",
+    title: 'Blog Freda Pay Issuing : paiements, cartes virtuelles et fintech',
+    description: "Articles de Freda Pay Issuing sur les paiements, les cartes virtuelles Visa et Mastercard, MonCash et Natcash, et l'actualité de la fintech.",
     canonical: `${site()}/blog`,
     ogImage: `${site()}/og-image.png`,
     bodyHtml: body,
     jsonLd: {
-      '@context': 'https://schema.org', '@type': 'Blog', name: 'Blog Freda Pay',
+      '@context': 'https://schema.org', '@type': 'Blog', name: 'Blog Freda Pay Issuing',
       url: `${site()}/blog`, publisher: { '@type': 'Organization', name: 'Freda Pay LLC', logo: imageObject(LOGO_URL, 2026) },
     },
   });
@@ -165,7 +165,7 @@ async function postPage(ctx) {
       <div class="crumbs" style="padding-top:0"><a href="${site()}/">Accueil</a> / <a href="${site()}/blog">Blog</a></div>
       <span class="eyebrow">Article</span>
       <h1>${escapeHtml(post.title)}</h1>
-      <div class="meta">${escapeHtml(post.author_name || 'Freda Pay')} · ${fmtDate(post.published_at)} · ${minutes} min de lecture</div>
+      <div class="meta">${escapeHtml(post.author_name || 'Freda Pay Issuing')} · ${fmtDate(post.published_at)} · ${minutes} min de lecture</div>
       ${post.cover_image_url ? `<img class="cover" src="${post.cover_image_url}" alt="${escapeHtml(post.title)}">` : ''}
       <article>${contentHtml}</article>
       ${tagsHtml ? `<div class="tags">${tagsHtml}</div>` : ''}
@@ -174,7 +174,7 @@ async function postPage(ctx) {
   const canonical = `${site()}/blog/${post.slug}`;
   const description = post.meta_description || post.excerpt || post.title;
   const html = layout({
-    title: `${post.title} : Blog Freda Pay`,
+    title: `${post.title} : Blog Freda Pay Issuing`,
     description,
     canonical,
     ogImage: post.cover_image_url || `${site()}/og-image.png`,
@@ -183,7 +183,7 @@ async function postPage(ctx) {
       '@context': 'https://schema.org', '@type': 'BlogPosting',
       headline: post.title, description, image: imageObject(post.cover_image_url || `${site()}/og-image.png`, new Date(post.published_at || Date.now()).getFullYear()),
       datePublished: post.published_at, dateModified: post.updated_at || post.published_at,
-      author: { '@type': 'Person', name: post.author_name || 'Freda Pay' },
+      author: { '@type': 'Person', name: post.author_name || 'Freda Pay Issuing' },
       publisher: { '@type': 'Organization', name: 'Freda Pay LLC', logo: imageObject(LOGO_URL, 2026) },
       mainEntityOfPage: { '@type': 'WebPage', '@id': canonical },
       keywords: (post.tags || []).join(', ') || undefined,
@@ -194,7 +194,7 @@ async function postPage(ctx) {
 
 function notFoundPage() {
   return layout({
-    title: 'Article introuvable : Blog Freda Pay',
+    title: 'Article introuvable : Blog Freda Pay Issuing',
     description: "Cet article n'existe pas ou plus.",
     canonical: `${site()}/blog`,
     ogImage: `${site()}/og-image.png`,

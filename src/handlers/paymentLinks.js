@@ -57,7 +57,7 @@ async function publicGet(ctx) {
     status: 200,
     body: {
       id: link.id,
-      business_name: merchant ? merchant.business_name : 'Freda Pay',
+      business_name: merchant ? merchant.business_name : 'Freda Pay Issuing',
       amount: num(link.amount),
       currency: link.currency,
       // What the customer pays with each method (fixed amount only; an open amount is converted in the page from `rate_htg_per_usd`).

@@ -44,7 +44,7 @@ async function sendAdminInvite(admin, panelUrl) {
   // The panel is not on the public site: use the address the inviting admin is actually on, else ADMIN_URL.
   const base = panelUrl || (config.adminUrl ? `${config.adminUrl}/admin.html` : `${siteUrl.get()}/admin.html`);
   const link = `${base}?invite=${token}`;
-  const { subject, html, text } = teamInviteEmail({ businessName: 'Freda Pay (équipe admin)', role: admin.role, link, expiryDays: INVITE_DAYS });
+  const { subject, html, text } = teamInviteEmail({ businessName: 'Freda Pay Issuing (équipe admin)', role: admin.role, link, expiryDays: INVITE_DAYS });
   await brevo.sendEmail({ to: admin.email, toName: admin.name, subject, html, text });
 }
 

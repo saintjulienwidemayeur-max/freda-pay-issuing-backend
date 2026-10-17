@@ -128,7 +128,7 @@ const config = {
     senderName: process.env.BREVO_SENDER_NAME || 'Freda Pay Issuing',
     // Address used for messages written by the admin team (must be a validated sender in Brevo).
     adminSenderEmail: process.env.BREVO_ADMIN_SENDER_EMAIL || 'administration@fredapay.com',
-    adminSenderName: process.env.BREVO_ADMIN_SENDER_NAME || 'Freda Pay',
+    adminSenderName: process.env.BREVO_ADMIN_SENDER_NAME || 'Freda Pay Issuing',
     // Inbound email (replies from merchants): Brevo Inbound Parsing posts to /webhooks/inbound-email?token=...
     inboundSecret: process.env.INBOUND_EMAIL_SECRET || '',
     // Address that receives replies in Brevo's inbound domain (e.g. inbox@inbound.fredapay.com). Falls back to the sender address.

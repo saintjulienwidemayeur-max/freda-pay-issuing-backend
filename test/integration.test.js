@@ -3187,7 +3187,7 @@ test('wallet summary shows REAL figures per mode: no demo numbers, refunds are n
   assert.equal(empty.data.master_wallet.reserved_on_cards_usd, 0);
   assert.equal(empty.data.gateway.pending_htg, 0);
   assert.equal(empty.data.gateway.total_in_htg, 0);
-  assert.deepEqual(empty.data.movements.map((m) => m.label), ["Crédit par l'équipe Freda Pay"]);
+  assert.deepEqual(empty.data.movements.map((m) => m.label), ["Crédit par l'équipe Freda Pay Issuing"]);
 
   const c = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'WSUM-1', kind: 'business', business_name: 'W Co', brand: 'VISA', amount: 60 } });
   await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token: live.token }), (r) => r.data.status === 'active', 40, 20);
@@ -3487,7 +3487,7 @@ test('the reset link works once: new password accepted, old password refused, li
   assert.equal(reuse.status, 400);
   assert.equal(reuse.data.error.code, 'RESET_LINK_INVALID');
   assert.equal((await api('GET', `/auth/reset-info?token=${token}`)).status, 400);
-  const notice = sentEmails.filter((e) => e.to === 'reset-co@example.com' && /mot de passe Freda Pay a été modifié/.test(e.subject));
+  const notice = sentEmails.filter((e) => e.to === 'reset-co@example.com' && /mot de passe Freda Pay Issuing a été modifié/.test(e.subject));
   assert.equal(notice.length, 1); // the owner is told, in case it was not them
 });
 
@@ -3712,7 +3712,7 @@ test('admin link diagnostics report the address in use and what each link answer
 
     const t = await api('POST', '/admin/diagnostic/email-test', { token });
     assert.equal(t.status, 200);
-    const mail = sentEmails.filter((e) => e.subject === 'Test : logo et lien des emails Freda Pay').slice(-1)[0];
+    const mail = sentEmails.filter((e) => e.subject === 'Test : logo et lien des emails Freda Pay Issuing').slice(-1)[0];
     assert.ok(mail.html.includes(config.emailLogoUrl));
     assert.ok(mail.html.includes(`${site.url}/dashboard`));
   } finally {

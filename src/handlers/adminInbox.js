@@ -143,7 +143,7 @@ async function reply(ctx) {
   const base = String(row.subject || '').replace(/^\s*(re:\s*)+/i, '');
   const subject = `Re: ${base}`.slice(0, 150);
   const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim().replace(/\n/g, ' ')).filter(Boolean);
-  const built = buildEmail({ subject, eyebrow: 'Message de Freda Pay', heading: subject, paragraphs, tone: 'info' });
+  const built = buildEmail({ subject, eyebrow: 'Message de Freda Pay Issuing', heading: subject, paragraphs, tone: 'info' });
   await brevo.sendEmail({
     to: row.from_email,
     toName: row.from_name || row.from_email,

@@ -29,7 +29,7 @@ const hello = (m) => `Bonjour ${m.business_name || ''},`.replace(/\s+,/, ',');
 function verificationApproved(merchant, kind, { liveEnabled }) {
   const stillPending = !liveEnabled;
   return dispatch(merchant, buildEmail({
-    subject: `Votre ${KIND_LABEL[kind] || 'vérification'} est approuvée : Freda Pay`,
+    subject: `Votre ${KIND_LABEL[kind] || 'vérification'} est approuvée : Freda Pay Issuing`,
     eyebrow: 'Vérification approuvée',
     tone: 'success',
     heading: liveEnabled ? 'Votre compte est activé en Live' : 'Vérification approuvée',
@@ -47,7 +47,7 @@ function verificationApproved(merchant, kind, { liveEnabled }) {
 
 function verificationRejected(merchant, kind, reason) {
   return dispatch(merchant, buildEmail({
-    subject: `Votre ${KIND_LABEL[kind] || 'vérification'} n'a pas pu être validée : Freda Pay`,
+    subject: `Votre ${KIND_LABEL[kind] || 'vérification'} n'a pas pu être validée : Freda Pay Issuing`,
     eyebrow: 'Vérification refusée',
     tone: 'danger',
     heading: "Nous n'avons pas pu valider vos documents",
@@ -63,13 +63,13 @@ function verificationRejected(merchant, kind, reason) {
 
 function accountSuspended(merchant) {
   return dispatch(merchant, buildEmail({
-    subject: 'Votre compte Freda Pay a été suspendu',
+    subject: 'Votre compte Freda Pay Issuing a été suspendu',
     eyebrow: 'Compte suspendu',
     tone: 'danger',
     heading: 'Votre compte est suspendu',
     paragraphs: [
       hello(merchant),
-      "Votre compte Freda Pay a été **suspendu**. Vous ne pouvez plus vous y connecter pour le moment, et les nouvelles opérations sont bloquées.",
+      "Votre compte Freda Pay Issuing a été **suspendu**. Vous ne pouvez plus vous y connecter pour le moment, et les nouvelles opérations sont bloquées.",
       'Vos données et votre historique sont conservés. Pour comprendre la raison ou demander une réactivation, écrivez-nous à issuing@fredapay.com.',
     ],
   }), 'account-suspended');
@@ -91,18 +91,18 @@ function cardRemovedByAdmin(merchant, { reference, refunded }) {
 
 function accountRestored(merchant) {
   return dispatch(merchant, buildEmail({
-    subject: 'Votre compte Freda Pay est de nouveau actif',
+    subject: 'Votre compte Freda Pay Issuing est de nouveau actif',
     eyebrow: 'Compte réactivé',
     tone: 'success',
     heading: 'Votre compte est réactivé',
-    paragraphs: [hello(merchant), 'Votre compte Freda Pay est de nouveau **actif**. Vous pouvez vous reconnecter normalement.'],
+    paragraphs: [hello(merchant), 'Votre compte Freda Pay Issuing est de nouveau **actif**. Vous pouvez vous reconnecter normalement.'],
     button: { label: 'Me connecter', url: String(DASHBOARD) },
   }), 'account-restored');
 }
 
 function liveGranted(merchant) {
   return dispatch(merchant, buildEmail({
-    subject: 'Votre compte est activé en Live : Freda Pay',
+    subject: 'Votre compte est activé en Live : Freda Pay Issuing',
     eyebrow: 'Accès Live accordé',
     tone: 'success',
     heading: 'Le mode Live est activé',
@@ -117,7 +117,7 @@ function liveGranted(merchant) {
 
 function issuingDecision(merchant, approved, note) {
   return dispatch(merchant, buildEmail({
-    subject: approved ? "L'émission de cartes Live est activée : Freda Pay" : "Votre demande d'accès Issuing Live a été refusée",
+    subject: approved ? "L'émission de cartes Live est activée : Freda Pay Issuing" : "Votre demande d'accès Issuing Live a été refusée",
     eyebrow: approved ? 'Issuing Live accordé' : 'Demande refusée',
     tone: approved ? 'success' : 'danger',
     heading: approved ? "Vous pouvez émettre de vraies cartes" : "Votre demande n'a pas été acceptée",
@@ -139,7 +139,7 @@ function walletCredited(merchant, { amount, currency, walletLabel, newBalance, n
 function depositRejected(merchant, { amount, method, reason }) {
   const label = { zelle: 'Zelle', bank_transfer: 'virement bancaire' }[method] || method;
   return dispatch(merchant, buildEmail({
-    subject: "Votre dépôt n'a pas pu être confirmé : Freda Pay",
+    subject: "Votre dépôt n'a pas pu être confirmé : Freda Pay Issuing",
     eyebrow: 'Dépôt non confirmé',
     tone: 'warning',
     heading: "Nous n'avons pas pu confirmer votre dépôt",
@@ -156,7 +156,7 @@ function depositRejected(merchant, { amount, method, reason }) {
 /** Admin > Paramètres: the same layout every real email uses, to check logo and button on a real device. */
 function diagnosticTest(to, name) {
   return dispatch({ email: to, business_name: name }, buildEmail({
-    subject: 'Test : logo et lien des emails Freda Pay',
+    subject: 'Test : logo et lien des emails Freda Pay Issuing',
     eyebrow: 'Email de test',
     tone: 'info',
     heading: 'Si vous voyez le logo, tout est en place',
@@ -173,7 +173,7 @@ const htg = (n) => `${Number(n).toLocaleString('fr-FR', { maximumFractionDigits:
 function bankPayoutSent(merchant, { amount, fee, reference, currency }) {
   const money = (v) => (currency === 'USD' ? usd2(v) : htg(v));
   return dispatch(merchant, buildEmail({
-    subject: 'Votre virement bancaire a été envoyé : Freda Pay',
+    subject: 'Votre virement bancaire a été envoyé : Freda Pay Issuing',
     eyebrow: 'Retrait envoyé',
     tone: 'success',
     heading: 'Votre virement a été envoyé',
@@ -189,7 +189,7 @@ function bankPayoutSent(merchant, { amount, fee, reference, currency }) {
 function bankPayoutRejected(merchant, { amount, reason, currency }) {
   const money = (v) => (currency === 'USD' ? usd2(v) : htg(v));
   return dispatch(merchant, buildEmail({
-    subject: "Votre retrait bancaire n'a pas pu être effectué : Freda Pay",
+    subject: "Votre retrait bancaire n'a pas pu être effectué : Freda Pay Issuing",
     eyebrow: 'Retrait non effectué',
     tone: 'warning',
     heading: "Nous n'avons pas pu effectuer votre retrait",
@@ -205,7 +205,7 @@ function bankPayoutRejected(merchant, { amount, reason, currency }) {
 
 function bankAccountChanged(merchant, { bankName, masked, added }) {
   return dispatch(merchant, buildEmail({
-    subject: added ? 'Un compte bancaire a été ajouté : Freda Pay' : 'Votre compte bancaire a été modifié : Freda Pay',
+    subject: added ? 'Un compte bancaire a été ajouté : Freda Pay Issuing' : 'Votre compte bancaire a été modifié : Freda Pay Issuing',
     eyebrow: 'Sécurité du compte',
     tone: 'info',
     heading: added ? 'Un compte bancaire a été ajouté' : 'Votre compte bancaire a été modifié',
@@ -224,7 +224,7 @@ const PRODUCT_LABEL = { gateway: 'Payment Gateway', issuing: 'Issuing' };
 
 function planRenewed(merchant, { product, planLabel, amountUsd, nextDate }) {
   return dispatch(merchant, buildEmail({
-    subject: `Votre plan ${planLabel} a été renouvelé : Freda Pay`,
+    subject: `Votre plan ${planLabel} a été renouvelé : Freda Pay Issuing`,
     eyebrow: 'Abonnement',
     tone: 'success',
     heading: `Plan ${PRODUCT_LABEL[product]} ${planLabel} renouvelé`,
@@ -254,7 +254,7 @@ function planPaymentFailed(merchant, { product, planLabel, amountUsd, until }) {
 
 function planDowngraded(merchant, { product, fromLabel, toLabel }) {
   return dispatch(merchant, buildEmail({
-    subject: `Votre plan ${fromLabel} s'est terminé : Freda Pay`,
+    subject: `Votre plan ${fromLabel} s'est terminé : Freda Pay Issuing`,
     eyebrow: 'Abonnement',
     tone: 'warning',
     heading: `Retour au plan ${toLabel}`,
@@ -269,22 +269,22 @@ function planDowngraded(merchant, { product, fromLabel, toLabel }) {
 
 function passwordReset(to, name, link, minutes) {
   return dispatch({ email: to, business_name: name }, buildEmail({
-    subject: 'Réinitialisez votre mot de passe : Freda Pay',
+    subject: 'Réinitialisez votre mot de passe : Freda Pay Issuing',
     eyebrow: 'Mot de passe oublié',
     tone: 'info',
     heading: 'Créez un nouveau mot de passe',
     paragraphs: [
       name ? `Bonjour ${name},` : 'Bonjour,',
-      `Vous avez demandé à réinitialiser le mot de passe de votre compte Freda Pay. Ce lien est valable **${minutes} minutes** et ne peut servir qu'une seule fois.`,
+      `Vous avez demandé à réinitialiser le mot de passe de votre compte Freda Pay Issuing. Ce lien est valable **${minutes} minutes** et ne peut servir qu'une seule fois.`,
     ],
     button: { label: 'Choisir un nouveau mot de passe', url: link },
-    notice: "Si vous n'avez pas fait cette demande, ignorez ce message : votre mot de passe actuel reste inchangé. Freda Pay ne vous demandera jamais votre mot de passe par email, téléphone ou WhatsApp.",
+    notice: "Si vous n'avez pas fait cette demande, ignorez ce message : votre mot de passe actuel reste inchangé. Freda Pay Issuing ne vous demandera jamais votre mot de passe par email, téléphone ou WhatsApp.",
   }), 'password-reset');
 }
 
 function passwordChanged(to, name) {
   return dispatch({ email: to, business_name: name }, buildEmail({
-    subject: 'Votre mot de passe Freda Pay a été modifié',
+    subject: 'Votre mot de passe Freda Pay Issuing a été modifié',
     eyebrow: 'Sécurité du compte',
     tone: 'success',
     heading: 'Votre mot de passe a été modifié',
