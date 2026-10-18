@@ -36,6 +36,8 @@ function httpError(status, code, message) {
   return err;
 }
 const iso = (d) => d.toISOString().slice(0, 10);
+/** Today in Haiti as a Date at 00:00 UTC of that calendar day: all the day arithmetic below is then plain date maths. */
+const haitiToday = () => new Date(`${require('../utils/haitiTime').day(Date.now())}T00:00:00Z`);
 const addDays = (d, n) => { const x = new Date(d.getTime()); x.setUTCDate(x.getUTCDate() + n); return x; };
 const monthStart = (d, back) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - (back || 0), 1));
 const blockView = (b) => (b ? { reason: b.reason, until: b.until ? new Date(b.until).toISOString() : null, blocked_at: b.blocked_at } : null);
@@ -52,7 +54,7 @@ async function namesFor(ids) {
 /** Every merchant that has created an API key, with requests today / 7 days / 30 days / this month / last month. */
 async function usage() {
   await apiBlocks.refresh();
-  const now = new Date();
+  const now = haitiToday();
   const today = iso(now), d7 = iso(addDays(now, -6)), d30 = iso(addDays(now, -29));
   const thisMonth = iso(monthStart(now, 0)), lastMonth = iso(monthStart(now, 1));
   const keys = await supabase.select('api_keys', {}, { select: 'id,merchant_id,mode,created_at,revoked_at', limit: 5000 });
@@ -82,7 +84,7 @@ async function usage() {
     block: blockView(apiBlocks.get(id)),
   }, sums.get(id) || empty)).sort((a, b) => b.this_month - a.this_month || b.today - a.today);
   const total = merchants.reduce((t, m) => ({ today: t.today + m.today, last7: t.last7 + m.last7, last30: t.last30 + m.last30, this_month: t.this_month + m.this_month }), { today: 0, last7: 0, last30: 0, this_month: 0 });
-  return { status: 200, body: { generated_at: now.toISOString(), timezone: 'UTC', limit_per_minute: API_RATE_LIMIT, total, merchants } };
+  return { status: 200, body: { generated_at: new Date().toISOString(), timezone: 'America/Port-au-Prince', limit_per_minute: API_RATE_LIMIT, total, merchants } };
 }
 
 /** One merchant: its keys, and requests per day (30), per week (12) and per month (6). */
@@ -90,7 +92,7 @@ async function usageDetail(ctx) {
   const id = String(ctx.params.merchantId);
   const merchant = await supabase.selectOne('merchants', { id });
   if (!merchant) throw httpError(404, 'MERCHANT_NOT_FOUND', 'Marchand introuvable.');
-  const now = new Date();
+  const now = haitiToday();
   const since = iso(monthStart(now, 5));
   const rows = await apiUsage.rows(since, id);
   const by = new Map(rows.map((r) => [r.day, r]));
@@ -104,7 +106,7 @@ async function usageDetail(ctx) {
   for (let i = 5; i >= 0; i--) { const start = monthStart(now, i), end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)); monthly.push(Object.assign({ month: iso(start).slice(0, 7) }, sum(iso(start), iso(end)))); }
   const keys = await supabase.select('api_keys', { merchant_id: id }, { select: 'id,key_id,mode,created_at,revoked_at', order: 'created_at.desc', limit: 50 });
   await apiBlocks.refresh();
-  return { status: 200, body: { merchant: { id, business_name: merchant.business_name, email: merchant.email }, timezone: 'UTC', keys, block: blockView(apiBlocks.get(id)), daily, weekly, monthly } };
+  return { status: 200, body: { merchant: { id, business_name: merchant.business_name, email: merchant.email }, timezone: 'America/Port-au-Prince', keys, block: blockView(apiBlocks.get(id)), daily, weekly, monthly } };
 }
 
 /** Blocks the whole API access of a merchant (every key). hours: 1..8760, or empty for "until an admin lifts it". */
@@ -137,4 +139,8 @@ async function revokeKey(ctx) {
   return { status: 200, body: { ok: true } };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey };
+async function health() {
+  return { status: 200, body: await require('../services/apiHealth').all() };
+}
+
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health };

@@ -6362,3 +6362,86 @@ test('admin API usage: every merchant with keys is listed, day/week/month counts
   assert.equal((await api('GET', '/admin/api-usage', { token: (await adminLogin('editor')).token })).status, 403);
   assert.equal((await api('POST', '/admin/api-blocks', { token: live.token, body: { merchant_id: live.merchantId } })).status, 401);
 });
+
+// ===== Haiti time, chat photos, API health, email alerts =====
+test('Haiti time: dates are formatted in America/Port-au-Prince and the day changes at midnight there', () => {
+  const t = require('../src/utils/haitiTime');
+  assert.equal(t.format('2026-10-18T21:44:00Z'), '18/10/2026 17:44:00');
+  assert.equal(t.day('2026-10-19T02:00:00Z'), '2026-10-18'); // 22:00 on the 18th in Haiti
+  assert.equal(t.day('2026-10-19T05:00:00Z'), '2026-10-19');
+  assert.equal(t.format(null), '-');
+});
+
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+test('chat photos: a real image can be sent by either side, anything else is refused, the photo comes back as a link', async () => {
+  const a = await makeLiveMerchant('chatphoto');
+  const { token: owner } = await adminLogin('owner');
+  assert.equal((await api('POST', '/dashboard/chat', { token: a.token, body: { body: '' } })).data.error.code, 'EMPTY_MESSAGE');
+  const bad = await api('POST', '/dashboard/chat', { token: a.token, body: { attachment: { name: 'x.png', data: Buffer.from('<script>alert(1)</script>').toString('base64') } } });
+  assert.equal(bad.data.error.code, 'INVALID_ATTACHMENT');
+  const big = await api('POST', '/dashboard/chat', { token: a.token, body: { attachment: { name: 'big.png', data: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(5 * 1024 * 1024 + 10)]).toString('base64') } } });
+  assert.equal(big.status, 413);
+  const ok = await api('POST', '/dashboard/chat', { token: a.token, body: { body: 'Voici la capture', attachment: { name: 'capture.png', data: PNG_1PX } } });
+  assert.equal(ok.status, 201);
+  assert.equal(ok.data.message.attachment.type, 'image/png');
+  assert.ok(ok.data.message.attachment.url);
+  const onlyPhoto = await api('POST', '/dashboard/chat', { token: a.token, body: { attachment: { name: 'p.png', data: 'data:image/png;base64,' + PNG_1PX } } });
+  assert.equal(onlyPhoto.status, 201);
+  const th = await api('GET', `/admin/chat/${a.merchantId}`, { token: owner });
+  assert.equal(th.data.messages.filter((m) => m.attachment).length, 2);
+  const reply = await api('POST', `/admin/chat/${a.merchantId}`, { token: owner, body: { attachment: { name: 'reponse.png', data: PNG_1PX } } });
+  assert.equal(reply.status, 201);
+  assert.ok((await api('GET', '/dashboard/chat', { token: a.token })).data.messages.some((m) => m.sender === 'admin' && m.attachment && m.attachment.url));
+});
+
+test('API health: a well connected merchant is OK, one with errors/429s/an unused key gets named problems and error codes', async () => {
+  const apiUsage = require('../src/services/apiUsage');
+  const apiTraffic = require('../src/services/apiTraffic');
+  const webhookHealth = require('../src/services/webhookHealth');
+  apiTraffic.reset(); apiUsage.reset(); webhookHealth.reset();
+  const good = await makeLiveMerchant('healthgood');
+  const bad = await makeLiveMerchant('healthbad');
+  const idle = await makeLiveMerchant('healthidle');
+  const gk = (await api('POST', '/dashboard/api-keys', { token: good.token, body: { mode: 'live' } })).data.secret;
+  const bk = (await api('POST', '/dashboard/api-keys', { token: bad.token, body: { mode: 'live' } })).data.secret;
+  await api('POST', '/dashboard/api-keys', { token: idle.token, body: { mode: 'live' } });
+  for (let i = 0; i < 5; i++) await api('GET', '/v1/payments', { token: gk });
+  for (let i = 0; i < 6; i++) await api('POST', '/v1/payments', { token: bk, body: { amount: 'abc' } }); // invalid on purpose
+  await apiUsage.flush();
+  const { token: owner } = await adminLogin('owner');
+  const h = await api('GET', '/admin/api-health', { token: owner });
+  assert.equal(h.status, 200);
+  const find = (m) => h.data.merchants.find((x) => x.merchant_id === m.merchantId);
+  assert.equal(find(good).status, 'ok');
+  assert.equal(find(idle).status, 'inactive');
+  assert.ok(find(idle).problems.some((p) => /aucun appel/i.test(p.detail)));
+  const b = find(bad);
+  assert.equal(b.status, 'problem');
+  assert.ok(b.problems.some((p) => /Appels réussis/.test(p.title)));
+  assert.ok(b.errors.length > 0 && b.errors[0].explanation);
+  assert.equal(h.data.summary.problem >= 1, true);
+  assert.equal((await api('GET', '/admin/api-health', { token: (await adminLogin('editor')).token })).status, 403);
+});
+
+test('email alerts: a merchant that saturates the API and a new chat message each alert the team once (throttled)', async () => {
+  const alerts = require('../src/services/adminAlerts');
+  const apiTraffic = require('../src/services/apiTraffic');
+  alerts.reset(); apiTraffic.reset();
+  const m = await makeLiveMerchant('alertme');
+  await adminLogin('owner');
+  sentEmails.length = 0;
+  for (let i = 0; i < 25; i++) apiTraffic.record({ merchantId: m.merchantId, route: 'GET /v1/payments', status: 429, ip: '1.1.1.1', mode: 'live', code: 'RATE_LIMITED' });
+  await alerts.watchApi();
+  await alerts.watchApi(); // second pass: throttled
+  const abuse = sentEmails.filter((e) => /Alerte API/.test(e.subject));
+  assert.ok(abuse.length >= 1);
+  const recipients = new Set(abuse.map((e) => e.to));
+  assert.equal(abuse.length, recipients.size, 'one email per recipient, not repeated');
+  sentEmails.length = 0;
+  await api('POST', '/dashboard/chat', { token: m.token, body: { body: 'Besoin daide' } });
+  await api('POST', '/dashboard/chat', { token: m.token, body: { body: 'Toujours là' } });
+  await new Promise((r) => setTimeout(r, 300));
+  const chat = sentEmails.filter((e) => /Nouveau message de/.test(e.subject));
+  assert.ok(chat.length >= 1);
+  assert.equal(chat.length, new Set(chat.map((e) => e.to)).size);
+});

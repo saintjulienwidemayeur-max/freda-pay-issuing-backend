@@ -11,14 +11,14 @@ const UNKNOWN = '_unauthenticated';
 
 const perMerchant = new Map();     // merchantId -> { events: [{t, route, status, ip, mode}], last }
 
-function record({ merchantId, route, status, ip, mode }) {
-  require('./apiUsage').add({ merchantId, status: Number(status) || 0, mode });
+function record({ merchantId, route, status, ip, mode, code }) {
+  require('./apiUsage').add({ merchantId, status: Number(status) || 0, mode, code });
   const now = Date.now();
   const key = merchantId || UNKNOWN;
   let m = perMerchant.get(key);
   if (!m) { m = { events: [], last: now }; perMerchant.set(key, m); }
   m.last = now;
-  m.events.push({ t: now, route: route || '?', status: Number(status) || 0, ip: ip || '', mode: mode || '' });
+  m.events.push({ t: now, route: route || '?', status: Number(status) || 0, ip: ip || '', mode: mode || '', code: code || '' });
   if (m.events.length > MAX_EVENTS) m.events.splice(0, m.events.length - MAX_EVENTS);
 }
 
@@ -83,6 +83,24 @@ function snapshot() {
   };
 }
 
+/** What one merchant did in the last five minutes (used by the abuse alert and the health view). */
+function recent(merchantId) {
+  const m = perMerchant.get(merchantId);
+  const now = Date.now();
+  const events = m ? m.events.filter((e) => e.t >= now - WINDOW_MS) : [];
+  const codes = new Map();
+  for (const e of events) if (e.code) codes.set(e.code, (codes.get(e.code) || 0) + 1);
+  return {
+    requests: events.length,
+    limited: events.filter((e) => e.status === 429).length,
+    errors: events.filter((e) => e.status >= 400 && e.status !== 429).length,
+    top_codes: [...codes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([code, count]) => ({ code, count })),
+    last_seen: events.length ? new Date(events[events.length - 1].t).toISOString() : null,
+  };
+}
+
+function merchantIds() { return [...perMerchant.keys()].filter((k) => k !== UNKNOWN); }
+
 function reset() { perMerchant.clear(); }
 
-module.exports = { record, snapshot, reset };
+module.exports = { record, snapshot, recent, merchantIds, reset };

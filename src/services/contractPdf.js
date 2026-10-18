@@ -1,5 +1,6 @@
 'use strict';
 const crypto = require('crypto');
+const haitiTime = require('../utils/haitiTime');
 const { PDFDocument, StandardFonts, rgb } = require('../vendor/pdf-lib.min.js');
 const { toBlocks } = require('../utils/contractHtml');
 const { maskToPng } = require('../utils/png');
@@ -19,11 +20,8 @@ const FALLBACK_CHARS = { '≈': '~', '→': '->', '←': '<-', '✓': 'v', '✔'
 const LOOKALIKE = { 'ł': 'l', 'Ł': 'L', 'đ': 'd', 'Đ': 'D', 'ı': 'i', 'İ': 'I', 'ø': 'o', 'Ø': 'O', 'ħ': 'h', 'ŧ': 't', '‐': '-', '‑': '-', '‒': '-', '−': '-', '‚': ',', '′': "'", '″': '"', '‹': '<', '›': '>', '№': 'No', '™': '(TM)', '℅': 'c/o', '＄': '$', '½': '1/2', '¼': '1/4', '¾': '3/4', '×': 'x', '÷': '/', '‣': '•', '◦': 'o', '▪': '-', '■': '-', '…': '...' };
 
 function fmtDate(iso) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '-';
-  const p = (n) => String(n).padStart(2, '0');
-  return `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`;
+  const t = haitiTime.format(iso);
+  return t === '-' ? t : `${t} (heure d'Haïti)`;
 }
 
 /** The fingerprint of what was signed: text, filled blanks and both signatures. Changing any of them changes it. */
@@ -348,7 +346,7 @@ async function buildPdf(c) {
   ]));
   sectionFor('Signature de Freda Pay Issuing', fredaList);
   sectionFor('Signature du cosignataire', clientList);
-  for (const ln of wrap("Signature électronique interne Freda Pay Issuing : la date, l'heure (UTC) et l'adresse IP sont enregistrées au moment de chaque signature. L'empreinte SHA-256 identifie de façon unique le contenu signé : toute modification du document la changerait.", f.i, 8, contentW)) { ensure(11); page.drawText(ln, { x: MARGIN.l, y: y - 8, size: 8, font: f.i, color: MUTED }); y -= 11; }
+  for (const ln of wrap("Signature électronique interne Freda Pay Issuing : la date, l'heure (heure d'Haïti) et l'adresse IP sont enregistrées au moment de chaque signature. L'empreinte SHA-256 identifie de façon unique le contenu signé : toute modification du document la changerait.", f.i, 8, contentW)) { ensure(11); page.drawText(ln, { x: MARGIN.l, y: y - 8, size: 8, font: f.i, color: MUTED }); y -= 11; }
 
   // ---- footer on every page
   pages.forEach((p, i) => {
