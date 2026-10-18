@@ -277,6 +277,8 @@ router.get('/admin/messages/audience', adminSession.requireAdminSession, (ctx) =
 router.post('/admin/messages', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.send(ctx); });
 // ---- Internal e-signature: contracts ----
 const contractsAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
+const adminApiTrafficHandlers = require('./handlers/adminApiTraffic');
+router.get('/admin/api-traffic', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminApiTrafficHandlers.snapshot(ctx); });
 router.get('/admin/contracts', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminList));
 router.post('/admin/contracts', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminCreate));
 router.get('/admin/contracts/:id', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminGet));
