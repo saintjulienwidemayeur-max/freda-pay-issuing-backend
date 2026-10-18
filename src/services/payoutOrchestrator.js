@@ -147,7 +147,10 @@ async function executePayoutFlow({ merchantId, id, plopplopReference, amount, me
       signature,
     });
     if (!tokenRes.data || !tokenRes.data.success) {
-      return markFailed(merchantId, id, `WITHDRAWAL_TOKEN_FAILED: ${(tokenRes.data && tokenRes.data.message) || tokenRes.httpStatus}`);
+      // What a support person needs to tell a redirect, a wrong key and a provider outage apart: no secret is logged.
+      // eslint-disable-next-line no-console
+      console.error(`Withdrawal token refused for ${plopplopReference}: HTTP ${tokenRes.httpStatus}, message "${tokenRes.data && tokenRes.data.message}", sent Authorization: ${tokenRes.sentAuth} (token length ${String(marchandToken).length}), final URL ${tokenRes.finalUrl}, redirected: ${tokenRes.redirected}, auth step host: ${authRes.finalUrl && new URL(authRes.finalUrl).host}`);
+      return markFailed(merchantId, id, `WITHDRAWAL_TOKEN_FAILED: ${(tokenRes.data && tokenRes.data.message) || tokenRes.httpStatus} (HTTP ${tokenRes.httpStatus})`);
     }
     const withdrawalToken = tokenRes.data.withdrawal_token;
 
