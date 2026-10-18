@@ -44,7 +44,7 @@ async function postJson(path, body, headers) {
   } catch (e) {
     data = null;
   }
-  return { httpStatus: res.status, data };
+  return { httpStatus: res.status, data, finalUrl: url, sentAuth: !!allHeaders.Authorization, redirected: url !== `${baseUrl()}${path}` };
 }
 
 /**
