@@ -208,6 +208,7 @@ const config = {
   //   MonCash / Natcash: 5 % of the amount        Bank transfer: a fixed 100 HTG (processed by hand by the team)
   payoutFees: {
     mobilePct: 0.05,
+    mobileMinBalanceHTG: Number(process.env.MOBILE_WITHDRAWAL_MIN_BALANCE_HTG) || 2500, // live: the Gateway balance must be at least this to request a MonCash / Natcash withdrawal (then any amount up to the balance)
     mobileMinHTG: 20, // MonCash / Natcash withdrawals: same floor as a payment, below it the 5 % fee rounds to nothing
     bankFixedHTG: 100,
     bankMinHTG: 1000, // below this the fixed fee would eat the withdrawal

@@ -277,6 +277,16 @@ router.get('/admin/messages/audience', adminSession.requireAdminSession, (ctx) =
 router.post('/admin/messages', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.send(ctx); });
 // ---- Internal e-signature: contracts ----
 const contractsAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
+const chatHandlers = require('./handlers/chat');
+router.get('/dashboard/chat', session.requireSession, chatHandlers.merchantList);
+router.get('/dashboard/chat/unread', session.requireSession, chatHandlers.merchantUnread);
+router.post('/dashboard/chat/read', session.requireSession, chatHandlers.merchantRead);
+router.post('/dashboard/chat', session.requireSession, rateLimit.middleware('chat-send', 20, 5 * 60 * 1000, (ctx) => ctx.merchantId), chatHandlers.merchantSend);
+const chatAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
+router.get('/admin/chat', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminConversations));
+router.get('/admin/chat-unread', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminUnread));
+router.get('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminThread));
+router.post('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminSend));
 const adminApiTrafficHandlers = require('./handlers/adminApiTraffic');
 router.get('/admin/api-traffic', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminApiTrafficHandlers.snapshot(ctx); });
 router.get('/admin/contracts', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminList));
