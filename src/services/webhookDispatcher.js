@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const supabase = require('../lib/supabase');
+const webhookHealth = require('./webhookHealth');
 const { randomHex } = require('../utils/ids');
 const urlSafety = require('../utils/urlSafety');
 
@@ -37,10 +38,10 @@ async function dispatchAsync(merchantId, event, data) {
   const body = JSON.stringify(payload);
   const signature = crypto.createHmac('sha256', endpoint.secret).update(body).digest('hex');
 
-  attemptDelivery(endpoint.url, body, signature, payload.id, 0);
+  attemptDelivery(endpoint.url, body, signature, payload.id, 0, merchantId);
 }
 
-async function attemptDelivery(url, body, signature, eventId, attemptIndex) {
+async function attemptDelivery(url, body, signature, eventId, attemptIndex, merchantId) {
   try {
     await urlSafety.assertPublicUrl(url); // re-checked at send time (DNS may have changed since registration)
     const controller = new AbortController();
@@ -62,17 +63,18 @@ async function attemptDelivery(url, body, signature, eventId, attemptIndex) {
     } finally {
       clearTimeout(timeout);
     }
-    if (res.ok) return; // any 2xx = delivered, per our docs
+    if (res.ok) { webhookHealth.record(merchantId, true); return; } // any 2xx = delivered, per our docs
     throw new Error(`HTTP ${res.status}`);
   } catch (err) {
     const nextAttempt = attemptIndex + 1;
     if (nextAttempt < RETRY_DELAYS_MS.length) {
       const timer = setTimeout(
-        () => attemptDelivery(url, body, signature, eventId, nextAttempt),
+        () => attemptDelivery(url, body, signature, eventId, nextAttempt, merchantId),
         RETRY_DELAYS_MS[nextAttempt]
       );
       timer.unref();
     } else {
+      webhookHealth.record(merchantId, false, err.message);
       // eslint-disable-next-line no-console
       console.error(`Webhook delivery to ${url} failed permanently (event ${eventId}) after ${nextAttempt} attempts:`, err.message);
     }

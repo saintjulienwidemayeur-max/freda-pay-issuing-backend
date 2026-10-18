@@ -289,6 +289,7 @@ router.get('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmi
 router.post('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminSend));
 const adminApiTrafficHandlers = require('./handlers/adminApiTraffic');
 const apiTrafficAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
+router.get('/admin/api-health', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.health));
 router.get('/admin/api-usage', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.usage));
 router.get('/admin/api-usage/:merchantId', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.usageDetail));
 router.post('/admin/api-blocks', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.block));
@@ -389,6 +390,7 @@ if (require.main === module) {
     // API usage counters are saved every 30 s; blocks are re-read every 30 s. A redeploy flushes the counters first.
     require('./services/apiUsage').start();
     require('./services/apiBlocks').start();
+    require('./services/adminAlerts').start();
     process.on('SIGTERM', () => { require('./services/apiUsage').flush().finally(() => process.exit(0)); });
     // Emails and the blog link to SITE_URL: verify it really serves the website (a wrong value breaks every button).
     if (process.env.NODE_ENV !== 'test' && process.env.SITE_URL_CHECK !== 'off') siteUrl.verify().catch(() => {});

@@ -74,7 +74,7 @@ class Router {
 
 // Routes that carry base64 files (KYC/KYB documents, deposit receipts, blog
 // covers) need a larger body than the 1 MB default used for everything else.
-const UPLOAD_PATHS = [/^\/dashboard\/verification\//, /^\/dashboard\/wallet\/topup/, /^\/dashboard\/.*(receipt|deposit)/, /^\/admin\/blog\/upload-cover$/];
+const UPLOAD_PATHS = [/^\/dashboard\/chat$/, /^\/admin\/chat\//, /^\/dashboard\/verification\//, /^\/dashboard\/wallet\/topup/, /^\/dashboard\/.*(receipt|deposit)/, /^\/admin\/blog\/upload-cover$/];
 function bodyLimitFor(pathname) {
   return UPLOAD_PATHS.some((re) => re.test(pathname)) ? 40 * 1024 * 1024 : 1024 * 1024;
 }
@@ -180,6 +180,7 @@ function createHandler(router, options) {
         sendJson(res, (result && result.status) || 200, (result && result.body) || {});
       }
     } catch (err) {
+      res.__errorCode = err.code || (err.httpStatus ? 'ERROR' : 'INTERNAL_ERROR'); // for the admin API health view
       const status = err.httpStatus || 500;
       // Any error without an explicit httpStatus is unexpected (a bug, not a
       // handled business-logic case) - never leak its raw message to the
@@ -203,7 +204,7 @@ function createHandler(router, options) {
       // The public API only: who calls it, and how often (admin "Trafic API" view). Never throws.
       if (pathname.startsWith('/v1/')) {
         try {
-          apiTraffic.record({ merchantId: ctx.merchantId || null, route: `${req.method} ${matched.route.path}`, status: res.statusCode, ip: rateLimit.clientIp(req), mode: ctx.apiKeyMode || '' });
+          apiTraffic.record({ merchantId: ctx.merchantId || null, route: `${req.method} ${matched.route.path}`, status: res.statusCode, code: res.__errorCode || null, ip: rateLimit.clientIp(req), mode: ctx.apiKeyMode || '' });
         } catch (e) { /* statistics must never break a request */ }
       }
     }
