@@ -7,9 +7,11 @@
  */
 const BLOCK = new Set(['p', 'div', 'h1', 'h2', 'h3', 'li', 'blockquote']);
 const VOID = new Set(['br', 'hr']);
-const ALLOWED = new Set(['p', 'div', 'br', 'hr', 'strong', 'b', 'em', 'i', 'u', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'span']);
+const ALLOWED = new Set(['p', 'div', 'br', 'hr', 'strong', 'b', 'em', 'i', 'u', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'span', 'table', 'thead', 'tbody', 'tr', 'th', 'td']);
 const ALIGN = new Set(['left', 'center', 'right', 'justify']);
 const FIELD_RE = /\[\[([^\[\]\n]{1,80})\]\]/g;
+/** [[Signature de ...]] marks where a signature goes: the electronic signature fills it, so it is never a blank to type. */
+const isSignatureLabel = (label) => /^signature\b/i.test(String(label).trim());
 
 function decode(s) {
   return String(s)
@@ -77,14 +79,16 @@ function fieldLabels(cleanHtml) {
   FIELD_RE.lastIndex = 0;
   while ((m = FIELD_RE.exec(decode(text)))) {
     const label = m[1].trim();
-    if (label && !labels.includes(label)) labels.push(label);
+    if (label && !isSignatureLabel(label) && !labels.includes(label)) labels.push(label);
   }
   return labels;
 }
 
 /** Clean HTML for on-screen display: each blank becomes a marked span the page turns into an input. */
 function viewHtml(cleanHtml) {
-  return String(cleanHtml).replace(/\[\[([^\[\]\n]{1,80})\]\]/g, (m, label) => `<span class="ctr-field" data-field="${esc(decode(label).trim())}">${label}</span>`);
+  return String(cleanHtml).replace(/\[\[([^\[\]\n]{1,80})\]\]/g, (m, label) => (isSignatureLabel(decode(label))
+    ? '<span class="ctr-sigmark">(signature électronique)</span>'
+    : `<span class="ctr-field" data-field="${esc(decode(label).trim())}">${label}</span>`));
 }
 
 /** Blocks for the PDF: [{ kind, align, runs: [{ text, b, i, u, field }] , indent, prefix }]. */
@@ -93,6 +97,7 @@ function toBlocks(cleanHtml, values) {
   const lists = [];
   const style = { b: 0, i: 0, u: 0 };
   let cur = null;
+  let table = null, row = null, cell = null;
   const flush = () => {
     if (!cur) return;
     const runs = cur.runs;
@@ -115,6 +120,7 @@ function toBlocks(cleanHtml, values) {
     while ((m = FIELD_RE.exec(text))) {
       if (m.index > last) cur.runs.push({ text: text.slice(last, m.index), b: style.b > 0, i: style.i > 0, u: style.u > 0 });
       const label = m[1].trim();
+      if (isSignatureLabel(label)) { cur.runs.push({ text: '(signature électronique)', b: false, i: true, u: false, sigmark: true }); last = m.index + m[0].length; continue; }
       cur.runs.push({ field: label, text: values && values[label] ? String(values[label]) : '', b: true, i: false, u: true });
       last = m.index + m[0].length;
     }
@@ -123,6 +129,26 @@ function toBlocks(cleanHtml, values) {
   for (const k of tokenize(cleanHtml)) {
     if (k.t === 'text') { if (cur || k.text.trim()) addText(k.text); continue; }
     const tag = k.tag;
+    // Tables: every cell is one run list; blocks inside a cell are flattened into it.
+    if (tag === 'table') {
+      if (k.t === 'open') { flush(); table = { kind: 'table', rows: [] }; }
+      else if (table) { if (row && row.cells.length) table.rows.push(row); row = null; if (table.rows.length) blocks.push(table); table = null; cur = null; }
+      continue;
+    }
+    if (table) {
+      if (tag === 'tr') {
+        if (k.t === 'open') { if (row && row.cells.length) table.rows.push(row); row = { cells: [] }; }
+        else if (row) { if (row.cells.length) table.rows.push(row); row = null; }
+        continue;
+      }
+      if (tag === 'th' || tag === 'td') {
+        if (k.t === 'open') { if (!row) row = { cells: [] }; cur = { kind: 'cell', align: k.align, runs: [], head: tag === 'th' }; cell = cur; }
+        else if (cell) { row.cells.push({ runs: cell.runs, head: cell.head, align: cell.align }); cell = null; cur = null; }
+        continue;
+      }
+      if (tag === 'thead' || tag === 'tbody') continue;
+      if (cell && BLOCK.has(tag)) { if (k.t === 'close' && cell.runs.length && !cell.runs[cell.runs.length - 1].br) cell.runs.push({ br: true }); continue; }
+    }
     if (k.t === 'open') {
       if (tag === 'ul' || tag === 'ol') { flush(); lists.push({ type: tag, n: 0 }); }
       else if (tag === 'li') {

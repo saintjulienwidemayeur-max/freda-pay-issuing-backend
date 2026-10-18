@@ -12,7 +12,6 @@ const PAGE = { w: 595.28, h: 841.89 };
 const MARGIN = { l: 58, r: 58, t: 62, b: 70 };
 const INK = rgb(0.09, 0.09, 0.1);
 const MUTED = rgb(0.4, 0.4, 0.45);
-const PINK = rgb(1, 0.25, 0.5);
 const LINE = rgb(0.85, 0.83, 0.87);
 const SIZES = { p: 10.5, li: 10.5, blockquote: 10.5, h1: 19, h2: 14.5, h3: 12 };
 const FALLBACK_CHARS = { '≈': '~', '→': '->', '←': '<-', '✓': 'v', '✔': 'v', '’': "'", '‘': "'", '“': '"', '”': '"', ' ': ' ', ' ': ' ', '​': '', '﻿': '' };
@@ -73,14 +72,7 @@ async function buildPdf(c) {
   const pickFont = (b, i) => (b && i ? f.bi : b ? f.b : i ? f.i : f.r);
   newPage();
 
-  // ---- title block
-  page.drawRectangle({ x: 0, y: PAGE.h - 8, width: PAGE.w, height: 8, color: PINK });
-  page.drawText('FREDA PAY', { x: MARGIN.l, y: y + 14, size: 10, font: f.b, color: INK });
-  page.drawText('ISSUING', { x: MARGIN.l + f.b.widthOfTextAtSize('FREDA PAY', 10) + 5, y: y + 14, size: 10, font: f.b, color: PINK });
   const status = c.status === 'COMPLETED' ? 'Document signé' : c.status === 'CANCELLED' ? 'Document annulé' : 'En attente de signature';
-  const sw = f.r.widthOfTextAtSize(status, 9);
-  page.drawText(status, { x: PAGE.w - MARGIN.r - sw, y: y + 14, size: 9, font: f.r, color: MUTED });
-  y -= 14;
 
   // ---- text layout
   const drawLine = (items, size, align, last, lineH, x0, width) => {
@@ -99,30 +91,20 @@ async function buildPdf(c) {
       x += it.w + (it.space ? extra : 0);
     }
   };
-  const layoutBlock = (blk) => {
-    if (blk.kind === 'space') { ensure(8); y -= 8; return; }
-    if (blk.kind === 'hr') { ensure(14); y -= 6; page.drawLine({ start: { x: MARGIN.l, y }, end: { x: PAGE.w - MARGIN.r, y }, thickness: 0.7, color: LINE }); y -= 8; return; }
-    const size = SIZES[blk.kind] || 10.5;
-    const heading = blk.kind === 'h1' || blk.kind === 'h2' || blk.kind === 'h3';
-    const lineH = size * 1.38;
-    const indent = blk.kind === 'li' ? 16 * blk.indent : blk.kind === 'blockquote' ? 20 : 0;
-    const x0 = MARGIN.l + indent;
-    const width = contentW - indent;
-    // words
+  // Words of a run list laid out in lines no wider than `width` (a word wider than the line is cut).
+  const buildLines = (runs, size, width, forceBold, forceItalic) => {
     const words = [];
-    for (const r of blk.runs) {
+    for (const r of runs) {
       if (r.br) { words.push({ br: true }); continue; }
       let text = r.text;
       if (r.field !== undefined && !text) text = '………………';
-      const font = pickFont(heading || r.b, r.i || blk.kind === 'blockquote');
+      const font = pickFont(forceBold || r.b, r.i || forceItalic);
       for (const part of safe(text).split(/(\s+)/)) {
         if (part === '') continue;
         if (/^\s+$/.test(part)) words.push({ space: true, text: ' ', font, w: font.widthOfTextAtSize(' ', size), u: false });
         else words.push({ text: part, font, w: font.widthOfTextAtSize(part, size), u: !!r.u });
       }
     }
-    if (heading && blk.kind !== 'h3') { ensure(size * 2.4); y -= size * 0.5; }
-    else if (blk.kind === 'h3') { ensure(size * 2); y -= size * 0.3; }
     const lines = [];
     let line = [], lw = 0;
     const pushLine = (hard) => { while (line.length && line[line.length - 1].space) { lw -= line[line.length - 1].w; line.pop(); } lines.push({ items: line, hard }); line = []; lw = 0; };
@@ -130,7 +112,7 @@ async function buildPdf(c) {
       if (w.br) { pushLine(true); continue; }
       if (w.space && !line.length) continue;
       if (!w.space && line.length && lw + w.w > width) pushLine(false);
-      if (!w.space && w.w > width) { // a word wider than the line: cut it
+      if (!w.space && w.w > width) {
         let rest = w.text;
         while (rest.length) {
           let n = rest.length;
@@ -145,6 +127,51 @@ async function buildPdf(c) {
     }
     if (line.length) pushLine(true);
     if (!lines.length) lines.push({ items: [], hard: true });
+    return lines;
+  };
+  const layoutTable = (blk) => {
+    const size = 9.2, lineH = size * 1.4, padX = 6, padY = 5;
+    const nCols = Math.max(...blk.rows.map((r) => r.cells.length));
+    const weight = Array.from({ length: nCols }, (_, c) => Math.min(60, Math.max(8, ...blk.rows.map((r) => (r.cells[c] ? r.cells[c].runs.reduce((n, x) => n + String(x.text || x.field || '').length, 0) : 0)))));
+    const sum = weight.reduce((a, b) => a + b, 0);
+    const minW = Math.min(70, contentW / nCols);
+    let widths = weight.map((w) => Math.max(minW, (w / sum) * contentW));
+    const scale = contentW / widths.reduce((a, b) => a + b, 0);
+    widths = widths.map((w) => w * scale);
+    y -= 4;
+    for (const row of blk.rows) {
+      const cells = row.cells.map((cell, c) => ({ cell, lines: buildLines(cell.runs, size, widths[c] - 2 * padX, cell.head, false) }));
+      const h = Math.max(...cells.map((x) => x.lines.length)) * lineH + 2 * padY;
+      ensure(h);
+      let x = MARGIN.l;
+      cells.forEach(({ cell, lines }, c) => {
+        page.drawRectangle({ x, y: y - h, width: widths[c], height: h, borderColor: LINE, borderWidth: 0.7, color: cell.head ? rgb(0.955, 0.955, 0.96) : undefined });
+        const saved = y;
+        y -= padY - 1.5;
+        lines.forEach((ln, idx) => {
+          if (ln.items.length) drawLine(ln.items, size, cell.align || 'left', true, lineH, x + padX, widths[c] - 2 * padX);
+          y -= lineH;
+        });
+        y = saved;
+        x += widths[c];
+      });
+      y -= h;
+    }
+    y -= 8;
+  };
+  const layoutBlock = (blk) => {
+    if (blk.kind === 'table') { layoutTable(blk); return; }
+    if (blk.kind === 'space') { ensure(8); y -= 8; return; }
+    if (blk.kind === 'hr') { ensure(14); y -= 6; page.drawLine({ start: { x: MARGIN.l, y }, end: { x: PAGE.w - MARGIN.r, y }, thickness: 0.7, color: LINE }); y -= 8; return; }
+    const size = SIZES[blk.kind] || 10.5;
+    const heading = blk.kind === 'h1' || blk.kind === 'h2' || blk.kind === 'h3';
+    const lineH = size * 1.38;
+    const indent = blk.kind === 'li' ? 16 * blk.indent : blk.kind === 'blockquote' ? 20 : 0;
+    const x0 = MARGIN.l + indent;
+    const width = contentW - indent;
+    const lines = buildLines(blk.runs, size, width, heading, blk.kind === 'blockquote');
+    if (heading && blk.kind !== 'h3') { ensure(size * 2.4); y -= size * 0.5; }
+    else if (blk.kind === 'h3') { ensure(size * 2); y -= size * 0.3; }
     lines.forEach((ln, idx) => {
       ensure(lineH);
       if (idx === 0 && blk.kind === 'li') page.drawText(blk.prefix, { x: x0 - 13, y: y - size, size, font: f.r, color: INK });
@@ -154,26 +181,15 @@ async function buildPdf(c) {
     y -= blk.kind === 'li' ? 2.5 : heading ? size * 0.35 : 5;
   };
 
-  // document title, then the contract text
-  const titleSize = 21;
-  const titleWords = safe(c.title).split(' ');
-  let tl = '', tlines = [];
-  for (const w of titleWords) {
-    const t = tl ? `${tl} ${w}` : w;
-    if (f.b.widthOfTextAtSize(t, titleSize) > contentW && tl) { tlines.push(tl); tl = w; } else tl = t;
-  }
-  if (tl) tlines.push(tl);
-  for (const t of tlines) { page.drawText(t, { x: MARGIN.l, y: y - titleSize, size: titleSize, font: f.b, color: INK }); y -= titleSize * 1.25; }
-  page.drawText(safe(`Contrat n° ${c.id}`), { x: MARGIN.l, y: y - 11, size: 9, font: f.r, color: MUTED });
-  y -= 26;
-  page.drawLine({ start: { x: MARGIN.l, y: y + 8 }, end: { x: PAGE.w - MARGIN.r, y: y + 8 }, thickness: 0.7, color: LINE });
-  y -= 6;
-  for (const blk of toBlocks(c.body_html, c.fields || {})) layoutBlock(blk);
+  // The contract text carries its own title; one is added only when the text does not start with a heading.
+  const blocks = toBlocks(c.body_html, c.fields || {});
+  if (!blocks.length || blocks[0].kind !== 'h1') blocks.unshift({ kind: 'h1', align: null, runs: [{ text: c.title, b: true, i: false, u: false }] });
+  for (const blk of blocks) layoutBlock(blk);
 
   // ---- signatures
   ensure(250);
   y -= 14;
-  page.drawText('Signatures', { x: MARGIN.l, y: y - 13, size: 13, font: f.b, color: INK });
+  page.drawText('Signatures électroniques', { x: MARGIN.l, y: y - 13, size: 13, font: f.b, color: INK });
   y -= 30;
   const colW = (contentW - 24) / 2;
   const BOX_H = 74, BLOCK_H = 16 + BOX_H + 14 + 13 + 12 + 12 + 12 + 18;
@@ -212,10 +228,6 @@ async function buildPdf(c) {
 
   // ---- certificate of signature: its own page, so the contract itself stays clean
   newPage();
-  page.drawRectangle({ x: 0, y: PAGE.h - 8, width: PAGE.w, height: 8, color: PINK });
-  page.drawText('FREDA PAY', { x: MARGIN.l, y: y + 14, size: 10, font: f.b, color: INK });
-  page.drawText('ISSUING', { x: MARGIN.l + f.b.widthOfTextAtSize('FREDA PAY', 10) + 5, y: y + 14, size: 10, font: f.b, color: PINK });
-  y -= 14;
   page.drawText('Certificat de signature électronique', { x: MARGIN.l, y: y - 18, size: 18, font: f.b, color: INK });
   y -= 30;
   const lead = 'Ce certificat atteste que le document ci-dessous a été signé électroniquement sur la plateforme Freda Pay Issuing. Il consigne les éléments de preuve recueillis lors de chaque signature.';

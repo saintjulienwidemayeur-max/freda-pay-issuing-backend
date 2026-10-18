@@ -5762,3 +5762,20 @@ test('the bare API address answers with a friendly service message', async () =>
   assert.equal(res.status, 200);
   assert.equal(data.service, 'Freda Pay Issuing API');
 });
+
+test('contracts: tables are kept, [[Signature ...]] marks are not blanks to fill, the PDF is built', async () => {
+  const m = await makeLiveMerchant('ctrtable');
+  const html = '<h1>Contrat Marchand</h1><p>Entre Freda Pay LLC et [[Raison sociale]], pour la plateforme.</p><table><thead><tr><th>Service</th><th>Tarif</th></tr></thead><tbody><tr><td>Abonnement</td><td>150 USD</td></tr></tbody></table><table><tr><td>Signature : [[Signature du Marchand]]</td><td>Nom : [[Nom du signataire]]</td></tr></table><script>x</script>';
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat Marchand', body_html: html, merchant_id: m.merchantId, admin_signature: drawnSig() } });
+  assert.equal(create.status, 201);
+  const c = create.data.contract;
+  assert.deepEqual(c.field_labels, ['Raison sociale', 'Nom du signataire']);
+  assert.match(c.body_html, /<table>/);
+  assert.match(c.body_html, /ctr-sigmark/);
+  assert.ok(!/script/.test(c.body_html));
+  const sign = await api('POST', `/dashboard/contracts/${c.id}/sign`, { token: m.token, body: { signer_name: 'Marie Jean', fields: { 'Raison sociale': 'Boutik SA', 'Nom du signataire': 'Marie Jean' }, signature: drawnSig() } });
+  assert.equal(sign.data.contract.status, 'COMPLETED');
+  const pdf = await rawGet(`/dashboard/contracts/${c.id}/pdf`, m.token);
+  assert.equal(pdf.status, 200);
+  assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
+});
