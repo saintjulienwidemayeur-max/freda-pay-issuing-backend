@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const supabase = require('../lib/supabase');
 const { randomHex } = require('../utils/ids');
+const urlSafety = require('../utils/urlSafety');
 
 // Simple retry schedule: immediate, then +5s, then +30s. After that we give
 // up and just log it - a merchant who needs stronger delivery guarantees
@@ -41,11 +42,13 @@ async function dispatchAsync(merchantId, event, data) {
 
 async function attemptDelivery(url, body, signature, eventId, attemptIndex) {
   try {
+    await urlSafety.assertPublicUrl(url); // re-checked at send time (DNS may have changed since registration)
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
     let res;
     try {
       res = await fetch(url, {
+        redirect: 'manual', // never follow a redirect to an internal address
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -89,7 +92,13 @@ async function deliverNow(merchantId, event, data) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
   try {
+    try {
+      await urlSafety.assertPublicUrl(endpoint.url);
+    } catch (_) {
+      return { sent: false, event_id: payload.id, reason: 'UNREACHABLE' };
+    }
     const res = await fetch(endpoint.url, {
+      redirect: 'manual',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -100,7 +109,7 @@ async function deliverNow(merchantId, event, data) {
       body,
       signal: controller.signal,
     });
-    return { sent: res.ok, http_status: res.status, event_id: payload.id, reason: res.ok ? null : `HTTP ${res.status}` };
+    return { sent: res.ok, ...(res.ok ? { http_status: res.status } : {}), event_id: payload.id, reason: res.ok ? null : 'REJECTED' }; // the target's status code is not echoed (no port-scan oracle)
   } catch (err) {
     return { sent: false, event_id: payload.id, reason: err.name === 'AbortError' ? 'TIMEOUT' : 'UNREACHABLE' };
   } finally {

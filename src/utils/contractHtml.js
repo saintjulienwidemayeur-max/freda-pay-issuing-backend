@@ -13,13 +13,16 @@ const FIELD_RE = /\[\[([^\[\]\n]{1,80})\]\]/g;
 /** [[Signature de ...]] marks where a signature goes: the electronic signature fills it, so it is never a blank to type. */
 const isSignatureLabel = (label) => /^signature\b/i.test(String(label).trim());
 
+const ENTITIES = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+/** One pass, so typed text such as "&amp;lt;" stays "&lt;" instead of being decoded twice. */
 function decode(s) {
-  return String(s)
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"').replace(/&#0?39;|&#x27;|&apos;/gi, "'")
-    .replace(/&#(\d{1,6});/g, (m, n) => { const c = Number(n); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
-    .replace(/&#x([0-9a-f]{1,6});/gi, (m, h) => { const c = parseInt(h, 16); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; });
+  return String(s).replace(/&(nbsp|amp|lt|gt|quot|apos|#0?39|#x27|#\d{1,6}|#x[0-9a-f]{1,6});/gi, (m, e) => {
+    const k = e.toLowerCase();
+    if (ENTITIES[k] !== undefined) return ENTITIES[k];
+    if (k === '#39' || k === '#039' || k === '#x27') return "'";
+    const c = k[1] === 'x' ? parseInt(k.slice(2), 16) : Number(k.slice(1));
+    return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : '';
+  });
 }
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -49,6 +52,18 @@ function tokenize(html) {
   return tokens;
 }
 
+/**
+ * A blank [[Label]] split by formatting ("[[Nom <b>du</b> rep]]") is merged back into one plain label, and its spaces are
+ * collapsed, so the page, the signing check and the PDF all see exactly the same label. Idempotent.
+ */
+const MARK_RE = /\[\[((?:[^\[\]<]|<\/?(?:strong|b|em|i|u|span)>){1,400}?)\]\]/g;
+function normalizeMarks(html) {
+  return String(html).replace(MARK_RE, (m, inner) => {
+    const label = inner.replace(/<[^>]*>/g, '').replace(/(?:&nbsp;|\s)+/gi, ' ').trim();
+    return `[[${label}]]`;
+  });
+}
+
 /** Returns clean HTML: whitelisted tags only, balanced, text escaped. */
 function sanitize(html) {
   const out = [];
@@ -68,17 +83,17 @@ function sanitize(html) {
     }
   }
   while (stack.length) out.push(`</${stack.pop()}>`);
-  return out.join('');
+  return normalizeMarks(out.join(''));
 }
 
 /** The distinct blanks written [[Label]] in a text, in order of appearance. */
 function fieldLabels(cleanHtml) {
   const labels = [];
   let m;
-  const text = String(cleanHtml).replace(/<[^>]*>/g, '');
+  const text = normalizeMarks(cleanHtml).replace(/<[^>]*>/g, '');
   FIELD_RE.lastIndex = 0;
   while ((m = FIELD_RE.exec(decode(text)))) {
-    const label = m[1].trim();
+    const label = m[1].replace(/\s+/g, ' ').trim();
     if (label && !isSignatureLabel(label) && !labels.includes(label)) labels.push(label);
   }
   return labels;
@@ -86,7 +101,7 @@ function fieldLabels(cleanHtml) {
 
 /** Clean HTML for on-screen display: each blank becomes a marked span the page turns into an input. */
 function viewHtml(cleanHtml) {
-  return String(cleanHtml).replace(/\[\[([^\[\]\n]{1,80})\]\]/g, (m, label) => (isSignatureLabel(decode(label))
+  return normalizeMarks(cleanHtml).replace(/\[\[([^\[\]\n]{1,80})\]\]/g, (m, label) => (isSignatureLabel(decode(label))
     ? '<span class="ctr-sigmark">(signature électronique)</span>'
     : `<span class="ctr-field" data-field="${esc(decode(label).trim())}">${label}</span>`));
 }
@@ -111,6 +126,7 @@ function toBlocks(cleanHtml, values) {
     }
     cur = null;
   };
+  const lastRunOf = (c) => c.runs[c.runs.length - 1];
   const start = (kind, align, extra) => { flush(); cur = Object.assign({ kind, align: align || null, runs: [] }, extra || {}); };
   const addText = (txt) => {
     if (!cur) start('p', null);
@@ -121,15 +137,27 @@ function toBlocks(cleanHtml, values) {
       if (m.index > last) cur.runs.push({ text: text.slice(last, m.index), b: style.b > 0, i: style.i > 0, u: style.u > 0 });
       const label = m[1].trim();
       if (isSignatureLabel(label)) { cur.runs.push({ text: '(signature électronique)', b: false, i: true, u: false, sigmark: true }); last = m.index + m[0].length; continue; }
-      cur.runs.push({ field: label, text: values && values[label] ? String(values[label]) : '', b: true, i: false, u: true });
+      cur.runs.push({ field: label, text: hasOwn(values, label) && values[label] ? String(values[label]) : '', b: true, i: false, u: true });
       last = m.index + m[0].length;
     }
     if (last < text.length) cur.runs.push({ text: text.slice(last), b: style.b > 0, i: style.i > 0, u: style.u > 0 });
   };
-  for (const k of tokenize(cleanHtml)) {
+  const hasOwn = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+  let lastOl = null; // a numbered list split in two (loose items) keeps counting
+  let nested = 0;    // depth of a table inside a table cell: flattened into the cell
+  for (const k of tokenize(normalizeMarks(cleanHtml))) {
     if (k.t === 'text') { if (cur || k.text.trim()) addText(k.text); continue; }
     const tag = k.tag;
     // Tables: every cell is one run list; blocks inside a cell are flattened into it.
+    if (table && cell && nested > 0 && tag !== 'table' && (tag === 'tr' || tag === 'td' || tag === 'th' || tag === 'thead' || tag === 'tbody')) {
+      if (k.t === 'close' && (tag === 'tr' || tag === 'td' || tag === 'th')) cell.runs.push(tag === 'tr' ? { br: true } : { text: ' ', b: false, i: false, u: false });
+      continue;
+    }
+    if (table && cell && tag === 'table') {
+      if (k.t === 'open') { nested += 1; if (cell.runs.length && !cell.runs[cell.runs.length - 1].br) cell.runs.push({ br: true }); }
+      else if (nested > 0) nested -= 1;
+      continue;
+    }
     if (tag === 'table') {
       if (k.t === 'open') { flush(); table = { kind: 'table', rows: [] }; }
       else if (table) { if (row && row.cells.length) table.rows.push(row); row = null; if (table.rows.length) blocks.push(table); table = null; cur = null; }
@@ -142,15 +170,30 @@ function toBlocks(cleanHtml, values) {
         continue;
       }
       if (tag === 'th' || tag === 'td') {
-        if (k.t === 'open') { if (!row) row = { cells: [] }; cur = { kind: 'cell', align: k.align, runs: [], head: tag === 'th' }; cell = cur; }
+        if (k.t === 'open') { if (!row) row = { cells: [] }; cur = { kind: 'cell', align: k.align, runs: [], head: tag === 'th', lists: [] }; cell = cur; nested = 0; }
         else if (cell) { row.cells.push({ runs: cell.runs, head: cell.head, align: cell.align }); cell = null; cur = null; }
         continue;
       }
       if (tag === 'thead' || tag === 'tbody') continue;
-      if (cell && BLOCK.has(tag)) { if (k.t === 'close' && cell.runs.length && !cell.runs[cell.runs.length - 1].br) cell.runs.push({ br: true }); continue; }
+      if (cell && (BLOCK.has(tag) || tag === 'ul' || tag === 'ol' || tag === 'hr')) {
+        const lineBreak = () => { if (cell.runs.length && !(lastRunOf(cell) && lastRunOf(cell).br)) cell.runs.push({ br: true }); };
+        if (tag === 'ul' || tag === 'ol') {
+          if (k.t === 'open') { lineBreak(); cell.lists.push({ type: tag, n: 0 }); } else { cell.lists.pop(); lineBreak(); }
+        } else if (tag === 'li' && k.t === 'open') {
+          lineBreak();
+          const l = cell.lists[cell.lists.length - 1] || { type: 'ul', n: 0 };
+          l.n += 1;
+          cell.runs.push({ text: l.type === 'ol' ? `${l.n}. ` : '• ', b: false, i: false, u: false });
+        } else if (k.t === 'close' || tag === 'hr') lineBreak();
+        continue;
+      }
     }
     if (k.t === 'open') {
-      if (tag === 'ul' || tag === 'ol') { flush(); lists.push({ type: tag, n: 0 }); }
+      if (tag === 'ul' || tag === 'ol') {
+        flush();
+        const resume = tag === 'ol' && lastOl && blocks.slice(lastOl.at).every((b) => b.kind === 'space') ? lastOl.n : 0;
+        lists.push({ type: tag, n: resume });
+      }
       else if (tag === 'li') {
         const l = lists[lists.length - 1] || { type: 'ul', n: 0 };
         l.n += 1;
@@ -162,7 +205,7 @@ function toBlocks(cleanHtml, values) {
       else if (tag === 'em' || tag === 'i') style.i += 1;
       else if (tag === 'u') style.u += 1;
     } else {
-      if (tag === 'ul' || tag === 'ol') { flush(); lists.pop(); }
+      if (tag === 'ul' || tag === 'ol') { flush(); const done = lists.pop(); lastOl = done && done.type === 'ol' && !lists.length ? { n: done.n, at: blocks.length } : null; }
       else if (BLOCK.has(tag)) flush();
       else if (tag === 'strong' || tag === 'b') style.b = Math.max(0, style.b - 1);
       else if (tag === 'em' || tag === 'i') style.i = Math.max(0, style.i - 1);
@@ -173,4 +216,4 @@ function toBlocks(cleanHtml, values) {
   return blocks;
 }
 
-module.exports = { sanitize, fieldLabels, viewHtml, toBlocks, FIELD_RE };
+module.exports = { normalizeMarks, sanitize, fieldLabels, viewHtml, toBlocks, FIELD_RE };

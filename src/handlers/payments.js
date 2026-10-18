@@ -75,7 +75,8 @@ async function exportCsv(ctx) {
 }
 
 function csvEscape(v) {
-  const s = String(v == null ? '' : v);
+  let s = String(v == null ? '' : v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // a spreadsheet must never run a reference as a formula
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

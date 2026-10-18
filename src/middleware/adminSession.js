@@ -36,10 +36,10 @@ async function requireAdminSession(ctx) {
   ctx.admin = admin;
 }
 
-/** Route guard: compliance review requires 'owner' or 'admin' (not a blog-only 'editor'). */
+/** Route guard: everything except the blog and /admin/me requires 'owner' or 'admin' (not a blog-only 'editor'). */
 function requireComplianceRole(ctx) {
   if (ctx.adminRole !== 'owner' && ctx.adminRole !== 'admin') {
-    throw httpError(403, 'INSUFFICIENT_ROLE', "Ce rôle ne permet pas de revoir les vérifications KYC/KYB.");
+    throw httpError(403, 'INSUFFICIENT_ROLE', "Ce rôle (éditeur) n'a pas accès à cette section.");
   }
 }
 
