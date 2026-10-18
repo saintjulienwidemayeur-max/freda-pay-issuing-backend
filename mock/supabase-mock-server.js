@@ -44,6 +44,8 @@ const tables = {
   contracts: [],
   contract_signers: [],
   chat_messages: [],
+  api_usage_daily: [],
+  api_blocks: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();

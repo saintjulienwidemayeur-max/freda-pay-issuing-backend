@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const supabase = require('../lib/supabase');
+const apiBlocks = require('../services/apiBlocks');
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -94,6 +95,13 @@ async function requireApiKey(ctx) {
   ctx.merchantId = merchant.id;
   ctx.merchant = merchant;
   ctx.apiKeyMode = mode;
+
+  // An admin can block a merchant's whole API access (abuse, runaway client). Checked last so the call is still counted.
+  const block = apiBlocks.get(merchant.id);
+  if (block) {
+    const until = block.until ? ` jusqu'au ${new Date(block.until).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '';
+    throw httpError(403, 'API_BLOCKED', `L'accès API de ce compte est suspendu${until}${block.reason ? ` : ${block.reason}` : ''}. Contactez-nous via le chat de votre tableau de bord.`);
+  }
 }
 
 function httpError(status, code, message) {

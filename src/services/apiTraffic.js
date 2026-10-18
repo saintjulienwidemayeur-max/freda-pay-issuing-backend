@@ -12,6 +12,7 @@ const UNKNOWN = '_unauthenticated';
 const perMerchant = new Map();     // merchantId -> { events: [{t, route, status, ip, mode}], last }
 
 function record({ merchantId, route, status, ip, mode }) {
+  require('./apiUsage').add({ merchantId, status: Number(status) || 0, mode });
   const now = Date.now();
   const key = merchantId || UNKNOWN;
   let m = perMerchant.get(key);

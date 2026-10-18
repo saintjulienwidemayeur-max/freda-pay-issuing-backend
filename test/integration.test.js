@@ -6315,3 +6315,50 @@ test('a withdrawal that failed for a technical reason shows the merchant a clear
   row.failure_reason = 'Numéro NatCash invalide';
   assert.equal((await api('GET', `/dashboard/payouts/${w.data.id}`, { token: live.token })).data.failure_reason, 'Numéro NatCash invalide');
 });
+
+// ===== API usage per day/week/month and API blocks =====
+test('admin API usage: every merchant with keys is listed, day/week/month counts, and a block stops the API (403) until lifted', async () => {
+  const apiUsage = require('../src/services/apiUsage');
+  const apiTraffic = require('../src/services/apiTraffic');
+  apiTraffic.reset(); apiUsage.reset();
+  const live = await makeLiveMerchant('usage');
+  const idle = await makeLiveMerchant('usageidle');
+  const k = await api('POST', '/dashboard/api-keys', { token: live.token, body: { mode: 'live' } });
+  await api('POST', '/dashboard/api-keys', { token: idle.token, body: { mode: 'live' } }); // a key and no traffic at all
+  const secret = k.data.secret;
+  for (let i = 0; i < 4; i++) await api('GET', '/v1/payments', { token: secret });
+  await apiUsage.flush();
+  const { token: owner } = await adminLogin('owner');
+  const u = await api('GET', '/admin/api-usage', { token: owner });
+  assert.equal(u.status, 200);
+  const me = u.data.merchants.find((m) => m.merchant_id === live.merchantId);
+  const other = u.data.merchants.find((m) => m.merchant_id === idle.merchantId);
+  assert.ok(me && other, 'merchants with keys are all listed, even without traffic');
+  assert.equal(me.today, 4); assert.equal(me.last7, 4); assert.equal(me.last30, 4); assert.equal(me.this_month, 4);
+  assert.equal(me.keys.active, 1); assert.equal(me.keys.live, 1);
+  assert.equal(other.today, 0);
+  const d = await api('GET', `/admin/api-usage/${live.merchantId}`, { token: owner });
+  assert.equal(d.data.daily.length, 30);
+  assert.equal(d.data.daily[29].requests, 4);
+  assert.equal(d.data.weekly.length, 12); assert.equal(d.data.weekly[11].requests, 4);
+  assert.equal(d.data.monthly.length, 6); assert.equal(d.data.monthly[5].requests, 4);
+  assert.equal(d.data.keys.length, 1);
+  // block: the key stops working at once, the merchant is told why, other merchants are untouched
+  const bl = await api('POST', '/admin/api-blocks', { token: owner, body: { merchant_id: live.merchantId, reason: 'Trop de requêtes', hours: 24 } });
+  assert.equal(bl.status, 200);
+  const denied = await api('GET', '/v1/payments', { token: secret });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.data.error.code, 'API_BLOCKED');
+  assert.match(denied.data.error.message, /Trop de requêtes/);
+  assert.equal((await api('GET', '/admin/api-usage', { token: owner })).data.merchants.find((m) => m.merchant_id === live.merchantId).block.reason, 'Trop de requêtes');
+  assert.equal((await api('POST', '/admin/api-blocks', { token: owner, body: { merchant_id: live.merchantId, hours: 0.2 } })).data.error.code, 'INVALID_DURATION');
+  assert.equal((await api('POST', '/admin/api-blocks/' + live.merchantId + '/remove', { token: owner })).status, 200);
+  assert.equal((await api('GET', '/v1/payments', { token: secret })).status, 200);
+  // revoking one key is permanent
+  const keyId = d.data.keys[0].id;
+  assert.equal((await api('POST', `/admin/api-keys/${keyId}/revoke`, { token: owner })).status, 200);
+  assert.equal((await api('GET', '/v1/payments', { token: secret })).status, 401);
+  // editors and merchants cannot use these routes
+  assert.equal((await api('GET', '/admin/api-usage', { token: (await adminLogin('editor')).token })).status, 403);
+  assert.equal((await api('POST', '/admin/api-blocks', { token: live.token, body: { merchant_id: live.merchantId } })).status, 401);
+});
