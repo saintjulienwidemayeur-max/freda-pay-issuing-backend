@@ -68,10 +68,8 @@ async function create(ctx) {
       account = accounts && accounts[0];
     }
     if (!account) throw httpError(400, 'NO_BANK_ACCOUNT', "Ajoutez d'abord votre compte bancaire (section Retraits).");
-    if ((account.currency || 'HTG') !== currency) {
-      throw httpError(400, 'BANK_ACCOUNT_CURRENCY', currency === 'USD'
-        ? 'Un retrait en USD va vers un compte en USD (compte bancaire USD ou Zelle). Choisissez un autre compte.'
-        : 'Un retrait en HTG va vers un compte en HTG (Zelle ne reçoit que des dollars). Choisissez un autre compte.');
+    if (currency === 'USD' && account.currency !== 'USD') {
+      throw httpError(400, 'BANK_ACCOUNT_CURRENCY', "Un retrait en USD va vers un compte en USD (compte bancaire USD ou Zelle). Choisissez un autre compte.");
     }
     // A copy, as it is today: editing the account later never changes a withdrawal already requested.
     bankDetails = {

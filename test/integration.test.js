@@ -4979,7 +4979,7 @@ test('several bank accounts: add, list, edit, delete; the merchant picks which o
   const live = await liveWithGateway('bankmany');
   await ledgerCredit(live.merchantId, 20000);
   const A = { holder_name: 'Rose Lakay', bank_name: 'Unibank', country: 'HT', currency: 'HTG', account_number: '1111222233' };
-  const B = { holder_name: 'Rose Lakay', bank_name: 'Sogebank', country: 'HT', currency: 'HTG', account_number: '9999888877' };
+  const B = { holder_name: 'Rose Lakay', bank_name: 'Sogebank', country: 'HT', currency: 'USD', account_number: '9999888877' };
   const a = await api('POST', '/dashboard/bank-accounts', { token: live.token, body: A });
   const b = await api('POST', '/dashboard/bank-accounts', { token: live.token, body: B });
   assert.equal(a.status, 201); assert.equal(b.status, 201);
@@ -5031,10 +5031,13 @@ test('bank account currency depends on the country, and a Zelle account (email o
   assert.ok(!JSON.stringify(z.data).includes('rose.lakay@gmail.com'));
   const zp = await post({ kind: 'zelle', holder_name: 'Rose Lakay', zelle_contact: '(305) 555-0142' });
   assert.equal(zp.status, 201);
-  // Zelle receives dollars only: an HTG withdrawal to it is refused (the USD path is covered by the USD withdrawal test).
   const w = await api('POST', '/dashboard/payouts', { token: live.token, body: { amount: 5000, method: 'bank', reference: 'PO-ZELLE-1', bank_account_id: z.data.bank_account.id } });
-  assert.equal(w.status, 400);
-  assert.equal(w.data.error.code, 'BANK_ACCOUNT_CURRENCY');
+  assert.equal(w.status, 202);
+  const { token: adminToken } = await adminLogin('owner');
+  const q = await api('GET', '/admin/bank-payouts?status=pending', { token: adminToken });
+  const mine = q.data.payouts.find((p) => p.reference === 'PO-ZELLE-1');
+  assert.equal(mine.bank_details.kind, 'zelle');
+  assert.equal(mine.bank_details.zelle_contact, 'rose.lakay@gmail.com');
 });
 
 test('a verified (KYC/KYB) account can no longer change its name; the phone can still change', async () => {
