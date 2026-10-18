@@ -79,7 +79,7 @@ async function overview(ctx) {
     supabase.select('wallet_topups', { status: 'awaiting_review' }, { limit: 1000 }),
     supabase.select('issuing_access_requests', { status: 'pending' }, { limit: 1000 }),
     supabase.select('payouts', { method: 'bank', status: 'pending', mode: 'live' }, { limit: 1000 }),
-    supabase.select('admin_inbox', { is_read: 'eq.false' }, { limit: 1000 }),
+    supabase.select('admin_inbox', { is_read: false }, { limit: 1000 }),
   ]);
   const active = merchants.filter((m) => !m.deleted_at); // suspended accounts are neither live nor sandbox right now
   const platform = await adminStats.platformStats('live', 14);

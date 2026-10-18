@@ -32,6 +32,7 @@ const config = {
   dbPath: process.env.DB_PATH || require('path').join(__dirname, '..', 'freda.db'),
 
   // Freda Pay's own session-token signing secret (dashboard login).
+  // Required in production: a known fallback would let anyone mint owner/admin tokens (checked below).
   sessionSecret: process.env.SESSION_SECRET || 'CHANGE_ME_DEV_ONLY_SESSION_SECRET',
 
   // PlopPlop is the underlying payment provider. Freda Pay holds ONE merchant
@@ -283,5 +284,12 @@ Object.defineProperty(config, 'exchangeRateHtgPerUsd', {
   enumerable: true,
   get: () => require('./services/settings').rate(),
 });
+
+if (process.env.NODE_ENV === 'production') {
+  const s = process.env.SESSION_SECRET || '';
+  if (s.length < 32 || /CHANGE_ME/i.test(s)) {
+    throw new Error('SESSION_SECRET must be set to a long random value (at least 32 characters) in production.');
+  }
+}
 
 module.exports = config;

@@ -347,6 +347,16 @@ router.post('/admin/blog/:id/unpublish', adminSession.requireAdminSession, admin
 router.del('/admin/blog/:id', adminSession.requireAdminSession, adminBlogHandlers.remove);
 router.post('/admin/blog/upload-cover', adminSession.requireAdminSession, adminBlogHandlers.uploadCover);
 
+// A bug in a fire-and-forget task must be logged, never take the whole API down (Node >= 15 exits on an unhandled rejection).
+process.on('unhandledRejection', (err) => {
+  // eslint-disable-next-line no-console
+  console.error('Unhandled rejection:', err);
+});
+process.on('uncaughtException', (err) => {
+  // eslint-disable-next-line no-console
+  console.error('Uncaught exception:', err);
+});
+
 const server = http.createServer(handler);
 // Hosting proxies (Render, etc.) keep connections open longer than Node's 5s
 // default; if Node closes first, the proxy occasionally reuses a dead socket

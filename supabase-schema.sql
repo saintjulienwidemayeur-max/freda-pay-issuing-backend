@@ -488,6 +488,7 @@ create index if not exists idx_password_resets_token on password_resets(token_ha
 -- A password reset ends every session opened before it (a session token older than this moment is refused).
 alter table merchants add column if not exists sessions_valid_after timestamptz;
 alter table team_members add column if not exists sessions_valid_after timestamptz;
+alter table admin_users add column if not exists sessions_valid_after timestamptz;
 
 -- ===== Real numbers for the admin: what the partners cost us, and what the cards really spend =====
 -- The cost the PARTNER charged us on each fee event (USD). Null on older rows (the admin then falls back to the known price list).

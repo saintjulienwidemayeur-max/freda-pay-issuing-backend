@@ -16,9 +16,45 @@ function headers(extra) {
   );
 }
 
+/**
+ * Explicit PostgREST operators. Only values created through these helpers are
+ * sent as operators; a plain string (e.g. one coming from a request body, a
+ * path or a query string) is always an equality on that literal text.
+ */
+class FilterOp {
+  constructor(expr) { this.expr = expr; }
+}
+const SAFE_LIST_ITEM = /^[A-Za-z0-9_.:@-]+$/;
+const isNull = () => new FilterOp('is.null');
+const notNull = () => new FilterOp('not.is.null');
+const lt = (v) => new FilterOp(`lt.${v}`);
+const lte = (v) => new FilterOp(`lte.${v}`);
+const gt = (v) => new FilterOp(`gt.${v}`);
+const gte = (v) => new FilterOp(`gte.${v}`);
+const neq = (v) => new FilterOp(`neq.${v}`);
+/** `in.(a,b,c)`: every item is validated so it cannot smuggle in a comma/parenthesis. */
+const inList = (items) => {
+  const list = Array.from(items, String);
+  if (!list.every((x) => SAFE_LIST_ITEM.test(x))) throw new Error('Valeur de filtre invalide.');
+  return new FilterOp(`in.(${list.join(',')})`);
+};
+
+function filterValue(val) {
+  if (val instanceof FilterOp) return val.expr;
+  return `eq.${val}`;
+}
+
 async function handle(res) {
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      // A gateway/proxy error page is not JSON: surface it as a normal upstream error.
+      if (res.ok) throw Object.assign(new Error('Réponse invalide de la base de données.'), { httpStatus: 502, code: 'SUPABASE_ERROR' });
+    }
+  }
   if (!res.ok) {
     const message = (data && (data.message || data.error || data.hint)) || `Supabase error (HTTP ${res.status})`;
     const err = new Error(message);
@@ -32,17 +68,18 @@ async function handle(res) {
 
 /**
  * SELECT rows from a table.
- * filters: { column: value } -> translated to `column=eq.value`
- *   If a value already looks like a PostgREST operator (contains a dot, e.g.
- *   'is.null', 'neq.5'), it is passed through as-is instead of being wrapped in eq.
+ * filters: { column: value } -> translated to `column=eq.value`.
+ *   A plain value is ALWAYS a literal equality, even when it looks like an
+ *   operator ('neq.x', 'like.mch_a*'): request data must never become a filter.
+ *   Internal callers that need an operator pass an explicit marker built by
+ *   supabase.isNull / notNull / lt / lte / gt / gte / neq / inList.
  * options: { select, order, limit }
  */
 async function select(table, filters, options) {
   const params = new URLSearchParams();
   params.set('select', (options && options.select) || '*');
   Object.entries(filters || {}).forEach(([col, val]) => {
-    const isRawOperator = typeof val === 'string' && /^[a-z]+\./.test(val);
-    params.append(col, isRawOperator ? val : `eq.${val}`);
+    params.append(col, filterValue(val));
   });
   if (options && options.order) params.set('order', options.order);
   if (options && options.limit) params.set('limit', String(options.limit));
@@ -72,8 +109,7 @@ async function insert(table, row) {
 async function update(table, filters, patch) {
   const params = new URLSearchParams();
   Object.entries(filters || {}).forEach(([col, val]) => {
-    const isRawOperator = typeof val === 'string' && /^[a-z]+\./.test(val);
-    params.append(col, isRawOperator ? val : `eq.${val}`);
+    params.append(col, filterValue(val));
   });
 
   const res = await fetch(`${restUrl(`/${table}`)}?${params.toString()}`, {
@@ -191,8 +227,7 @@ async function signedUrl(bucket, path, expiresInSeconds) {
 async function del(table, filters) {
   const params = new URLSearchParams();
   Object.entries(filters || {}).forEach(([col, val]) => {
-    const isRawOperator = typeof val === 'string' && /^[a-z]+\./.test(val);
-    params.append(col, isRawOperator ? val : `eq.${val}`);
+    params.append(col, filterValue(val));
   });
   if (!params.toString()) throw new Error('Refusing to DELETE without a filter.');
   const res = await fetch(`${restUrl(`/${table}`)}?${params.toString()}`, {
@@ -202,4 +237,4 @@ async function del(table, filters) {
   return handle(res);
 }
 
-module.exports = { select, selectOne, insert, update, delete: del, rpc, uploadFile, signedUrl };
+module.exports = { isNull, notNull, lt, lte, gt, gte, neq, inList, select, selectOne, insert, update, delete: del, rpc, uploadFile, signedUrl };

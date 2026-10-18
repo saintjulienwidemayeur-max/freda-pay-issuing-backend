@@ -211,11 +211,12 @@ test('verifying with the correct OTP code succeeds and returns a session', async
   merchantId = r.data.merchant.id;
 });
 
-test('verifying again (already verified) just re-issues a session, no error', async () => {
+test('verifying again (already verified) never issues a session: 409 ALREADY_VERIFIED', async () => {
   const code = extractOtpFromEmail('owner@boutiquelakay.com');
   const r = await api('POST', '/auth/verify-otp', { body: { merchant_id: pendingMerchantId, code } });
-  assert.equal(r.status, 200);
-  assert.ok(r.data.session_token);
+  assert.equal(r.status, 409);
+  assert.equal(r.data.error.code, 'ALREADY_VERIFIED');
+  assert.equal(r.data.session_token, undefined);
 });
 
 test('resend-otp is rejected once already verified', async () => {

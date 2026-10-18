@@ -31,6 +31,10 @@ async function requireAdminSession(ctx) {
   }
   const admin = await loadAdmin(payload.adminId);
   if (!admin) throw httpError(401, 'INVALID_TOKEN', "Ce compte administrateur n'existe plus.");
+  // A password change ends every session opened before it (compared in whole seconds: iat has no milliseconds).
+  if (admin.sessions_valid_after && Number(payload.iat || 0) < Math.floor(new Date(admin.sessions_valid_after).getTime() / 1000)) {
+    throw httpError(401, 'SESSION_ENDED', 'Votre mot de passe a été modifié : reconnectez-vous.');
+  }
   ctx.adminId = admin.id;
   ctx.adminRole = admin.role;
   ctx.admin = admin;

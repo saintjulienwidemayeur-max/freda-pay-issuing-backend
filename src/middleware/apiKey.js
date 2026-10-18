@@ -56,7 +56,7 @@ async function requireApiKey(ctx) {
 
   let entry = cacheGet(hash);
   if (!entry) {
-    const keyRow = await supabase.selectOne('api_keys', { secret_hash: hash, revoked_at: 'is.null' });
+    const keyRow = await supabase.selectOne('api_keys', { secret_hash: hash, revoked_at: supabase.isNull() });
     if (!keyRow) {
       throw httpError(401, 'INVALID_API_KEY', 'Clé API invalide ou révoquée.');
     }

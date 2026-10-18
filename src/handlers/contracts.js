@@ -27,8 +27,8 @@ function httpError(status, code, message) {
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const isEmail = (s) => typeof s === 'string' && /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/.test(s.trim());
 function ipOf(ctx) {
-  const cf = ctx.req.headers['cf-connecting-ip'];
-  return String(cf || clientIp(ctx.req) || 'inconnue').slice(0, 64);
+  // Same trusted-hop logic as the rate limiter (see rateLimit.clientIp): a header the signer writes is not evidence.
+  return String(clientIp(ctx.req) || 'inconnue').slice(0, 64);
 }
 const cleanText = (s, max) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
 
@@ -191,7 +191,7 @@ async function completeContract(c, { fieldsIn, signerName, signature, ip, ua, em
   if (name.length < 2) throw httpError(400, 'MISSING_FIELDS', 'Entrez votre nom complet.');
   const sig = cleanSignature(signature);
   const signedAt = new Date().toISOString();
-  const [won] = await supabase.update('contracts', { id: c.id, status: STATUS.PENDING, signed_at: 'is.null' }, {
+  const [won] = await supabase.update('contracts', { id: c.id, status: STATUS.PENDING, signed_at: supabase.isNull() }, {
     fields, signer_name: name, signer_email: email, signer_signature: sig,
     signed_at: signedAt, signed_ip: ip, signed_user_agent: cleanText(ua, 300), updated_at: signedAt,
   });
@@ -253,12 +253,12 @@ async function adminList(ctx) {
   const ids = [...new Set(rows.map((r) => r.merchant_id).filter(Boolean))];
   const names = {};
   if (ids.length) {
-    const ms = await supabase.select('merchants', { id: `in.(${ids.join(',')})` }, { select: 'id,business_name' });
+    const ms = await supabase.select('merchants', { id: supabase.inList(ids) }, { select: 'id,business_name' });
     for (const m of ms) names[m.id] = m.business_name;
   }
   const extras = {};
   if (rows.length) {
-    const sg = await supabase.select(signerTable, { contract_id: `in.(${rows.map((r) => r.id).join(',')})` }, { select: 'contract_id,status', limit: 1000 });
+    const sg = await supabase.select(signerTable, { contract_id: supabase.inList(rows.map((r) => r.id)) }, { select: 'contract_id,status', limit: 1000 });
     for (const x of sg) (extras[x.contract_id] = extras[x.contract_id] || []).push(x);
   }
   return { status: 200, body: { contracts: rows.map((r) => Object.assign({}, r, { merchant_name: r.merchant_id ? names[r.merchant_id] || null : null, progress: progress(r, extras[r.id] || []) })) } };
