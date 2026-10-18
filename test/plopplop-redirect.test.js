@@ -38,3 +38,26 @@ test('plopplop client keeps the Authorization header across a redirect', async (
     await new Promise((r) => target.close(r));
   }
 });
+
+// Some provider stacks read headers case-sensitively: the header names must be written as in the documentation.
+test('plopplop client writes Authorization and Content-Type with the documented capitalisation', async () => {
+  let raw = [];
+  const srv = http.createServer((req, res) => {
+    raw = req.rawHeaders.filter((_, i) => i % 2 === 0);
+    req.resume();
+    req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"success":true,"withdrawal_token":"wd"}'); });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    process.env.PLOPPLOP_BASE_URL = `http://127.0.0.1:${srv.address().port}`;
+    delete require.cache[require.resolve('../src/config')];
+    delete require.cache[require.resolve('../src/services/plopplop')];
+    const plop = require('../src/services/plopplop');
+    const out = await plop.getWithdrawalToken({ marchandToken: 'tok', amount: 1, method: 'moncash', recipient: '50912345678', reference: 'r', timestamp: 1, signature: 's' });
+    assert.equal(out.data.success, true);
+    assert.ok(raw.includes('Authorization'), raw.join(','));
+    assert.ok(raw.includes('Content-Type'), raw.join(','));
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});
