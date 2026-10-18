@@ -2,6 +2,7 @@
 const orchestrator = require('../services/walletTopupOrchestrator');
 const { generatePaymentId, namespaceReference } = require('../utils/ids');
 const { resolveMode } = require('../utils/mode');
+const { parseAmount } = require('../utils/money');
 const supabase = require('../lib/supabase');
 const { planKeyFor } = require('../services/plans');
 
@@ -27,9 +28,7 @@ async function create(ctx) {
   try {
     if (orchestrator.AUTO_METHODS.includes(method)) {
       const { amount_htg } = ctx.body;
-      if (typeof amount_htg !== 'number' || amount_htg <= 0) {
-        throw httpError(400, 'INVALID_AMOUNT', 'amount_htg doit être un nombre positif.');
-      }
+      parseAmount(amount_htg, { field: 'amount_htg' });
       const plopplopReference = namespaceReference(ctx.merchantId, reference);
       const topup = await orchestrator.createAutoTopup({
         merchantId: ctx.merchantId,
@@ -45,9 +44,7 @@ async function create(ctx) {
 
     // Manual path: Zelle / bank_transfer.
     const { amount_usd, receipt_filename, receipt_base64, receipt_content_type } = ctx.body;
-    if (typeof amount_usd !== 'number' || amount_usd <= 0) {
-      throw httpError(400, 'INVALID_AMOUNT', 'amount_usd doit être un nombre positif.');
-    }
+    parseAmount(amount_usd, { field: 'amount_usd' });
     let receiptBuffer = null;
     if (receipt_base64) {
       if (receipt_base64.length > 8 * 1024 * 1024) {
@@ -126,7 +123,7 @@ function httpError(status, code, message) {
  */
 async function quote(ctx) {
   const amountHtg = Number(ctx.query && ctx.query.amount_htg);
-  if (!(amountHtg > 0)) throw httpError(400, 'INVALID_AMOUNT', 'amount_htg doit être un nombre positif.');
+  if (!(amountHtg > 0 && amountHtg <= 1e7)) throw httpError(400, 'INVALID_AMOUNT', 'amount_htg doit être un nombre positif.');
   const mode = await resolveMode(ctx);
   const merchant = ctx.merchant || (await supabase.selectOne('merchants', { id: ctx.merchantId }));
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: ctx.merchantId });

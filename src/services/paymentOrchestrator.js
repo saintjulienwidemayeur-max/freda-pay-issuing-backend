@@ -226,12 +226,20 @@ async function refreshStatus(merchantId, payment) {
     const pricingOverride = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId });
     const { fee, net } = pricing.computeGatewayFee(gatewayPlanKey, payment.amount, pricingOverride);
 
+    // Claim: only the request that flips pending -> succeeded gets the row back, so concurrent polls credit once.
     const [updated] = await supabase.update(
       'payments',
-      { id: payment.id },
+      { id: payment.id, status: 'pending' },
       { status: 'succeeded', fee, net_amount: net, updated_at: new Date().toISOString() }
     );
-    await ledger.creditGateway(merchantId, net, payment.currency, payment.plopplop_reference, payment.id, payment.mode);
+    if (!updated) return supabase.selectOne('payments', { id: payment.id }); // someone else settled it first
+    try {
+      await ledger.creditGateway(merchantId, net, payment.currency, payment.plopplop_reference, payment.id, payment.mode);
+    } catch (err) {
+      // Not credited: reopen the payment so the next poll tries again instead of losing the money.
+      await supabase.update('payments', { id: payment.id, status: 'succeeded' }, { status: 'pending', updated_at: new Date().toISOString() }).catch(() => {});
+      throw err;
+    }
     const gwCost = config.gatewayProviderCost;
     const partnerCostHtg = gwCost.pct / 100 * Number(payment.amount) + gwCost.fixedHTG;
     await revenue.log(merchantId, 'gateway_payment', fee, payment.currency, payment.id, payment.mode, pricing.htgToUsd(partnerCostHtg));

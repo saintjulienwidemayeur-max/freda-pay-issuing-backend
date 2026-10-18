@@ -68,12 +68,19 @@ async function refreshAutoTopup(merchantId, topup) {
     const merchant = await supabase.selectOne('merchants', { id: merchantId });
     const pricingOverride = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId });
     const { fee, fredaFee, creditedUsd } = computeAutoConversion(Number(topup.amount_htg), planKeyFor(merchant, 'issuing', topup.mode), pricingOverride);
+    // Claim: only the request that flips pending -> succeeded gets the row back, so concurrent polls credit once.
     const [updated] = await supabase.update(
       'wallet_topups',
-      { id: topup.id },
+      { id: topup.id, status: 'pending' },
       { status: 'succeeded', fee_htg: fee, credited_usd: creditedUsd, updated_at: new Date().toISOString() }
     );
-    await ledger.creditMasterWallet(merchantId, creditedUsd, 'USD', topup.plopplop_reference, topup.id, topup.mode);
+    if (!updated) return supabase.selectOne('wallet_topups', { id: topup.id }); // someone else settled it first
+    try {
+      await ledger.creditMasterWallet(merchantId, creditedUsd, 'USD', topup.plopplop_reference, topup.id, topup.mode);
+    } catch (err) {
+      await supabase.update('wallet_topups', { id: topup.id, status: 'succeeded' }, { status: 'pending', updated_at: new Date().toISOString() }).catch(() => {});
+      throw err;
+    }
     // Income = Freda Pay's own fee only. The payment partner's fee was charged to the payer and handed over, so it is neither
     // income nor cost. The card partner's 2 % on funding is a real cost of the dollars credited.
     await revenue.log(merchantId, 'wallet_funding', fredaFee, 'HTG', topup.id, topup.mode, pricing.round2(config.issuingProviderCostsUSD.walletFundingPct * creditedUsd));

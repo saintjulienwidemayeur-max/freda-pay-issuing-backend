@@ -49,8 +49,8 @@ function effectiveGatewayPricing(gatewayPlanKey, override) {
  */
 function computeGatewayFee(gatewayPlanKey, amount, override) {
   const cfg = effectiveGatewayPricing(gatewayPlanKey, override);
-  const fee = round2(amount * cfg.pct + cfg.fixedHTG);
-  return { fee, net: round2(amount - fee) };
+  const fee = Math.min(round2(amount * cfg.pct + cfg.fixedHTG), round2(amount)); // never more than the payment: no negative credit
+  return { fee, net: Math.max(0, round2(amount - fee)) };
 }
 
 /**
@@ -62,8 +62,8 @@ function computeGatewayCardFee(gatewayPlanKey, amountUsd, override) {
   const base = plans[gatewayPlanKey] || plans.standard;
   const pct = override && override.gateway_card_pct != null ? Number(override.gateway_card_pct) : base.pct;
   const fixed = override && override.gateway_card_fixed_usd != null ? Number(override.gateway_card_fixed_usd) : base.fixedUSD;
-  const fee = round2(Number(amountUsd) * pct + fixed);
-  return { fee, net: round2(Number(amountUsd) - fee) };
+  const fee = Math.min(round2(Number(amountUsd) * pct + fixed), round2(Number(amountUsd))); // never more than the payment: no negative credit
+  return { fee, net: Math.max(0, round2(Number(amountUsd) - fee)) };
 }
 /** What the card partner charges us on a card payment (USD). */
 function cardPartnerCostUsd(amountUsd) {

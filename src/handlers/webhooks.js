@@ -68,11 +68,12 @@ async function receiveMaplerad(ctx) {
   try {
     await processMapleradEvent(event, webhookMode);
   } catch (err) {
-    // We already stored the raw event, so nothing is lost even if processing
-    // fails - log server-side and still acknowledge receipt (200) so
-    // Maplerad doesn't endlessly retry a webhook we simply couldn't map.
+    // A failure here (database hiccup...) must not turn the event into a "duplicate" that is never processed: release the
+    // record and answer 500 so the partner delivers it again. Processing is idempotent (every money step is a claim).
     // eslint-disable-next-line no-console
     console.error('Error processing Maplerad webhook:', event.event, err);
+    await supabase.delete('webhook_events', { id: svixId }).catch(() => {});
+    throw httpError(500, 'PROCESSING_ERROR', 'Traitement impossible pour le moment.');
   }
 
   return { status: 200, body: { received: true } };
