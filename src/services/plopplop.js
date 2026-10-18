@@ -1,4 +1,6 @@
 'use strict';
+const http = require('http');
+const https = require('https');
 const config = require('../config');
 
 function baseUrl() {
@@ -6,6 +8,31 @@ function baseUrl() {
 }
 
 const MAX_REDIRECTS = 3;
+const REQUEST_TIMEOUT_MS = 30000;
+
+/**
+ * One POST with the header names written exactly as in the provider's documentation (Authorization, Content-Type).
+ * fetch() sends every header name in lower case; a provider that reads headers case-sensitively (some PHP stacks do)
+ * then reports "Jeton d'authentification manquant" although the token is there.
+ */
+function rawPost(url, headers, payload) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request(u, {
+      method: 'POST',
+      headers: Object.assign({}, headers, { 'Content-Length': Buffer.byteLength(payload) }),
+      timeout: REQUEST_TIMEOUT_MS,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, location: res.headers.location || null, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
 
 /** The same provider on another name (www., api., the apex) or upgraded to https: the only redirect it is safe to re-send our credentials to. */
 function sameProvider(from, to) {
@@ -24,8 +51,8 @@ async function postJson(path, body, headers) {
   const allHeaders = Object.assign({ 'Content-Type': 'application/json' }, headers || {});
   let res;
   for (let hop = 0; ; hop++) {
-    res = await fetch(url, { method: 'POST', headers: allHeaders, body: payload, redirect: 'manual' });
-    const location = res.headers.get('location');
+    res = await rawPost(url, allHeaders, payload);
+    const location = res.location;
     if (![301, 302, 303, 307, 308].includes(res.status) || !location) break;
     if (hop >= MAX_REDIRECTS) break;
     const next = new URL(location, url);
@@ -40,7 +67,7 @@ async function postJson(path, body, headers) {
   }
   let data;
   try {
-    data = await res.json();
+    data = JSON.parse(res.text);
   } catch (e) {
     data = null;
   }
