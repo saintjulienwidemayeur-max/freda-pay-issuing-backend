@@ -5785,3 +5785,132 @@ test('contracts: tables are kept, [[Signature ...]] marks are not blanks to fill
   assert.equal(pdf.status, 200);
   assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
 });
+
+// ===== fixer3: authorization, blog, contracts =====
+test('fixer3: an editor admin cannot read KYC documents, receipts, merchants, overview, team or disputes (owner/admin still can)', async () => {
+  const { token: editor } = await adminLogin('editor');
+  const { token: owner } = await adminLogin('owner');
+  for (const path of ['/admin/verifications', '/admin/verifications/vs_x/document?path=a/b', '/admin/deposits', '/admin/deposits/dep_x/receipt', '/admin/merchants', '/admin/merchants/mch_x', '/admin/overview', '/admin/visits', '/admin/team', '/admin/disputes', '/admin/issuing-access']) {
+    const r = await api('GET', path, { token: editor });
+    assert.equal(r.status, 403, path);
+    assert.equal(r.data.error.code, 'INSUFFICIENT_ROLE', path);
+  }
+  assert.equal((await api('GET', '/admin/merchants', { token: owner })).status, 200);
+  assert.equal((await api('GET', '/admin/verifications', { token: owner })).status, 200);
+  assert.equal((await api('GET', '/admin/blog', { token: editor })).status, 200); // the blog stays open to editors
+  assert.equal((await api('GET', '/admin/me', { token: editor })).status, 200);
+});
+
+test('fixer3: blog cover URL must be https, and every field is escaped on the public page', async () => {
+  const { token } = await adminLogin('editor');
+  const bad = await api('POST', '/admin/blog', { token, body: { title: 'XSS test', content_markdown: 'texte', cover_image_url: 'x" onerror="alert(1)' } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.data.error.code, 'INVALID_COVER');
+  assert.equal((await api('POST', '/admin/blog', { token, body: { title: 'XSS test', content_markdown: 'texte', cover_image_url: 'javascript:alert(1)' } })).status, 400);
+  assert.equal((await api('POST', '/admin/blog', { token, body: { title: 'XSS test', content_markdown: 'texte', cover_image_url: 'http://insecure.example.com/a.png' } })).status, 400);
+  const ok = await api('POST', '/admin/blog', { token, body: { title: 'Article sûr <b>x</b>', content_markdown: '[clic](javascript:alert(1)) ![i](data:text/html,x) [bon](https://example.com/?a=1&b=2) \'quote\'', cover_image_url: 'https://cdn.example.com/c.png', tags: ['<img src=x>'] } });
+  assert.equal(ok.status, 201);
+  assert.equal((await api('PUT', `/admin/blog/${ok.data.post.id}`, { token, body: { cover_image_url: 'x" onerror="alert(1)' } })).status, 400);
+  await api('POST', `/admin/blog/${ok.data.post.id}/publish`, { token });
+  const html = await (await fetch(baseUrl + '/blog/' + ok.data.post.slug)).text();
+  assert.ok(!/javascript:/i.test(html.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, '')));
+  assert.ok(!/<img src=x>|<b>x<\/b>/.test(html));
+  assert.match(html, /<img class="cover" src="https:\/\/cdn\.example\.com\/c\.png"/);
+  assert.match(html, /<a href="https:\/\/example\.com\/\?a=1&amp;b=2" rel="noopener nofollow">bon<\/a>/);
+  // an old row holding a hostile cover is not rendered either
+  mockTables.blog_posts.find((p) => p.id === ok.data.post.id).cover_image_url = 'javascript:alert(1)" onerror="alert(2)';
+  const html2 = await (await fetch(baseUrl + '/blog/' + ok.data.post.slug)).text();
+  assert.ok(!/onerror|javascript:/i.test(html2.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, '')));
+  const up = await api('POST', '/admin/blog/upload-cover', { token, body: { base64: 'aGVsbG8=', content_type: 'text/html', filename: 'a.html' } });
+  assert.equal(up.status, 400);
+});
+
+test('fixer3: webhook URLs pointing at local, private, link-local or non-https addresses are refused (no flag), and delivery re-checks', async () => {
+  const urlSafety = require('../src/utils/urlSafety');
+  const saved = process.env.ALLOW_PRIVATE_WEBHOOKS;
+  delete process.env.ALLOW_PRIVATE_WEBHOOKS;
+  try {
+    const reg = await registerAndVerify({ business_name: 'Ssrf Co', email: 'ssrf-co@example.com', password: 'password123' });
+    const token = reg.data.session_token;
+    for (const url of ['http://localhost:4503/x', 'https://localhost/x', 'https://127.0.0.1/x', 'https://10.0.0.5:9/', 'https://192.168.1.1/', 'https://172.16.0.1/', 'https://169.254.169.254/latest/meta-data/', 'https://[::1]/', 'https://[::ffff:7f00:1]/', 'https://[fd00::1]/', 'https://0.0.0.0/', 'https://metadata.google.internal/', 'https://intranet/', 'ftp://example.com/', 'file:///etc/passwd', 'https://user:pw@example.com/', 'https://2130706433/']) {
+      const r = await api('POST', '/dashboard/webhooks', { token, body: { url } });
+      assert.equal(r.status, 400, url);
+      assert.equal(r.data.error.code, 'INVALID_URL', url);
+    }
+    assert.equal((await api('POST', '/dashboard/webhooks', { token, body: { url: 'https://8.8.8.8/hook' } })).status, 201);
+    assert.equal(urlSafety.isBlockedIp('8.8.8.8'), false);
+    assert.equal(urlSafety.isBlockedIp('100.64.0.1'), true);
+    // a stored endpoint that is not allowed any more is not called
+    const row = mockTables.webhook_endpoints.find((e) => e.merchant_id === reg.data.merchant.id);
+    row.url = 'https://169.254.169.254/latest/';
+    const key = await apiKeyFor(reg.data.session_token, 'test');
+    const t = await api('POST', '/v1/webhooks/test', { token: key });
+    assert.equal(t.data.sent, false);
+    assert.equal(t.data.http_status, undefined);
+  } finally {
+    process.env.ALLOW_PRIVATE_WEBHOOKS = saved;
+  }
+});
+
+test('fixer3: a [[field]] split by formatting is merged, so the contract can be signed and the PDF shows the answer', async () => {
+  const h = require('../src/utils/contractHtml');
+  const clean = h.sanitize('<p>Entre [[Nom <b>du</b>  rep]] et [[constructor]] &amp;lt;b&amp;gt;</p>');
+  assert.deepEqual(h.fieldLabels(clean), ['Nom du rep', 'constructor']);
+  assert.match(h.viewHtml(clean), /data-field="Nom du rep"/);
+  const runs = h.toBlocks(clean, { 'Nom du rep': 'Jean' })[0].runs;
+  assert.ok(runs.some((r) => r.field === 'Nom du rep' && r.text === 'Jean'));
+  assert.ok(runs.some((r) => r.field === 'constructor' && r.text === '')); // never the Object.prototype function
+  assert.ok(runs.some((r) => /&lt;b&gt;/.test(r.text || ''))); // typed entities are not decoded twice
+  const m = await makeLiveMerchant('ctrsplit');
+  const html = '<p>Contrat de test avec [[Nom <b>du</b> rep]] et la suite du texte.</p>';
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat split', body_html: html, merchant_id: m.merchantId, admin_signature: typedSig('Admin Freda') } });
+  assert.equal(create.status, 201);
+  assert.deepEqual(create.data.contract.field_labels, ['Nom du rep']);
+  const sign = await api('POST', `/dashboard/contracts/${create.data.contract.id}/sign`, { token: m.token, body: { signer_name: 'Jean Test', fields: { 'Nom du rep': 'Jean' }, signature: typedSig('Jean Test') } });
+  assert.equal(sign.status, 200);
+  assert.equal(sign.data.contract.status, 'COMPLETED');
+  // unreadable blanks and absurd words are refused at creation
+  const open = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat ouvert', body_html: '<p>Un champ [[jamais fermé et assez de texte ici.</p>', merchant_id: m.merchantId, admin_signature: typedSig('A') } });
+  assert.equal(open.status, 400);
+  const word = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat mot', body_html: `<p>${'a'.repeat(400)}</p>`, merchant_id: m.merchantId, admin_signature: typedSig('A') } });
+  assert.equal(word.status, 400);
+});
+
+test('fixer3: contract PDF handles lists in cells, a huge word quickly, long names, oversized rows, accents and loose numbered lists', async () => {
+  const { buildPdf } = require('../src/services/contractPdf');
+  const h = require('../src/utils/contractHtml');
+  // list in a cell: kept inside the cell, not ejected before the table
+  const blocks = h.toBlocks(h.sanitize('<table><tr><td><ul><li>un</li><li>deux</li></ul></td></tr></table>'));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].kind, 'table');
+  assert.equal(blocks[0].rows[0].cells[0].runs.filter((r) => r.text === '• ').length, 2);
+  // loose numbered list keeps counting
+  const ol = h.toBlocks(h.sanitize('<ol><li>a</li></ol><p></p><ol><li>b</li></ol><ol><li>c</li></ol>')).filter((b) => b.kind === 'li').map((b) => b.prefix);
+  assert.deepEqual(ol, ['1.', '2.', '3.']);
+  const base = { id: 'ctr_f3', title: 'Contrat “œuvre” 5 €', status: 'COMPLETED', admin_name: 'N'.repeat(120), admin_email: `${'e'.repeat(150)}@example.com`, signer_name: 'Zażółć', signer_email: 'a@b.co', fields: {}, signers: [], admin_signed_at: new Date().toISOString(), signed_at: new Date().toISOString() };
+  const t0 = Date.now();
+  const long = await buildPdf({ ...base, body_html: `<p>${'a'.repeat(5000)}</p><p>Voilà l’œuvre à 5 € « ok » Zażółć</p>` });
+  assert.ok(Date.now() - t0 < 3000, `5000-char word took ${Date.now() - t0} ms`);
+  assert.equal(long.slice(0, 5).toString(), '%PDF-');
+  const giant = await buildPdf({ ...base, body_html: `<table><tr><th>H</th><th>I</th></tr><tr><td>${'mot '.repeat(1500)}</td><td>x</td></tr></table>` });
+  assert.equal(giant.slice(0, 5).toString(), '%PDF-');
+  const { PDFDocument } = require('../src/vendor/pdf-lib.min.js');
+  assert.ok((await PDFDocument.load(giant)).getPageCount() >= 3); // the oversized row continues over several pages instead of running off one
+});
+
+test('fixer3: resending an admin invitation links to the panel the request came from; KYC cannot be resubmitted once verified; CSV formulas are neutralised', async () => {
+  const { token } = await adminLogin('owner');
+  const inv = await api('POST', '/admin/team/invite', { token, body: { email: 'resend-panel@fredapay.com', name: 'Resend Panel', role: 'editor' } });
+  assert.equal(inv.status, 201);
+  sentEmails.length = 0;
+  const re = await api('POST', `/admin/team/${inv.data.admin.id}/resend`, { token, body: {}, headers: { Origin: 'https://panel.example.org' } });
+  assert.equal(re.status, 200);
+  const mail = sentEmails.filter((e) => e.to === 'resend-panel@fredapay.com').slice(-1)[0];
+  assert.match(mail.text, /https:\/\/panel\.example\.org\/admin\.html\?invite=[a-f0-9]{64}/);
+
+  const reg = await registerAndVerify({ business_name: 'Kyc Twice Co', email: 'kyc-twice@example.com', password: 'password123' });
+  mockTables.merchants.find((x) => x.id === reg.data.merchant.id).kyc_status = 'verified';
+  const again = await api('POST', '/dashboard/verification/kyc', { token: reg.data.session_token, body: { documents: [{ label: 'ID', base64: 'aGVsbG8=', filename: "a.x')-alert(1)-('" }] } });
+  assert.equal(again.status, 409);
+  assert.equal(again.data.error.code, 'ALREADY_VERIFIED');
+});
