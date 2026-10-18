@@ -13,6 +13,12 @@ function cleanPanelUrl(value) {
     return `${u.origin}${u.pathname}`;
   } catch (e) { return null; }
 }
+/** The panel address for an invitation link: reported by the panel, else the page the request came from (resend sends no body). */
+function panelUrlFrom(ctx) {
+  const h = (ctx.req && ctx.req.headers) || {};
+  const origin = cleanPanelUrl(h.origin && h.origin !== 'null' ? `${h.origin}/admin.html` : '');
+  return cleanPanelUrl(ctx.body && ctx.body.panel_url) || cleanPanelUrl(h.referer) || origin;
+}
 const { randomHex } = require('../utils/ids');
 const { hashPassword } = require('../utils/password');
 const { teamInviteEmail } = require('../templates/teamInviteEmail');
@@ -65,7 +71,7 @@ async function invite(ctx) {
   });
 
   try {
-    await sendAdminInvite(admin, cleanPanelUrl(ctx.body && ctx.body.panel_url));
+    await sendAdminInvite(admin, panelUrlFrom(ctx));
   } catch (err) {
     await supabase.delete('admin_users', { id: admin.id });
     throw httpError(502, 'INVITE_NOT_SENT', "L'invitation n'a pas pu être envoyée. Réessayez dans un instant.");
@@ -78,7 +84,7 @@ async function resend(ctx) {
   if (!admin) throw httpError(404, 'NOT_FOUND', 'Administrateur introuvable.');
   if (admin.status !== 'invited') throw httpError(409, 'ALREADY_ACTIVE', 'Ce compte a déjà été activé.');
   try {
-    await sendAdminInvite(admin, cleanPanelUrl(ctx.body && ctx.body.panel_url));
+    await sendAdminInvite(admin, panelUrlFrom(ctx));
   } catch (err) {
     throw httpError(502, 'INVITE_NOT_SENT', "L'invitation n'a pas pu être envoyée. Réessayez dans un instant.");
   }
