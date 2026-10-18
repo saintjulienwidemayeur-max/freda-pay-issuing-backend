@@ -42,7 +42,7 @@ async function forgot(ctx) {
   const subject = await findSubject(email);
   if (subject) {
     // Only the newest link works.
-    await supabase.update('password_resets', { subject_type: subject.type, subject_id: subject.id, used_at: 'is.null' }, { used_at: new Date().toISOString() });
+    await supabase.update('password_resets', { subject_type: subject.type, subject_id: subject.id, used_at: supabase.isNull() }, { used_at: new Date().toISOString() });
     const token = crypto.randomBytes(32).toString('hex');
     await supabase.insert('password_resets', {
       id: `prr_${randomHex(10)}`,
@@ -80,7 +80,7 @@ async function reset(ctx) {
   if (!row) throw httpError(400, 'RESET_LINK_INVALID', "Ce lien est invalide ou a expiré. Demandez-en un nouveau.");
 
   // Claim first: a link can be used exactly once, even if two requests race.
-  const claimed = await supabase.update('password_resets', { id: row.id, used_at: 'is.null' }, { used_at: new Date().toISOString() });
+  const claimed = await supabase.update('password_resets', { id: row.id, used_at: supabase.isNull() }, { used_at: new Date().toISOString() });
   if (!claimed || !claimed.length) throw httpError(400, 'RESET_LINK_INVALID', "Ce lien est invalide ou a expiré. Demandez-en un nouveau.");
 
   const table = row.subject_type === 'member' ? 'team_members' : 'merchants';

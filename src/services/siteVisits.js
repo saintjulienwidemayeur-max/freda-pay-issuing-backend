@@ -69,7 +69,7 @@ const shape = (m, keys) => keys.map((k) => ({ key: k, views: (m.get(k) || { view
 async function loadRows(sinceDay) {
   const out = [];
   for (let offset = 0; offset < 200000; offset += 1000) {
-    const page = await supabase.select('site_visits', { day: `gte.${sinceDay}` }, { select: 'day,visitor_hash,path,referrer_host,device', order: 'day.asc', limit: 1000, offset });
+    const page = await supabase.select('site_visits', { day: supabase.gte(sinceDay) }, { select: 'day,visitor_hash,path,referrer_host,device', order: 'day.asc', limit: 1000, offset });
     out.push(...page);
     if (page.length < 1000) break;
   }

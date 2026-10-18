@@ -5,6 +5,7 @@ const config = require('../config');
 const { verifyPassword, hashPassword } = require('../utils/password');
 const rateLimit = require('../utils/rateLimit');
 const loginOtp = require('../services/loginOtp');
+const adminSession = require('../middleware/adminSession');
 
 const LOGIN_FAIL_LIMIT = 8;
 const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
@@ -64,12 +65,20 @@ async function me(ctx) {
 async function changePassword(ctx) {
   const { current_password, new_password } = ctx.body || {};
   if (!current_password || !new_password) throw httpError(400, 'MISSING_FIELDS', 'Mot de passe actuel et nouveau requis.');
+  if (typeof current_password !== 'string' || typeof new_password !== 'string') throw httpError(400, 'INVALID_FIELDS', 'Les mots de passe doivent être du texte.');
   if (String(new_password).length < 8) throw httpError(400, 'WEAK_PASSWORD', 'Le nouveau mot de passe doit contenir au moins 8 caractères.');
+  if (new_password.length > 200) throw httpError(400, 'INVALID_PASSWORD', 'Le mot de passe ne doit pas dépasser 200 caractères.');
+  const who = `admin-pwd-change:${ctx.adminId}`;
+  if (rateLimit.isLimited(who, 5).limited) throw httpError(429, 'RATE_LIMITED', 'Trop de tentatives. Réessayez dans quelques minutes.');
   if (!verifyPassword(current_password, ctx.admin.password_hash)) {
+    rateLimit.hit(who, 5, 15 * 60 * 1000);
     throw httpError(400, 'WRONG_PASSWORD', 'Le mot de passe actuel est incorrect.');
   }
-  await supabase.update('admin_users', { id: ctx.adminId }, { password_hash: hashPassword(new_password) });
-  return { status: 200, body: { updated: true } };
+  // Ends every admin session opened before now (3-day tokens otherwise survive a password change); the caller gets a fresh one.
+  await supabase.update('admin_users', { id: ctx.adminId }, { password_hash: hashPassword(new_password), sessions_valid_after: new Date().toISOString() });
+  adminSession.forgetAdmin(ctx.adminId);
+  rateLimit.reset(who);
+  return { status: 200, body: { updated: true, session_token: issueAdminSession(ctx.adminId) } };
 }
 
 function httpError(status, code, message) {

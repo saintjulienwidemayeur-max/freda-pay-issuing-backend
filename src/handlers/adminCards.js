@@ -63,7 +63,7 @@ async function listForMerchant(ctx) {
   if (!merchant) throw httpError(404, 'NOT_FOUND', 'Marchand introuvable.');
   const filters = { merchant_id: merchant.id };
   if (ctx.query && (ctx.query.mode === 'live' || ctx.query.mode === 'sandbox')) filters.mode = ctx.query.mode;
-  if (!(ctx.query && ctx.query.include_deleted === '1')) filters.deleted_at = 'is.null';
+  if (!(ctx.query && ctx.query.include_deleted === '1')) filters.deleted_at = supabase.isNull();
   const rows = await supabase.select('cards', filters, { order: 'created_at.desc', limit: 500 });
 
   const holders = {};
@@ -80,7 +80,7 @@ async function listAll(ctx) {
   if (q.mode === 'live' || q.mode === 'sandbox') filters.mode = q.mode;
   if (['pending', 'active', 'disabled', 'terminated', 'failed'].includes(q.status)) filters.status = q.status;
   if (q.kind === 'business' || q.kind === 'individual') filters.kind = q.kind;
-  if (q.include_deleted !== '1') filters.deleted_at = 'is.null';
+  if (q.include_deleted !== '1') filters.deleted_at = supabase.isNull();
   const [rows, merchants] = await Promise.all([
     supabase.select('cards', filters, { order: 'created_at.desc', limit: 1000 }),
     supabase.select('merchants', {}, { limit: 2000 }),

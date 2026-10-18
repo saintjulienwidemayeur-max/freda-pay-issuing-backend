@@ -36,7 +36,7 @@ async function create({ subjectType, subjectId, merchantId, role, email }) {
   }
 
   // Only the newest code is ever valid.
-  await supabase.update('login_challenges', { subject_type: subjectType, subject_id: subjectId, consumed_at: 'is.null' }, { consumed_at: new Date().toISOString() });
+  await supabase.update('login_challenges', { subject_type: subjectType, subject_id: subjectId, consumed_at: supabase.isNull() }, { consumed_at: new Date().toISOString() });
 
   const id = `lch_${randomHex(12)}`;
   const code = otp.generateCode(config.otp.codeLength);
@@ -93,7 +93,7 @@ async function verify(challengeId, code) {
   }
 
   // Atomic claim: if two requests race with the right code, only one wins.
-  const claimed = await supabase.update('login_challenges', { id: row.id, consumed_at: 'is.null' }, { consumed_at: new Date().toISOString() });
+  const claimed = await supabase.update('login_challenges', { id: row.id, consumed_at: supabase.isNull() }, { consumed_at: new Date().toISOString() });
   if (!claimed || !claimed.length) throw httpError(400, 'LOGIN_CHALLENGE_INVALID', 'Cette demande de connexion est invalide ou déjà utilisée. Reconnectez-vous.');
   return row;
 }

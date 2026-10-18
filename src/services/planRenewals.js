@@ -50,7 +50,7 @@ async function renewOne(merchant, product, now) {
     return 'free';
   }
   if (!merchant[P.renews]) { // a paid plan taken before renewals existed: it was paid at that time, the cycle starts now
-    await supabase.update('merchants', { id: merchant.id, [P.renews]: 'is.null' }, { [P.renews]: addMonths(now, 1).toISOString() });
+    await supabase.update('merchants', { id: merchant.id, [P.renews]: supabase.isNull() }, { [P.renews]: addMonths(now, 1).toISOString() });
     return 'scheduled';
   }
   const due = new Date(merchant[P.renews]);
@@ -88,7 +88,7 @@ async function renewOne(merchant, product, now) {
 
 /** Looks at every live merchant once. Safe to run often and on several instances. */
 async function run(now = new Date()) {
-  const merchants = await supabase.select('merchants', { deleted_at: 'is.null' }, { limit: 5000 });
+  const merchants = await supabase.select('merchants', { deleted_at: supabase.isNull() }, { limit: 5000 });
   const done = { renewed: 0, unpaid: 0, downgraded: 0 };
   for (const m of merchants) {
     for (const product of Object.keys(PRODUCTS)) {
