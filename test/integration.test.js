@@ -4978,7 +4978,7 @@ test('several bank accounts: add, list, edit, delete; the merchant picks which o
   const live = await liveWithGateway('bankmany');
   await ledgerCredit(live.merchantId, 20000);
   const A = { holder_name: 'Rose Lakay', bank_name: 'Unibank', country: 'HT', currency: 'HTG', account_number: '1111222233' };
-  const B = { holder_name: 'Rose Lakay', bank_name: 'Sogebank', country: 'HT', currency: 'USD', account_number: '9999888877' };
+  const B = { holder_name: 'Rose Lakay', bank_name: 'Sogebank', country: 'HT', currency: 'HTG', account_number: '9999888877' };
   const a = await api('POST', '/dashboard/bank-accounts', { token: live.token, body: A });
   const b = await api('POST', '/dashboard/bank-accounts', { token: live.token, body: B });
   assert.equal(a.status, 201); assert.equal(b.status, 201);
@@ -5030,13 +5030,10 @@ test('bank account currency depends on the country, and a Zelle account (email o
   assert.ok(!JSON.stringify(z.data).includes('rose.lakay@gmail.com'));
   const zp = await post({ kind: 'zelle', holder_name: 'Rose Lakay', zelle_contact: '(305) 555-0142' });
   assert.equal(zp.status, 201);
+  // Zelle receives dollars only: an HTG withdrawal to it is refused (the USD path is covered by the USD withdrawal test).
   const w = await api('POST', '/dashboard/payouts', { token: live.token, body: { amount: 5000, method: 'bank', reference: 'PO-ZELLE-1', bank_account_id: z.data.bank_account.id } });
-  assert.equal(w.status, 202);
-  const { token: adminToken } = await adminLogin('owner');
-  const q = await api('GET', '/admin/bank-payouts?status=pending', { token: adminToken });
-  const mine = q.data.payouts.find((p) => p.reference === 'PO-ZELLE-1');
-  assert.equal(mine.bank_details.kind, 'zelle');
-  assert.equal(mine.bank_details.zelle_contact, 'rose.lakay@gmail.com');
+  assert.equal(w.status, 400);
+  assert.equal(w.data.error.code, 'BANK_ACCOUNT_CURRENCY');
 });
 
 test('a verified (KYC/KYB) account can no longer change its name; the phone can still change', async () => {
@@ -5783,4 +5780,128 @@ test('contracts: tables are kept, [[Signature ...]] marks are not blanks to fill
   const pdf = await rawGet(`/dashboard/contracts/${c.id}/pdf`, m.token);
   assert.equal(pdf.status, 200);
   assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
+});
+
+// ===== fixer2: money integrity =====
+
+const f2Balance = async (token) => (await api('GET', '/dashboard/balance', { token })).data;
+const f2Entries = (relatedId, type) => mockTables.ledger_entries.filter((e) => e.related_id === relatedId && (!type || e.type === type));
+
+test('fixer2: concurrent status polls credit a confirmed MonCash payment once', async () => {
+  const live = await liveWithGateway('f2pay', 0);
+  const create = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, method: 'moncash', reference: 'F2-PAY-1' } });
+  assert.equal(create.status, 201);
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_F2-PAY-1` }) });
+  const polls = await Promise.all(Array.from({ length: 6 }, () => api('GET', `/dashboard/payments/${create.data.id}`, { token: live.token })));
+  assert.ok(polls.every((p) => p.status === 200 && p.data.status === 'succeeded'));
+  assert.equal(f2Entries(create.data.id, 'payment_credit').length, 1);
+  assert.equal(await gw(live.token), polls[0].data.net_amount);
+});
+
+test('fixer2: concurrent status polls credit a confirmed automatic wallet top-up once', async () => {
+  const live = await makeLiveMerchant('f2topup', { fundUsd: 0 });
+  const create = await api('POST', '/dashboard/wallet/topups', { token: live.token, body: { method: 'moncash', amount_htg: 13300, reference: 'F2-TOPUP-1' } });
+  assert.equal(create.status, 201);
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_F2-TOPUP-1` }) });
+  const polls = await Promise.all(Array.from({ length: 6 }, () => api('GET', `/dashboard/wallet/topups/${create.data.id}`, { token: live.token })));
+  assert.ok(polls.every((p) => p.status === 200 && p.data.status === 'succeeded'));
+  assert.equal(f2Entries(create.data.id, 'wallet_topup').length, 1);
+  assert.equal((await f2Balance(live.token)).master_wallet.available, polls[0].data.credited_usd);
+});
+
+test('fixer2: parallel card creations can never take the Master Wallet under its minimum reserve', async () => {
+  const live = await makeLiveMerchant('f2race', { fundUsd: 130 }); // 130 - 50 reserve = room for a few 20 $ cards only
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+    api('POST', '/dashboard/cards', { token: live.token, body: { reference: `F2-RACE-${i}`, kind: 'business', business_name: 'Race Co', brand: 'VISA', amount: 20 } })));
+  const ok = results.filter((r) => r.status === 202).length;
+  const refused = results.filter((r) => r.status === 400 && r.data.error.code === 'BELOW_MINIMUM_BALANCE').length;
+  assert.ok(ok >= 1 && refused >= 1 && ok + refused === 8, JSON.stringify(results.map((r) => r.status)));
+  assert.ok((await f2Balance(live.token)).master_wallet.available >= 50);
+});
+
+test('fixer2: terminating a card does not refund what the card spent online', async () => {
+  const live = await liveMerchantWithActivity('f2term'); // business card pre-funded with 100 $
+  await sendProviderEvent(purchase(live.card.maplerad_card_id, { amount: 3000, reference: 'f2-spend-1' }), MOCK_LIVE_WHSEC);
+  const before = (await f2Balance(live.token)).master_wallet.available;
+  const term = await api('POST', `/dashboard/cards/${live.card.id}/terminate`, { token: live.token });
+  assert.equal(term.status, 200);
+  const after = (await f2Balance(live.token)).master_wallet.available;
+  assert.equal(Math.round((after - before) * 100) / 100, 70); // 100 loaded - 30 spent, not 100
+});
+
+test('fixer2: money amounts must be real positive numbers with at most two decimals (French 400, nothing charged)', async () => {
+  const live = await makeLiveMerchant('f2amounts', { fundUsd: 300 });
+  const before = (await f2Balance(live.token)).master_wallet.available;
+  for (const bad of ['100', -100, 0, true, null, 10.005, 1e12, {}, [5]]) {
+    const r = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: `F2-BAD-${JSON.stringify(bad)}`, kind: 'business', business_name: 'Bad Co', brand: 'VISA', amount: bad } });
+    assert.equal(r.status, 400, `card amount ${JSON.stringify(bad)}`);
+    assert.equal(r.data.error.code, 'INVALID_AMOUNT');
+  }
+  const ind = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'F2-BAD-IND', kind: 'individual', brand: 'VISA', amount: '100' } });
+  assert.equal(ind.status, 400);
+  assert.equal((await f2Balance(live.token)).master_wallet.available, before); // nothing was debited
+  const card = mockTables.cards.find((c) => c.merchant_id === live.merchantId);
+  assert.equal(card, undefined);
+
+  for (const [path, body] of [
+    ['/dashboard/payments', { amount: '500', method: 'moncash', reference: 'F2-S-1' }],
+    ['/dashboard/payments', { amount: 20.555, method: 'moncash', reference: 'F2-S-2' }],
+    ['/dashboard/payouts', { amount: '2000', method: 'moncash', recipient: '50937001234', reference: 'F2-S-3' }],
+    ['/dashboard/wallet/topups', { method: 'moncash', amount_htg: '13300', reference: 'F2-S-4' }],
+    ['/dashboard/wallet/topups', { method: 'zelle', amount_usd: -5, reference: 'F2-S-5' }],
+    ['/dashboard/payment-links', { amount: '50', currency: 'HTG' }],
+  ]) {
+    const r = await api('POST', path, { token: live.token, body });
+    assert.equal(r.status, 400, `${path} ${JSON.stringify(body)}`);
+    assert.equal(r.data.error.code, 'INVALID_AMOUNT');
+    assert.match(r.data.error.message, /nombre positif|décimales|trop élevé/);
+  }
+});
+
+test('fixer2: fund and withdraw refuse string and fractional-cent amounts', async () => {
+  const live = await liveMerchantWithActivity('f2fund');
+  for (const amount of ['10', 0.001, 10.005, -3]) {
+    assert.equal((await api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount } })).status, 400);
+    assert.equal((await api('POST', `/dashboard/cards/${live.card.id}/withdraw`, { token: live.token, body: { amount } })).status, 400);
+  }
+});
+
+test('fixer2: parallel recharges all land in the card balance (no lost update)', async () => {
+  const live = await liveMerchantWithActivity('f2parfund');
+  await Promise.all([1, 2, 3].map(() => api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount: 10 } })));
+  assert.equal(mockTables.cards.find((c) => c.id === live.card.id).balance, 130);
+});
+
+test('fixer2: a failed-creation webhook delivered again refunds only once, and a late success does not resurrect the card', async () => {
+  const reg = await registerAndVerify({ business_name: 'F2 Refund Co', email: 'f2refund@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const start = (await f2Balance(token)).master_wallet.available;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'F2-REFUND-1', kind: 'business', business_name: 'F2 Refund Co', brand: 'VISA', amount: 20 } });
+  assert.equal(c.status, 202);
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  // The card is pending again in our books, as if the creation had not been confirmed yet.
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  row.status = 'pending';
+  assert.equal(start - (await f2Balance(token)).master_wallet.available, 25);
+  const failed = { event: 'issuing.created.failed', reference: row.maplerad_reference };
+  await sendProviderEvent(failed, MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(failed, MOCK_SANDBOX_WHSEC); // a second delivery with a new event id
+  await sendProviderEvent(failed, MOCK_SANDBOX_WHSEC);
+  assert.equal((await f2Balance(token)).master_wallet.available, start); // refunded exactly once
+  assert.equal(row.status, 'failed');
+  await sendProviderEvent({ event: 'issuing.created.successful', reference: row.maplerad_reference, card: { id: row.maplerad_card_id, masked_pan: '411111******1111', name: 'X', currency: 'USD' } }, MOCK_SANDBOX_WHSEC);
+  assert.equal(row.status, 'failed'); // still failed: it was refunded, it must not come back as a free card
+});
+
+test('fixer2: a card payment too small to leave anything after the fee is refused; a payout below the MonCash minimum too', async () => {
+  const live = await liveWithGateway('f2min');
+  const card = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 0.5, currency: 'USD', method: 'card', reference: 'F2-MIN-1' } });
+  assert.equal(card.status, 400);
+  assert.equal(card.data.error.code, 'AMOUNT_TOO_LOW');
+  const small = await api('POST', '/dashboard/payouts', { token: live.token, body: { amount: 5, method: 'moncash', recipient: '50937001234', reference: 'F2-MIN-2' } });
+  assert.equal(small.status, 400);
+  assert.equal(small.data.error.code, 'AMOUNT_TOO_LOW');
+  const pricing = require('../src/services/pricing');
+  assert.ok(pricing.computeGatewayCardFee('standard', 0.5).net >= 0);
+  assert.ok(pricing.computeGatewayFee('standard', 5).net >= 0);
 });

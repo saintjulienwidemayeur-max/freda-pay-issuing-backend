@@ -446,6 +446,12 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
   const pricingOverride = await getMerchantPricingOverride(merchantId);
 
   const creationFee = pricing.cardCreationFee(issuingPlanKey, pricingOverride);
+  if (amountUsd != null && (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 0)) {
+    const err = new Error('amount doit être un nombre positif.');
+    err.code = 'INVALID_AMOUNT';
+    err.httpStatus = 400;
+    throw err;
+  }
   const preload = amountUsd || 0;
   const totalDebit = pricing.round2(preload + creationFee);
   await debitMasterWalletForCard(merchantId, totalDebit, ownReference, id, mode);
@@ -480,8 +486,7 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
     // own_reference - so we must store it to correlate the later event.
     await supabase.update('cards', { id }, { maplerad_reference: extractMapleradReference(res, id) });
   } catch (err) {
-    await markCardFailed(id, err.message);
-    await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
+    if (await markCardFailed(id, err.message)) await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
     throw err;
   }
 
@@ -489,7 +494,7 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
 }
 
 async function createBusinessCard({ merchantId, id, ownReference, businessName, brand, amountUsd, mode }) {
-  if (!(amountUsd > 0)) {
+  if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || !(amountUsd > 0)) {
     const err = new Error('Un montant de préfinancement est requis pour une carte entreprise.');
     err.code = 'INVALID_AMOUNT';
     err.httpStatus = 400;
@@ -531,8 +536,7 @@ async function createBusinessCard({ merchantId, id, ownReference, businessName, 
     });
     await supabase.update('cards', { id }, { maplerad_reference: extractMapleradReference(res, id) });
   } catch (err) {
-    await markCardFailed(id, err.message);
-    await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
+    if (await markCardFailed(id, err.message)) await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
     throw err;
   }
 
@@ -549,8 +553,31 @@ async function refundMasterWalletForFailedCard(merchantId, amountUsd, reference,
   await ledger.creditMasterWallet(merchantId, amountUsd, 'USD', `refund:${reference}`, relatedId, mode);
 }
 
+/**
+ * Moves a card from `pending` to `failed`. It is a claim: the caller that wins it (true) is the only one who may refund,
+ * so a creation failure reported twice (our own error AND the partner's webhook, or a re-delivered webhook) refunds once.
+ */
 async function markCardFailed(cardId, reason) {
-  await supabase.update('cards', { id: cardId }, { status: 'failed', failure_reason: reason, updated_at: new Date().toISOString() });
+  const rows = await supabase.update('cards', { id: cardId, status: 'pending' }, { status: 'failed', failure_reason: reason, updated_at: new Date().toISOString() });
+  return !!(rows && rows.length);
+}
+
+/**
+ * Adds `delta` (may be negative) to a card's local balance without losing a concurrent movement: the new value is
+ * computed from a fresh read and written only if the balance is still that value, otherwise it is read again.
+ */
+async function adjustCardBalance(cardId, delta, extra) {
+  for (let i = 0; i < 8; i += 1) {
+    const fresh = await supabase.selectOne('cards', { id: cardId });
+    if (!fresh) return null;
+    const next = pricing.round2(Number(fresh.balance || 0) + Number(delta));
+    const rows = await supabase.update('cards', { id: cardId, balance: Number(fresh.balance || 0) }, Object.assign({ balance: next, updated_at: new Date().toISOString() }, extra || {}));
+    if (rows && rows.length) return rows[0];
+  }
+  const err = new Error('Le solde de la carte est en cours de modification. Réessayez dans un instant.');
+  err.code = 'CARD_BUSY';
+  err.httpStatus = 409;
+  throw err;
 }
 
 /**
@@ -579,10 +606,17 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
     // The creation fee is Freda Pay's revenue only once the card really exists. Logging it when the
     // request starts counted refunded (failed) attempts as income. Only on the pending -> active step,
     // so a redelivered webhook cannot count it twice.
+    if (card.status === 'failed' || card.status === 'terminated') {
+      // The creation was already reported as failed and refunded: this late confirmation must not bring the card back
+      // (that would be a free card). The partner-side card needs a manual look.
+      // eslint-disable-next-line no-console
+      console.error(`Late "created" confirmation for card ${card.id} (${card.status}, refunded): NOT activated - close ${mapleradCardId} at the partner.`);
+      return card;
+    }
     const firstActivation = card.status !== 'active';
     const [updated] = await supabase.update(
       'cards',
-      { id: card.id },
+      { id: card.id, status: card.status },
       {
         status: 'active',
         maplerad_card_id: mapleradCardId,
@@ -592,6 +626,7 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
         updated_at: new Date().toISOString(),
       }
     );
+    if (!updated) return supabase.selectOne('cards', { id: card.id }); // a concurrent delivery already handled it
     if (firstActivation) await revenue.log(card.merchant_id, 'card_creation', Number(card.creation_fee || 0), 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardCreation);
     webhookDispatcher.dispatch(card.merchant_id, 'card.created', {
       id: updated.id, reference: updated.own_reference, kind: updated.kind, brand: updated.brand,
@@ -602,7 +637,10 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
 
   // Creation failed on Maplerad's side: refund whatever Master Wallet amount we debited
   // (the preload amount AND the creation fee, since the card never came into existence).
-  await markCardFailed(card.id, 'La création de la carte a échoué. Les montants débités ont été remboursés.');
+  // Only the delivery that wins the pending -> failed claim refunds: a re-delivered or duplicated failure event changes nothing.
+  if (!(await markCardFailed(card.id, 'La création de la carte a échoué. Les montants débités ont été remboursés.'))) {
+    return supabase.selectOne('cards', { id: card.id });
+  }
   const refundAmount = fromCents(card.initial_amount || 0) + Number(card.creation_fee || 0);
   if (refundAmount > 0) {
     await refundMasterWalletForFailedCard(card.merchant_id, refundAmount, card.own_reference, card.id, card.mode);
@@ -679,7 +717,7 @@ async function fundCardNow(merchantId, card, amountUsd, key) {
     await refundMasterWalletForFailedCard(merchantId, totalDebit, ref, card.id, card.mode);
     throw err;
   }
-  const [updated] = await supabase.update('cards', { id: card.id }, { balance: Number(card.balance) + Number(amountUsd), updated_at: new Date().toISOString() });
+  const updated = await adjustCardBalance(card.id, Number(amountUsd));
   webhookDispatcher.dispatch(merchantId, 'card.funded', {
     id: updated.id, reference: updated.own_reference, amount: Number(amountUsd), fee: rechargeFee, total_debited: totalDebit,
     balance: Number(updated.balance), currency: 'USD',
@@ -726,7 +764,7 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
   await maplerad.forMode(card.mode).withdrawFromCard(card.maplerad_card_id, toCents(amountUsd));
   await ledger.creditMasterWallet(merchantId, netCredited, 'USD', ref, card.id, card.mode);
   await revenue.log(merchantId, 'card_withdrawal', withdrawalFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardWithdrawal);
-  const [updated] = await supabase.update('cards', { id: card.id }, { balance: Number(card.balance) - Number(amountUsd), updated_at: new Date().toISOString() });
+  const updated = await adjustCardBalance(card.id, -Number(amountUsd));
   webhookDispatcher.dispatch(merchantId, 'card.withdrawn', {
     id: updated.id, reference: updated.own_reference, amount: Number(amountUsd), fee: withdrawalFee, net_credited: netCredited,
     balance: Number(updated.balance), currency: 'USD',
@@ -780,9 +818,14 @@ async function terminateCard(merchantId, cardId) {
   }
 
   await maplerad.forMode(card.mode).terminateCard(card.maplerad_card_id); // must succeed: the card is really closed
+  // The local balance only moves on fund / withdraw, never on purchases: what the card spent online (the partner's
+  // notifications, stored as card_transactions) is no longer on the card and must not be refunded to the Master Wallet.
+  const { summarizeCardSpend } = require('./adminStats');
+  const spent = summarizeCardSpend(await supabase.select('card_transactions', { card_id: card.id }, { limit: 5000 })).total_usd;
+  const refundable = Math.max(0, pricing.round2(Number(card.balance || 0) - Math.max(0, spent)));
   const [claimed] = await supabase.update('cards', { id: card.id, status: card.status }, { status: 'terminated', balance: 0, updated_at: now });
-  if (claimed && Number(card.balance) > 0) {
-    await ledger.creditMasterWallet(merchantId, Number(card.balance), 'USD', `card-terminate-refund:${card.own_reference}`, card.id, card.mode);
+  if (claimed && refundable > 0) {
+    await ledger.creditMasterWallet(merchantId, refundable, 'USD', `card-terminate-refund:${card.own_reference}`, card.id, card.mode);
   }
   const [updated] = await supabase.update('cards', { id: card.id }, { deleted_at: now });
   webhookDispatcher.dispatch(merchantId, 'card.terminated', { id: card.id, reference: card.own_reference });

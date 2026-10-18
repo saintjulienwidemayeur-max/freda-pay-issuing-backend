@@ -183,6 +183,20 @@ async function handleRequest(req, res) {
         .reduce((acc, r) => acc + Number(r.amount), 0);
       return send(res, 200, sum);
     }
+    if (fn === 'debit_master_wallet') {
+      // Mirrors migrations/2026-10-21-atomic-wallet-debit.sql (the mock handles one request at a time, so it is atomic).
+      const b = body || {};
+      const amt = Math.abs(Number(b.p_amount));
+      const balance = tables.ledger_entries
+        .filter((r) => r.merchant_id === b.p_merchant_id && r.wallet === b.p_wallet && r.currency === 'USD')
+        .reduce((acc, r) => acc + Number(r.amount), 0);
+      if (Math.round((balance - amt) * 100) / 100 < Number(b.p_minimum)) return send(res, 200, { ok: false, balance });
+      tables.ledger_entries.push({
+        id: ledgerAutoId++, merchant_id: b.p_merchant_id, wallet: b.p_wallet, type: 'wallet_debit', amount: -amt,
+        currency: 'USD', reference: b.p_reference || null, related_id: b.p_related_id || null, created_at: new Date().toISOString(),
+      });
+      return send(res, 200, { ok: true, balance: balance - amt });
+    }
     return send(res, 404, { message: `Unknown rpc function: ${fn}` });
   }
 

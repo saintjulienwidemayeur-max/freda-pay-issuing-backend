@@ -6,14 +6,13 @@ const paymentOrchestrator = require('../services/paymentOrchestrator');
 const { generatePaymentLinkId, generatePaymentId, namespaceReference, randomHex } = require('../utils/ids');
 const { fetchPage } = require('../utils/pagination');
 const { resolveMode } = require('../utils/mode');
+const { parseAmount } = require('../utils/money');
 
 /* ===== Dashboard (merchant, session-authenticated) ===== */
 
 async function create(ctx) {
   const { amount, currency, description } = ctx.body || {};
-  if (amount != null && (typeof amount !== 'number' || amount <= 0)) {
-    throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif, ou absent pour un montant libre.');
-  }
+  if (amount != null) parseAmount(amount); // absent = open amount
   if (currency != null && !['HTG', 'USD'].includes(currency)) {
     throw httpError(400, 'INVALID_CURRENCY', "currency doit être 'HTG' ou 'USD'.");
   }
@@ -81,9 +80,7 @@ async function publicPay(ctx) {
   const { phone, amount } = ctx.body || {};
   const method = ctx.body && ctx.body.method === 'card' ? 'carte' : ctx.body && ctx.body.method;
   const finalAmount = link.amount != null ? Number(link.amount) : amount;
-  if (typeof finalAmount !== 'number' || finalAmount <= 0) {
-    throw httpError(400, 'INVALID_AMOUNT', 'Montant invalide.');
-  }
+  parseAmount(finalAmount, { field: 'Le montant' });
   if (!['moncash', 'moncash_ussd', 'natcash', 'carte'].includes(method)) {
     throw httpError(400, 'INVALID_METHOD', 'method doit être moncash, moncash_ussd, natcash ou carte.');
   }
