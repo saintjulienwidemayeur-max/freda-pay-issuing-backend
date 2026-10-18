@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const supabase = require('../lib/supabase');
 const { randomHex } = require('../utils/ids');
+const urlSafety = require('../utils/urlSafety');
 
 function generateSecret() {
   return `whsec_${crypto.randomBytes(24).toString('base64url')}`;
@@ -10,10 +11,11 @@ function generateSecret() {
 /** Registers (or replaces) the merchant's single webhook endpoint. Returns the signing secret ONCE. */
 async function register(ctx) {
   const { url } = ctx.body || {};
-  const isHttps = url && /^https:\/\//.test(url);
-  const isLocalHttp = url && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(url);
-  if (!url || !(isHttps || isLocalHttp)) {
-    throw httpError(400, 'INVALID_URL', 'url est requis et doit commencer par https:// (http://localhost accepté uniquement pour les tests).');
+  if (!url || typeof url !== 'string') throw httpError(400, 'INVALID_URL', 'url est requis et doit commencer par https://.');
+  try {
+    await urlSafety.assertPublicUrl(url);
+  } catch (err) {
+    throw httpError(400, 'INVALID_URL', `${err.message[0].toUpperCase()}${err.message.slice(1)}`);
   }
 
   const existing = await supabase.selectOne('webhook_endpoints', { merchant_id: ctx.merchantId });
