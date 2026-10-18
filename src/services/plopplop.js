@@ -71,7 +71,7 @@ async function postJson(path, body, headers) {
   } catch (e) {
     data = null;
   }
-  return { httpStatus: res.status, data, finalUrl: url, sentAuth: !!allHeaders.Authorization, redirected: url !== `${baseUrl()}${path}` };
+  return { httpStatus: res.status, data, finalUrl: url, sentAuth: !!allHeaders.Authorization && !!allHeaders['X-Authorization'] && !!allHeaders['X-Access-Token'], redirected: url !== `${baseUrl()}${path}` };
 }
 
 /**
@@ -106,12 +106,21 @@ async function authMerchant() {
   });
 }
 
+/**
+ * The provider runs on Apache, which commonly removes the Authorization header before the application sees it ("Jeton
+ * d'authentification manquant" with a valid token). Its CORS headers list X-Authorization and X-Access-Token as accepted
+ * alternatives, so the token travels in all three: whichever one survives is read.
+ */
+function bearerHeaders(token) {
+  return { Authorization: `Bearer ${token}`, 'X-Authorization': `Bearer ${token}`, 'X-Access-Token': String(token) };
+}
+
 /** Step 2: obtain a short-lived, signed withdrawal token. */
 async function getWithdrawalToken({ marchandToken, amount, method, recipient, reference, timestamp, signature }) {
   return postJson(
     '/api/auth/marchand/withdrawal-token',
     { amount, method, recipient, reference, timestamp, withdrawal_signature: signature },
-    { Authorization: `Bearer ${marchandToken}` }
+    bearerHeaders(marchandToken)
   );
 }
 
@@ -120,13 +129,13 @@ async function executeWithdrawal({ withdrawalToken, amount, method, recipient, r
   return postJson(
     '/api/withdraw/marchand',
     { amount, method, recipient, reference },
-    { Authorization: `Bearer ${withdrawalToken}` }
+    bearerHeaders(withdrawalToken)
   );
 }
 
 /** Check the status of a previously created withdrawal, by reference. */
 async function verifyWithdrawal({ authToken, reference }) {
-  return postJson('/api/withdraw/marchand/verify', { reference }, { Authorization: `Bearer ${authToken}` });
+  return postJson('/api/withdraw/marchand/verify', { reference }, bearerHeaders(authToken));
 }
 
 module.exports = {
