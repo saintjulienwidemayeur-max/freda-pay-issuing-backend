@@ -124,7 +124,12 @@ async function executePayoutFlow({ merchantId, id, plopplopReference, amount, me
     if (!authRes.data || !authRes.data.success) {
       return markFailed(merchantId, id, `AUTH_FAILED: ${(authRes.data && authRes.data.message) || authRes.httpStatus}`);
     }
-    const marchandToken = authRes.data.token;
+    // The token has been seen under several names across API versions: accept them, and fail clearly if none is there.
+    const d = authRes.data;
+    const marchandToken = d.token || d.access_token || (d.data && (d.data.token || d.data.access_token));
+    if (!marchandToken) {
+      return markFailed(merchantId, id, `AUTH_FAILED: jeton absent de la réponse du service de paiement (champs reçus : ${Object.keys(d).join(', ')})`);
+    }
 
     // Step 2: request a withdrawal token, signed with our client_secret.
     const timestamp = Math.floor(Date.now() / 1000);
