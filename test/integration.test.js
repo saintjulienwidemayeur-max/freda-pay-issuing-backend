@@ -6229,3 +6229,27 @@ test('fixer1: production refuses to boot with a missing or placeholder SESSION_S
   assert.equal(run('short').status, 0); // a short secret only warns: it must never take the service down
   assert.equal(run('a'.repeat(48)).status, 0);
 });
+
+test('admin API traffic: who calls /v1 and how often, 429s counted, unauthenticated calls separated, editors refused', async () => {
+  const apiTraffic = require('../src/services/apiTraffic');
+  apiTraffic.reset();
+  const live = await makeLiveMerchant('traffic');
+  const k = await api('POST', '/dashboard/api-keys', { token: live.token, body: { mode: 'live' } });
+  const secret = (k.data && (k.data.secret || k.data.key || k.data.api_key)) || null;
+  assert.ok(secret, JSON.stringify(k.data).slice(0, 200));
+  for (let i = 0; i < 3; i++) await api('GET', '/v1/payments', { token: secret });
+  await api('GET', '/v1/payments', { token: 'sk_live_' + 'a'.repeat(40) });
+  const { token: owner } = await adminLogin('owner');
+  const snap = await api('GET', '/admin/api-traffic', { token: owner });
+  assert.equal(snap.status, 200);
+  const me = snap.data.merchants.find((m) => m.merchant_id === live.merchantId);
+  assert.ok(me, JSON.stringify(snap.data).slice(0, 300));
+  assert.equal(me.req_60s, 3);
+  assert.equal(me.live_5min, 3);
+  assert.equal(me.top_endpoints[0].route, 'GET /v1/payments');
+  assert.ok(me.business_name);
+  assert.equal(snap.data.limit_per_minute, 100);
+  assert.equal(snap.data.unauthenticated.req_5min, 1);
+  assert.equal((await api('GET', '/admin/api-traffic', { token: (await adminLogin('editor')).token })).status, 403);
+  assert.equal((await api('GET', '/admin/api-traffic', { token: live.token })).status, 401);
+});

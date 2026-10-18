@@ -1,5 +1,6 @@
 'use strict';
 const rateLimit = require('./utils/rateLimit');
+const apiTraffic = require('./services/apiTraffic');
 
 // Public API rate limit: 100 requests/minute per merchant (per API key,
 // since ctx.merchantId comes from whichever key was presented). Generous
@@ -45,7 +46,7 @@ class Router {
     const handler = fns.pop();
     const middlewares = fns;
     const { regex, paramNames } = compilePath(path);
-    this.routes.push({ method, regex, paramNames, middlewares, handler });
+    this.routes.push({ method, path, regex, paramNames, middlewares, handler });
   }
 
   get(path, ...fns) { this.add('GET', path, ...fns); }
@@ -199,6 +200,12 @@ function createHandler(router, options) {
       sendJson(res, status, { error: errorBody });
     } finally {
       onLog({ method: req.method, path: pathname, status: res.statusCode, ms: Date.now() - started });
+      // The public API only: who calls it, and how often (admin "Trafic API" view). Never throws.
+      if (pathname.startsWith('/v1/')) {
+        try {
+          apiTraffic.record({ merchantId: ctx.merchantId || null, route: `${req.method} ${matched.route.path}`, status: res.statusCode, ip: rateLimit.clientIp(req), mode: ctx.apiKeyMode || '' });
+        } catch (e) { /* statistics must never break a request */ }
+      }
     }
   };
 }
@@ -223,4 +230,4 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-module.exports = { Router, createHandler };
+module.exports = { Router, createHandler, API_RATE_LIMIT };
