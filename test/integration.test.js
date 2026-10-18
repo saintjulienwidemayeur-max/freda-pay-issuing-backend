@@ -9,6 +9,7 @@ process.env.PLOPPLOP_BASE_URL = 'http://localhost:4501';
 process.env.PLOPPLOP_CLIENT_ID = 'pp_test_client';
 process.env.PLOPPLOP_CLIENT_SECRET = 'test_secret_value';
 process.env.PAYOUT_COOLDOWN_MS = '50'; // fast for tests
+process.env.ALLOW_PRIVATE_WEBHOOKS = '1'; // the local mock webhook receivers live on localhost (SSRF guard has its own tests)
 
 process.env.MOCK_CLIENT_ID = 'pp_test_client';
 process.env.MOCK_CLIENT_SECRET = 'test_secret_value';
@@ -2031,8 +2032,8 @@ test('rejecting a KYC submission records the reason and does not enable Live', a
 test('an editor admin cannot review verifications (compliance-only action)', async () => {
   const { token } = await adminLogin('editor');
   const r = await api('GET', '/admin/verifications', { token });
-  assert.equal(r.status, 200); // listing is fine
-  // but approving requires owner/admin
+  assert.equal(r.status, 403); // editors (blog only) cannot even list KYC submissions
+  // approving requires owner/admin too
   const fake = await api('POST', '/admin/verifications/vs_doesnotexist/approve', { token });
   assert.equal(fake.status, 403);
   assert.equal(fake.data.error.code, 'INSUFFICIENT_ROLE');

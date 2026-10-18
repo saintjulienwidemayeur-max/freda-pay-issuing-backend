@@ -30,14 +30,15 @@ async function submit(ctx) {
 
   const uploaded = [];
   for (const doc of docs) {
-    if (!doc || !doc.base64 || !doc.label) {
+    if (!doc || typeof doc.base64 !== 'string' || !doc.base64 || typeof doc.label !== 'string' || !doc.label) {
       throw httpError(400, 'INVALID_DOCUMENT', 'Chaque document doit avoir un label et un contenu.');
     }
     if (doc.base64.length > MAX_DOC_BYTES) {
       throw httpError(400, 'DOCUMENT_TOO_LARGE', `Le document "${doc.label}" est trop volumineux (max ~6 Mo).`);
     }
     const buffer = Buffer.from(doc.base64, 'base64');
-    const ext = (doc.filename && doc.filename.includes('.')) ? doc.filename.split('.').pop() : 'bin';
+    const rawExt = (typeof doc.filename === 'string' && doc.filename.includes('.')) ? doc.filename.split('.').pop().toLowerCase() : '';
+    const ext = /^[a-z0-9]{1,5}$/.test(rawExt) ? rawExt : 'bin'; // the extension ends up in a storage path and in the admin panel
     const path = `${ctx.merchantId}/${kind}/${randomHex(8)}.${ext}`;
     await supabase.uploadFile('verification-documents', path, buffer, doc.content_type || 'application/octet-stream');
     uploaded.push({ label: doc.label, path });
