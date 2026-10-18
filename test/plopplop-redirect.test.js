@@ -57,6 +57,7 @@ test('plopplop client writes Authorization and Content-Type with the documented 
     assert.equal(out.data.success, true);
     assert.ok(raw.includes('Authorization'), raw.join(','));
     assert.ok(raw.includes('Content-Type'), raw.join(','));
+    assert.ok(raw.includes('X-Authorization') && raw.includes('X-Access-Token'), raw.join(','));
   } finally {
     await new Promise((r) => srv.close(r));
   }
