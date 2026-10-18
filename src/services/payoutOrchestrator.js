@@ -69,6 +69,14 @@ async function createPayoutLocked({ merchantId, id, ownReference, plopplopRefere
   const theMode = mode || 'sandbox';
 
   const available = await ledger.getBalance(merchantId, 'gateway', cur, theMode);
+  // Live MonCash / Natcash: the withdrawal service needs a balance of at least the threshold; above it, any amount goes.
+  const minBalance = config.payoutFees.mobileMinBalanceHTG;
+  if (theMode === 'live' && method !== 'bank' && cur === 'HTG' && available < minBalance) {
+    const err = new Error(`Pour retirer par MonCash ou Natcash, votre solde Gateway doit être d'au moins ${minBalance.toLocaleString('fr-FR')} HTG (solde actuel : ${available.toLocaleString('fr-FR')} HTG). Une fois ce seuil atteint, vous pouvez retirer le montant que vous voulez.`);
+    err.httpStatus = 400;
+    err.code = 'MIN_BALANCE_FOR_WITHDRAWAL';
+    throw err;
+  }
   if (available < amount + fee) {
     const err = new Error(`Solde disponible insuffisant (${available} ${cur}).`);
     err.httpStatus = 400;

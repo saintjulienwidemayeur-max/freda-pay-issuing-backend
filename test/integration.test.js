@@ -6253,3 +6253,65 @@ test('admin API traffic: who calls /v1 and how often, 429s counted, unauthentica
   assert.equal((await api('GET', '/admin/api-traffic', { token: (await adminLogin('editor')).token })).status, 403);
   assert.equal((await api('GET', '/admin/api-traffic', { token: live.token })).status, 401);
 });
+
+// ===== chat + minimum balance for MonCash / Natcash withdrawals =====
+test('chat: a merchant writes to the team and the team answers; unread counters, isolation, validation', async () => {
+  const a = await makeLiveMerchant('chata');
+  const b = await makeLiveMerchant('chatb');
+  const { token: owner } = await adminLogin('owner');
+  assert.equal((await api('GET', '/dashboard/chat', { token: a.token })).data.messages.length, 0);
+  assert.equal((await api('POST', '/dashboard/chat', { token: a.token, body: { body: '   ' } })).data.error.code, 'EMPTY_MESSAGE');
+  assert.equal((await api('POST', '/dashboard/chat', { token: a.token, body: { body: 'x'.repeat(2001) } })).data.error.code, 'MESSAGE_TOO_LONG');
+  const sent = await api('POST', '/dashboard/chat', { token: a.token, body: { body: 'Bonjour, mon retrait est bloqué <b>aidez-moi</b>' } });
+  assert.equal(sent.status, 201);
+  assert.equal(sent.data.message.sender, 'merchant');
+  assert.equal(sent.data.message.body, 'Bonjour, mon retrait est bloqué <b>aidez-moi</b>'); // plain text, kept as written (pages render it as text)
+  // admin sees it
+  assert.equal((await api('GET', '/admin/chat-unread', { token: owner })).data.unread >= 1, true);
+  const conv = await api('GET', '/admin/chat', { token: owner });
+  const mine = conv.data.conversations.find((c) => c.merchant_id === a.merchantId);
+  assert.ok(mine && mine.unread === 1);
+  assert.equal(conv.data.conversations.some((c) => c.merchant_id === b.merchantId), false);
+  const th = await api('GET', `/admin/chat/${a.merchantId}`, { token: owner });
+  assert.equal(th.data.messages.length, 1);
+  assert.equal((await api('GET', '/admin/chat', { token: owner })).data.conversations.find((c) => c.merchant_id === a.merchantId).unread, 0); // opening marks it read
+  // admin answers, merchant sees an unread message
+  const reply = await api('POST', `/admin/chat/${a.merchantId}`, { token: owner, body: { body: 'Bonjour, nous regardons.' } });
+  assert.equal(reply.status, 201);
+  assert.equal((await api('GET', '/dashboard/chat/unread', { token: a.token })).data.unread, 1);
+  const mine2 = await api('GET', '/dashboard/chat', { token: a.token });
+  assert.equal(mine2.data.messages.length, 2);
+  assert.equal(mine2.data.messages[1].sender, 'admin');
+  await api('POST', '/dashboard/chat/read', { token: a.token });
+  assert.equal((await api('GET', '/dashboard/chat/unread', { token: a.token })).data.unread, 0);
+  // another merchant sees nothing; editors and merchants cannot use the admin side
+  assert.equal((await api('GET', '/dashboard/chat', { token: b.token })).data.messages.length, 0);
+  assert.equal((await api('GET', '/admin/chat', { token: (await adminLogin('editor')).token })).status, 403);
+  assert.equal((await api('GET', '/admin/chat', { token: a.token })).status, 401);
+  assert.equal((await api('POST', '/admin/chat/mch_unknown', { token: owner, body: { body: 'x' } })).status, 404);
+});
+
+test('live MonCash/Natcash withdrawal needs a Gateway balance of at least 2 500 HTG; above it any amount goes', async () => {
+  const low = await liveWithGateway('minbal-low', 2000);
+  const r = await api('POST', '/dashboard/payouts', { token: low.token, body: { amount: 100, method: 'moncash', reference: 'MB-LOW-1', recipient: '50912345678' } });
+  assert.equal(r.status, 400);
+  assert.equal(r.data.error.code, 'MIN_BALANCE_FOR_WITHDRAWAL');
+  assert.match(r.data.error.message, /2\s?500 HTG/);
+  const ok = await liveWithGateway('minbal-ok', 2600);
+  const w = await api('POST', '/dashboard/payouts', { token: ok.token, body: { amount: 100, method: 'moncash', reference: 'MB-OK-1', recipient: '50912345678' } });
+  assert.equal(w.status, 202);
+  const q = await api('GET', '/dashboard/payouts/quote?method=moncash&amount=100', { token: ok.token });
+  assert.equal(q.data.min_balance_htg, 2500);
+});
+
+test('a withdrawal that failed for a technical reason shows the merchant a clear sentence, not the raw code', async () => {
+  const live = await liveWithGateway('failmsg', 5000);
+  const w = await api('POST', '/dashboard/payouts', { token: live.token, body: { amount: 100, method: 'moncash', reference: 'FM-1', recipient: '50912345678' } });
+  const row = mockTables.payouts.find((p) => p.id === w.data.id);
+  row.status = 'failed'; row.failure_reason = 'WITHDRAWAL_TOKEN_FAILED: Jeton d\'authentification manquant. (HTTP 401)';
+  const got = await api('GET', `/dashboard/payouts/${w.data.id}`, { token: live.token });
+  assert.ok(!/WITHDRAWAL_TOKEN_FAILED/.test(got.data.failure_reason));
+  assert.match(got.data.failure_reason, /momentanément indisponible/);
+  row.failure_reason = 'Numéro NatCash invalide';
+  assert.equal((await api('GET', `/dashboard/payouts/${w.data.id}`, { token: live.token })).data.failure_reason, 'Numéro NatCash invalide');
+});

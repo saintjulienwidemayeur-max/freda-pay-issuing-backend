@@ -126,6 +126,7 @@ async function quote(ctx) {
       fee_rule: kind === 'percent' ? `${Math.round(pct * 10000) / 100} %` : `${fee} ${currency} fixes`,
       minimum: method === 'bank' ? (currency === 'USD' ? config.payoutFees.bankMinUSD : config.payoutFees.bankMinHTG) : null,
       minimum_htg: currency === 'HTG' && method === 'bank' ? config.payoutFees.bankMinHTG : null,
+      min_balance_htg: currency === 'HTG' && method !== 'bank' ? config.payoutFees.mobileMinBalanceHTG : null,
     },
   };
 }
@@ -148,6 +149,19 @@ function num(v) {
   return v == null ? v : Number(v);
 }
 
+/**
+ * What the merchant reads when a withdrawal failed. Technical causes on our side or the payment service's (token, network,
+ * cooldown, service balance) become one clear sentence: the money was never lost, it is given back. The raw reason stays
+ * in the database and in the admin panel.
+ */
+function friendlyFailure(reason) {
+  if (!reason) return reason;
+  if (/^(WITHDRAWAL_TOKEN_FAILED|AUTH_FAILED|NETWORK_ERROR|HTTP_\d+)|réessay|reessay|cooldown|retry|solde|balance|jeton|token/i.test(reason)) {
+    return "Le service de retrait est momentanément indisponible. Votre solde a été rétabli : réessayez dans quelques minutes. Si le problème continue, écrivez-nous via le chat.";
+  }
+  return reason;
+}
+
 function toPublic(p) {
   return {
     id: p.id,
@@ -162,7 +176,7 @@ function toPublic(p) {
     bank_reference: p.method === 'bank' ? p.bank_reference || null : undefined,
     provider_reference: p.api_reference,
     provider_transaction_id: p.plopplop_transaction_id,
-    failure_reason: p.failure_reason,
+    failure_reason: friendlyFailure(p.failure_reason),
     created_at: p.created_at,
     updated_at: p.updated_at,
   };
