@@ -54,6 +54,22 @@ function invited(contract, signer, url) {
   }), 'contract-invited');
 }
 
+/** The signer who just signed gets a provisional PDF while others still have to sign. */
+function signedPartial(contract, who, pdf) {
+  const left = (contract.signers || []).filter((x) => x.status !== 'SIGNED').length;
+  return deliver(who.email, who.name, buildEmail({
+    subject: `Votre signature est enregistrée : ${contract.title}`,
+    eyebrow: 'Signature enregistrée',
+    tone: 'success',
+    heading: 'Votre signature est enregistrée',
+    paragraphs: [
+      `Bonjour ${who.name},`,
+      `Votre signature du contrat **${contract.title}** est enregistrée.`,
+      `Vous trouverez en pièce jointe une copie du document avec les signatures actuelles. Il reste ${left} signataire${left > 1 ? 's' : ''} à signer : dès que tout le monde aura signé, la version finale vous sera envoyée automatiquement par email, ainsi qu'à toutes les parties.`,
+    ],
+  }), 'contract-signed-copy', [{ name: `contrat-${contract.id}-en-cours.pdf`, content: pdf.toString('base64') }]);
+}
+
 /** Everyone who signed gets the signed PDF. */
 async function completed(contract, pdf) {
   const attachments = [{ name: `contrat-${contract.id}.pdf`, content: pdf.toString('base64') }];
@@ -90,4 +106,4 @@ function dashboardUrl() {
   return `${siteUrl.get()}/dashboard#contrats`;
 }
 
-module.exports = { sent, invited, completed, signUrl, dashboardUrl };
+module.exports = { sent, invited, signedPartial, completed, signUrl, dashboardUrl };

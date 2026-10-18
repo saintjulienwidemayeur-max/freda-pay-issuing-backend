@@ -5726,6 +5726,11 @@ test('contracts: several signers on each side, links go out once the main recipi
   assert.equal(s1.data.contract.status, 'PENDING_SIGNATURE');
   assert.equal(s1.data.contract.viewer.signed, true);
   assert.equal((await api('POST', `/public/contracts/${t1}/sign`, { body: { signature: typedSig('Co Directeur') } })).data.error.code, 'ALREADY_SIGNED');
+  // whoever has signed can download right away, the final PDF follows by email at the end
+  assert.equal((await rawGet(`/public/contracts/${t1}/pdf`)).status, 200);
+  assert.equal((await rawGet(`/dashboard/contracts/${id}/pdf`, m.token)).status, 200);
+  assert.ok(sentEmails.some((e) => e.to === emailOf(m) && /signature est enregistrée/.test(e.subject) && e.attachments.length === 1));
+  assert.ok(sentEmails.some((e) => e.to === 'co.directeur@fredapay.example' && /signature est enregistrée/.test(e.subject) && e.attachments.length === 1));
   const s2 = await api('POST', `/public/contracts/${t2}/sign`, { body: { signer_name: 'Associé Lakay', signature: drawnSig() } });
   assert.equal(s2.data.contract.status, 'COMPLETED');
   const doneMails = sentEmails.filter((e) => /Contrat signé/.test(e.subject));

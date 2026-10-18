@@ -142,7 +142,7 @@ function publicView(c, opts) {
 }
 
 function sendPdf(ctx, c, pdf) {
-  const name = `contrat-${c.id}${c.status === STATUS.DONE ? '' : '-apercu'}.pdf`;
+  const name = `contrat-${c.id}${c.status === STATUS.DONE ? '' : c.signed_at ? '-en-cours' : '-apercu'}.pdf`;
   ctx.res.writeHead(200, {
     'Content-Type': 'application/pdf',
     'Content-Length': pdf.length,
@@ -200,8 +200,19 @@ async function completeContract(c, { fieldsIn, signerName, signature, ip, ua, em
   if (after.status !== STATUS.DONE) {
     // Others still have to sign: invite them now that the text and the blanks are final.
     for (const s of after.signers) if (s.status !== 'SIGNED') await resendInvite(after, s);
+    await sendCopy(after, email, after.signer_name || name);
   }
   return after;
+}
+
+/** Someone has signed but others have not: they get the PDF as it stands now, the final one follows when everyone has signed. */
+async function sendCopy(c, email, name) {
+  try {
+    await mail.signedPartial(c, { email, name }, await buildPdf(c));
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Contract copy email failed:', err.message);
+  }
 }
 
 /** An extra signer signs once the main recipient has (the text and the blanks are then final). */
@@ -215,7 +226,9 @@ async function signerSign(c, s, { signerName, signature, ip, ua }) {
     status: 'SIGNED', name, signature: sig, signed_at: new Date().toISOString(), signed_ip: ip, signed_user_agent: cleanText(ua, 300),
   });
   if (!won) throw httpError(409, 'ALREADY_SIGNED', 'Vous avez déjà signé ce contrat.');
-  return finalize(c.id);
+  const after = await finalize(c.id);
+  if (after.status !== STATUS.DONE) await sendCopy(after, s.email, name);
+  return after;
 }
 
 /**
@@ -451,8 +464,10 @@ async function publicSign(ctx) {
 }
 
 async function publicPdf(ctx) {
-  const { c } = await byToken(ctx);
-  if (c.status !== STATUS.DONE) throw httpError(409, 'NOT_COMPLETED', 'Le PDF est disponible une fois le contrat signé par toutes les parties.');
+  const { c, signer } = await byToken(ctx);
+  // Whoever has signed can download the PDF right away; it shows who has signed so far and is final once everyone has.
+  const signed = signer ? signer.status === 'SIGNED' : !!c.signed_at;
+  if (c.status !== STATUS.DONE && !signed) throw httpError(409, 'NOT_SIGNED', 'Le PDF est disponible après votre signature.');
   return sendPdf(ctx, c, await buildPdf(c));
 }
 
