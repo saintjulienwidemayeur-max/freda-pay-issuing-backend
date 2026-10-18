@@ -10,6 +10,11 @@ const ledger = require('../services/ledger');
 const otpService = require('../services/otpService');
 const rateLimit = require('../utils/rateLimit');
 
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
+const MAX_PASSWORD_LENGTH = 200; // scrypt on a huge string is a cheap way to burn CPU
+// A password hash nobody can match, so a login for an unknown email costs the same time as a real one (no timing oracle).
+const DUMMY_PASSWORD_HASH = hashPassword(require('crypto').randomBytes(16).toString('hex'));
+
 function publicMerchant(m) {
   return {
     id: m.id,
@@ -69,9 +74,16 @@ async function register(ctx) {
   if (!business_name || !email || !password) {
     throw httpError(400, 'MISSING_FIELDS', 'business_name, email et password sont requis.');
   }
+  if (typeof business_name !== 'string' || typeof email !== 'string' || typeof password !== 'string') {
+    throw httpError(400, 'INVALID_FIELDS', 'business_name, email et password doivent être du texte.');
+  }
   if (String(password).length < 8) {
     throw httpError(400, 'WEAK_PASSWORD', 'Le mot de passe doit contenir au moins 8 caractères.');
   }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    throw httpError(400, 'INVALID_PASSWORD', `Le mot de passe ne doit pas dépasser ${MAX_PASSWORD_LENGTH} caractères.`);
+  }
+  if (!EMAIL_RE.test(email.trim())) throw httpError(400, 'INVALID_EMAIL', 'Entrez une adresse email valide.');
 
   const country = String((onboarding && onboarding.country) || '').trim().toUpperCase();
   if (country && !/^[A-Z]{2}$/.test(country)) throw httpError(400, 'INVALID_COUNTRY', 'Le pays doit être un code à 2 lettres (ex. US, FR, NG).');
@@ -79,8 +91,10 @@ async function register(ctx) {
     throw httpError(403, 'COUNTRY_NOT_SUPPORTED', "Nos services ne sont pas disponibles dans ce pays, qui fait l'objet de sanctions économiques des États-Unis.");
   }
 
-  const normalizedEmail = String(email).toLowerCase();
-  const existing = await supabase.selectOne('merchants', { email: normalizedEmail });
+  const normalizedEmail = email.trim().toLowerCase();
+  // An address already invited to someone's team counts as taken too (otherwise login would resolve to the wrong account).
+  const existing = (await supabase.selectOne('merchants', { email: normalizedEmail }))
+    || (await supabase.selectOne('team_members', { email: normalizedEmail }));
   if (existing) {
     throw httpError(409, 'EMAIL_TAKEN', 'Un compte existe déjà avec cet email.');
   }
@@ -137,11 +151,16 @@ async function verifyEmailOtp(ctx) {
   if (!merchant_id || !code) {
     throw httpError(400, 'MISSING_FIELDS', 'merchant_id et code sont requis.');
   }
+  if (typeof merchant_id !== 'string' || (typeof code !== 'string' && typeof code !== 'number')) {
+    throw httpError(400, 'INVALID_FIELDS', 'merchant_id et code sont invalides.');
+  }
 
   const merchant = await supabase.selectOne('merchants', { id: merchant_id });
   if (!merchant) throw httpError(404, 'NOT_FOUND', 'Compte introuvable.');
+  // This endpoint only ever proves ownership of the email at signup. Once verified it must NOT hand out a
+  // session (that would be a passwordless takeover): signing in goes through /auth/login + the emailed code.
   if (merchant.email_verified) {
-    return { status: 200, body: { merchant: publicMerchant(merchant), session_token: issueSession(merchant.id) } };
+    throw httpError(409, 'ALREADY_VERIFIED', 'Cet email est déjà vérifié. Connectez-vous.');
   }
 
   await otpService.verifyOtp(merchant_id, code, 'signup'); // throws a specific error on any failure
@@ -154,6 +173,7 @@ async function verifyEmailOtp(ctx) {
 async function resendEmailOtp(ctx) {
   const { merchant_id } = ctx.body || {};
   if (!merchant_id) throw httpError(400, 'MISSING_FIELDS', 'merchant_id est requis.');
+  if (typeof merchant_id !== 'string') throw httpError(400, 'INVALID_FIELDS', 'merchant_id est invalide.');
 
   const merchant = await supabase.selectOne('merchants', { id: merchant_id });
   if (!merchant) throw httpError(404, 'NOT_FOUND', 'Compte introuvable.');
@@ -161,6 +181,11 @@ async function resendEmailOtp(ctx) {
     throw httpError(409, 'ALREADY_VERIFIED', 'Cet email est déjà vérifié.');
   }
 
+  // Per account (the per-IP limit alone can be spread over many addresses): caps both the mails sent to
+  // one inbox and the number of fresh 5-guess windows an attacker gets on the signup code.
+  if (rateLimit.hit(`resend-otp-merchant:${merchant.id}`, 5, 60 * 60 * 1000).limited) {
+    throw httpError(429, 'RATE_LIMITED', 'Trop de codes demandés. Réessayez dans une heure.');
+  }
   await otpService.resendOtp(merchant, 'signup');
   return { status: 200, body: { sent: true } };
 }
@@ -173,7 +198,10 @@ async function login(ctx) {
   if (!email || !password) {
     throw httpError(400, 'MISSING_FIELDS', 'email et password sont requis.');
   }
-  const normalizedEmail = String(email).toLowerCase();
+  if (typeof email !== 'string' || typeof password !== 'string' || password.length > MAX_PASSWORD_LENGTH) {
+    throw httpError(401, 'INVALID_CREDENTIALS', 'Email ou mot de passe incorrect.');
+  }
+  const normalizedEmail = email.trim().toLowerCase();
   const lockKey = `login-fail:${normalizedEmail}`;
 
   // Per-account lockout after repeated failures, in addition to the per-IP
@@ -186,6 +214,7 @@ async function login(ctx) {
   }
 
   const owner = await supabase.selectOne('merchants', { email: normalizedEmail });
+  if (!owner) verifyPassword(password, DUMMY_PASSWORD_HASH); // same cost whether or not the account exists
 
   if (owner && verifyPassword(password, owner.password_hash)) {
     if (owner.deleted_at) {

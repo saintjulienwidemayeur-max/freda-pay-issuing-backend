@@ -26,7 +26,7 @@ async function resolveRecipients(audience, merchantId) {
     if (!m.email) throw httpError(400, 'NO_EMAIL', "Ce marchand n'a pas d'adresse email.");
     return [m];
   }
-  const rows = await supabase.select('merchants', { deleted_at: 'is.null', email_verified: 'eq.true' }, { order: 'created_at.desc', limit: MAX_RECIPIENTS });
+  const rows = await supabase.select('merchants', { deleted_at: supabase.isNull(), email_verified: true }, { order: 'created_at.desc', limit: MAX_RECIPIENTS });
   return rows.filter((m) => {
     if (!m.email) return false;
     const live = !!(m.gateway_live_enabled || m.issuing_live_enabled);

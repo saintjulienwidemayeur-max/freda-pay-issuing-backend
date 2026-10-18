@@ -33,7 +33,7 @@ async function createAndSendOtp(merchant, purpose) {
 async function getLatestActiveOtp(merchantId, purpose) {
   const rows = await supabase.select(
     'email_otps',
-    { merchant_id: merchantId, purpose: purpose || 'signup', consumed_at: 'is.null' },
+    { merchant_id: merchantId, purpose: purpose || 'signup', consumed_at: supabase.isNull() },
     { order: 'created_at.desc', limit: 1 }
   );
   return rows && rows.length ? rows[0] : null;
@@ -68,7 +68,11 @@ async function verifyOtp(merchantId, code, purpose) {
     );
   }
 
-  await supabase.update('email_otps', { id: record.id }, { consumed_at: new Date().toISOString() });
+  // Claim first: a code works exactly once, even when two requests carry it at the same time.
+  const claimed = await supabase.update('email_otps', { id: record.id, consumed_at: supabase.isNull() }, { consumed_at: new Date().toISOString() });
+  if (!claimed || !claimed.length) {
+    throw httpError(400, 'OTP_NOT_FOUND', "Aucun code de vérification actif. Demandez-en un nouveau.");
+  }
   return true;
 }
 

@@ -151,8 +151,8 @@ router.del('/dashboard/payment-links/:id', session.requireSession, paymentLinkHa
 router.get('/public/card-checkout/:id', cardCheckoutHandlers.get);
 router.get('/public/card-checkout/:id/status', cardCheckoutHandlers.status);
 router.get('/public/payment-links/:id', paymentLinkHandlers.publicGet);
-router.post('/public/payment-links/:id/pay', paymentLinkHandlers.publicPay);
-router.get('/public/payment-links/:id/payments/:paymentId', paymentLinkHandlers.publicPaymentStatus);
+router.post('/public/payment-links/:id/pay', rateLimit.middleware('public-pay', 30, 15 * 60 * 1000), paymentLinkHandlers.publicPay);
+router.get('/public/payment-links/:id/payments/:paymentId', rateLimit.middleware('public-pay-status', 300, 15 * 60 * 1000), paymentLinkHandlers.publicPaymentStatus);
 
 // ---- Cards (Issuing, via Maplerad) ----
 router.get('/dashboard/cards/holder-profile', session.requireSession, cardHandlers.getHolderProfile);
@@ -346,6 +346,16 @@ router.post('/admin/blog/:id/publish', adminSession.requireAdminSession, adminBl
 router.post('/admin/blog/:id/unpublish', adminSession.requireAdminSession, adminBlogHandlers.unpublish);
 router.del('/admin/blog/:id', adminSession.requireAdminSession, adminBlogHandlers.remove);
 router.post('/admin/blog/upload-cover', adminSession.requireAdminSession, adminBlogHandlers.uploadCover);
+
+// A bug in a fire-and-forget task must be logged, never take the whole API down (Node >= 15 exits on an unhandled rejection).
+process.on('unhandledRejection', (err) => {
+  // eslint-disable-next-line no-console
+  console.error('Unhandled rejection:', err);
+});
+process.on('uncaughtException', (err) => {
+  // eslint-disable-next-line no-console
+  console.error('Uncaught exception:', err);
+});
 
 const server = http.createServer(handler);
 // Hosting proxies (Render, etc.) keep connections open longer than Node's 5s

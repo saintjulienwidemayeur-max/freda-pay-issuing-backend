@@ -362,7 +362,7 @@ async function createHolder(merchantId, profile, mode) {
 /** Counts cards that occupy a slot against the plan's card limit (everything but failed/terminated). */
 async function countActiveCards(merchantId, mode) {
   // Each environment counts its own cards: sandbox test cards must not eat into the real (Live) quota.
-  const rows = await supabase.select('cards', { merchant_id: merchantId, mode: mode === 'live' ? 'live' : 'sandbox', deleted_at: 'is.null' }, { select: 'id,status' });
+  const rows = await supabase.select('cards', { merchant_id: merchantId, mode: mode === 'live' ? 'live' : 'sandbox', deleted_at: supabase.isNull() }, { select: 'id,status' });
   return rows.filter((c) => c.status === 'active' || c.status === 'pending' || c.status === 'disabled').length;
 }
 
@@ -906,7 +906,7 @@ async function getCardOwned(merchantId, cardId) {
 }
 
 async function list(merchantId, limit, offset, mode, kind) {
-  const filters = { merchant_id: merchantId, deleted_at: 'is.null' }; // a deleted card is gone for its owner
+  const filters = { merchant_id: merchantId, deleted_at: supabase.isNull() }; // a deleted card is gone for its owner
   if (mode) filters.mode = mode;
   if (kind) filters.kind = kind;
   return supabase.select('cards', filters, { order: 'created_at.desc', limit: limit || 50, offset: offset || 0 });

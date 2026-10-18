@@ -38,7 +38,7 @@ function shouldAcknowledge(it, fromEmail) {
 /** Sends the automatic "we received your message" email. Never throws: a mail problem must not lose the message. */
 async function sendAcknowledgement(row, fromName) {
   try {
-    const recent = await supabase.select('admin_inbox', { from_email: row.from_email, ack_sent_at: 'not.is.null' }, { order: 'ack_sent_at.desc', limit: 1 });
+    const recent = await supabase.select('admin_inbox', { from_email: row.from_email, ack_sent_at: supabase.notNull() }, { order: 'ack_sent_at.desc', limit: 1 });
     if (recent[0] && Date.now() - new Date(recent[0].ack_sent_at).getTime() < ACK_COOLDOWN_MS) return false;
     const subject = 'Nous avons bien reçu votre message';
     const built = buildEmail({

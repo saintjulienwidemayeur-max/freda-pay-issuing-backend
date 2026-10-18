@@ -59,7 +59,12 @@ class Router {
       const m = route.regex.exec(pathname);
       if (!m) continue;
       const params = {};
-      route.paramNames.forEach((name, i) => { params[name] = decodeURIComponent(m[i + 1]); });
+      try {
+        route.paramNames.forEach((name, i) => { params[name] = decodeURIComponent(m[i + 1]); });
+      } catch (e) {
+        // Malformed percent-escape (e.g. /blog/%): a client error, never a crash.
+        throw Object.assign(new Error("L'adresse demandée est invalide."), { httpStatus: 400, code: 'INVALID_URL' });
+      }
       return { route, params };
     }
     return null;
@@ -111,8 +116,6 @@ function createHandler(router, options) {
   return async function handle(req, res) {
     const started = Date.now();
     res.__startedAt = started;
-    const url = new URL(req.url, 'http://internal');
-    const pathname = url.pathname;
 
     // Basic CORS support so browser-based merchant integrations can call the API directly.
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -132,7 +135,19 @@ function createHandler(router, options) {
       return res.end();
     }
 
-    const matched = router.match(req.method, pathname);
+    // Everything that depends on the raw request line is parsed inside a guard: a malformed URL or
+    // percent-escape must produce a 400, never an exception outside the try/catch below (which would
+    // leave the request hanging or take the whole process down).
+    let url;
+    let pathname;
+    let matched;
+    try {
+      url = new URL(req.url, 'http://internal');
+      pathname = url.pathname;
+      matched = router.match(req.method, pathname);
+    } catch (e) {
+      return sendJson(res, 400, { error: { code: 'INVALID_URL', message: "L'adresse demandée est invalide." } });
+    }
     if (!matched) {
       return sendJson(res, 404, { error: { code: 'NOT_FOUND', message: 'Route inconnue.' } });
     }

@@ -1,8 +1,9 @@
 'use strict';
 const supabase = require('../lib/supabase');
-const { publicMerchant } = require('./auth');
+const { publicMerchant, issueSession } = require('./auth');
 const { hashPassword, verifyPassword } = require('../utils/password');
 const rateLimit = require('../utils/rateLimit');
+const session = require('../middleware/session');
 
 /**
  * Updates business info. Notably supports converting an 'individual' account
@@ -57,7 +58,9 @@ async function update(ctx) {
 async function changePassword(ctx) {
   const { current_password, new_password } = ctx.body || {};
   if (!current_password || !new_password) throw httpError(400, 'MISSING_FIELDS', 'Entrez votre mot de passe actuel et le nouveau.');
+  if (typeof current_password !== 'string' || typeof new_password !== 'string') throw httpError(400, 'INVALID_FIELDS', 'Les mots de passe doivent être du texte.');
   if (String(new_password).length < 8) throw httpError(400, 'WEAK_PASSWORD', 'Le nouveau mot de passe doit contenir au moins 8 caractères.');
+  if (new_password.length > 200) throw httpError(400, 'INVALID_PASSWORD', 'Le mot de passe ne doit pas dépasser 200 caractères.');
 
   const who = `pwd-change:${ctx.merchantId}:${ctx.userId || 'owner'}`;
   if (rateLimit.isLimited(who, 5).limited) throw httpError(429, 'RATE_LIMITED', 'Trop de tentatives. Réessayez dans quelques minutes.');
@@ -72,9 +75,15 @@ async function changePassword(ctx) {
   }
   if (verifyPassword(new_password, row.password_hash)) throw httpError(400, 'SAME_PASSWORD', 'Choisissez un mot de passe différent de l\'actuel.');
 
-  await supabase.update(isMember ? 'team_members' : 'merchants', { id: row.id }, { password_hash: hashPassword(new_password) });
+  // Every session opened before now ends (a thief who already holds a token loses it); the caller gets a fresh one.
+  await supabase.update(isMember ? 'team_members' : 'merchants', { id: row.id }, {
+    password_hash: hashPassword(new_password),
+    sessions_valid_after: new Date().toISOString(),
+  });
+  if (isMember) session.forgetMember(row.id); else session.forgetMerchant(row.id);
   rateLimit.reset(who);
-  return { status: 200, body: { updated: true } };
+  const token = isMember ? issueSession(ctx.merchantId, ctx.role, ctx.userId) : issueSession(ctx.merchantId);
+  return { status: 200, body: { updated: true, session_token: token } };
 }
 
 /**

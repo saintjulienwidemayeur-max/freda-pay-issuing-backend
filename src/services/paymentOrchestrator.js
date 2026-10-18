@@ -199,7 +199,7 @@ async function refreshCardStatus(payment) {
 /** Background safety net: webhooks are not guaranteed (e.g. expired payments), so old pending card payments are re-read. */
 async function reconcilePendingCards(limit) {
   const cutoff = new Date(Date.now() - config.tranzak.reconcileAfterMs).toISOString();
-  const rows = await supabase.select('payments', { provider: 'tranzak', status: 'pending', created_at: `lt.${cutoff}` }, { order: 'created_at.asc', limit: limit || 20 });
+  const rows = await supabase.select('payments', { provider: 'tranzak', status: 'pending', created_at: supabase.lt(cutoff) }, { order: 'created_at.asc', limit: limit || 20 });
   let settled = 0;
   for (const p of rows) {
     const after = await refreshCardStatus(p);
