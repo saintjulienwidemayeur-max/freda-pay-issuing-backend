@@ -5,12 +5,39 @@ function baseUrl() {
   return config.plopplop.baseUrl.replace(/\/+$/, '');
 }
 
+const MAX_REDIRECTS = 3;
+
+/** The same provider on another name (www., api., the apex) or upgraded to https: the only redirect it is safe to re-send our credentials to. */
+function sameProvider(from, to) {
+  const root = (h) => h.replace(/^(www|api)\./i, '').toLowerCase();
+  return root(from.hostname) === root(to.hostname) && (to.protocol === 'https:' || from.protocol === to.protocol);
+}
+
+/**
+ * POST JSON. Redirects are followed by hand: fetch silently DROPS the Authorization header when a redirect changes the
+ * host (http -> https, apex -> www), and the provider then answers "Jeton d'authentification manquant" on every call that
+ * carries a token (withdrawals) while the calls that authenticate in the body (payments) keep working.
+ */
 async function postJson(path, body, headers) {
-  const res = await fetch(`${baseUrl()}${path}`, {
-    method: 'POST',
-    headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
-    body: JSON.stringify(body),
-  });
+  let url = `${baseUrl()}${path}`;
+  const payload = JSON.stringify(body);
+  const allHeaders = Object.assign({ 'Content-Type': 'application/json' }, headers || {});
+  let res;
+  for (let hop = 0; ; hop++) {
+    res = await fetch(url, { method: 'POST', headers: allHeaders, body: payload, redirect: 'manual' });
+    const location = res.headers.get('location');
+    if (![301, 302, 303, 307, 308].includes(res.status) || !location) break;
+    if (hop >= MAX_REDIRECTS) break;
+    const next = new URL(location, url);
+    if (!sameProvider(new URL(url), next)) {
+      // eslint-disable-next-line no-console
+      console.error(`PlopPlop redirected ${url} to another site (${next.host}): not followed. Set PLOPPLOP_BASE_URL to the final address.`);
+      break;
+    }
+    // eslint-disable-next-line no-console
+    console.warn(`PlopPlop redirected ${url} -> ${next.href}. Set PLOPPLOP_BASE_URL to the final address to save a round trip.`);
+    url = next.href;
+  }
   let data;
   try {
     data = await res.json();
