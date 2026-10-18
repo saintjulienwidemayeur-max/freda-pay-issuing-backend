@@ -1913,8 +1913,8 @@ test('changing your password really changes it (owner and teammate), and needs t
   assert.equal((await api('POST', '/auth/login', { body: { email: 'owner@pwd-co.com', password: 'old-password-1' } })).status, 401);
   assert.equal((await loginWithOtp('owner@pwd-co.com', 'brand-new-pass')).status, 200);
 
-  // A read-only teammate can still change their OWN password.
-  await api('POST', '/dashboard/team/invite', { token: owner, body: { email: 'ro@pwd-co.com', role: 'viewer' } });
+  // A read-only teammate can still change their OWN password. (Changing a password ends older sessions: use the fresh token it returned.)
+  await api('POST', '/dashboard/team/invite', { token: ok.data.session_token, body: { email: 'ro@pwd-co.com', role: 'viewer' } });
   const acc = await api('POST', '/auth/accept-invite', { body: { token: inviteTokenFor('ro@pwd-co.com'), password: 'member-pass-1' } });
   const change = await api('POST', '/dashboard/account/password', { token: acc.data.session_token, body: { current_password: 'member-pass-1', new_password: 'member-pass-2' } });
   assert.equal(change.status, 200);
@@ -5784,4 +5784,195 @@ test('contracts: tables are kept, [[Signature ...]] marks are not blanks to fill
   const pdf = await rawGet(`/dashboard/contracts/${c.id}/pdf`, m.token);
   assert.equal(pdf.status, 200);
   assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
+});
+
+
+// ===== fixer1: auth & injection =====
+
+test('fixer1: /auth/verify-otp never returns a session for an already verified account (no code needed was the bug)', async () => {
+  const reg = await registerAndVerify({ business_name: 'Otp Bypass Co', email: 'otp-bypass@example.com', password: 'password123' });
+  const id = reg.data.merchant.id;
+  for (const code of ['x', '000000', 123456]) {
+    const r = await api('POST', '/auth/verify-otp', { headers: freshIp(), body: { merchant_id: id, code } });
+    assert.equal(r.status, 409);
+    assert.equal(r.data.error.code, 'ALREADY_VERIFIED');
+    assert.equal(r.data.session_token, undefined);
+    assert.equal(r.data.merchant, undefined);
+  }
+  // Wrong types are refused, not coerced.
+  const obj = await api('POST', '/auth/verify-otp', { headers: freshIp(), body: { merchant_id: { a: 1 }, code: '000000' } });
+  assert.equal(obj.status, 400);
+});
+
+test('fixer1: operator-looking values are literal ids: no filter injection through verify-otp / resend-otp / public links / forgot-password', async () => {
+  const reg = await registerAndVerify({ business_name: 'Inject Victim Co', email: 'inject-victim@example.com', password: 'password123' });
+  for (const evil of ['neq.zzz', 'like.mch_*', 'not.is.null', 'in.(a,b)', 'gte.a']) {
+    const v = await api('POST', '/auth/verify-otp', { headers: freshIp(), body: { merchant_id: evil, code: '000000' } });
+    assert.equal(v.status, 404, `verify-otp ${evil}`);
+    assert.equal(v.data.session_token, undefined);
+    const rs = await api('POST', '/auth/resend-otp', { headers: freshIp(), body: { merchant_id: evil } });
+    assert.equal(rs.status, 404, `resend-otp ${evil}`);
+    const link = await api('GET', `/public/payment-links/${encodeURIComponent(evil)}`);
+    assert.equal(link.status, 404, `public link ${evil}`);
+  }
+  // A reset mail must not go to "the first account" for a pattern address.
+  const before = sentEmails.length;
+  const f = await api('POST', '/auth/forgot-password', { headers: freshIp(), body: { email: 'neq.a@b.co' } });
+  assert.equal(f.status, 200);
+  assert.equal(sentEmails.slice(before).length, 0);
+  // Login challenges: a pattern challenge_id does not touch (or burn attempts on) a real challenge.
+  const step1 = await api('POST', '/auth/login', { headers: freshIp(), body: { email: 'inject-victim@example.com', password: 'password123' } });
+  assert.equal(step1.status, 200);
+  for (let i = 0; i < 7; i++) {
+    const r = await api('POST', '/auth/login/verify', { headers: freshIp(), body: { challenge_id: 'neq.x', code: '000000' } });
+    assert.equal(r.status, 400);
+    assert.equal(r.data.error.code, 'LOGIN_CHALLENGE_INVALID');
+  }
+  const ok = await api('POST', '/auth/login/verify', { headers: freshIp(), body: { challenge_id: step1.data.challenge_id, code: extractLoginCode('inject-victim@example.com') } });
+  assert.equal(ok.status, 200);
+  assert.ok(reg.data.merchant.id);
+});
+
+test('fixer1: the supabase helper: plain strings are always equality, operators only through explicit helpers', async () => {
+  const supabase = require('../src/lib/supabase');
+  const rows = await supabase.select('merchants', {}, { limit: 3 });
+  assert.ok(rows.length >= 2);
+  assert.deepEqual(await supabase.select('merchants', { id: 'neq.nothing' }), []);
+  assert.deepEqual(await supabase.select('merchants', { id: 'like.mch_*' }), []);
+  assert.equal((await supabase.select('merchants', { id: supabase.neq('nothing') })).length >= rows.length, true);
+  assert.equal((await supabase.select('merchants', { id: supabase.inList([rows[0].id, rows[1].id]) })).length, 2);
+  assert.equal((await supabase.select('merchants', { email: supabase.notNull() })).length >= 2, true);
+  assert.throws(() => supabase.inList(['a,b', 'c)']), /invalide/);
+  assert.throws(() => supabase.inList(['x),id=neq.(y']));
+});
+
+test('fixer1: malformed percent-escapes and URLs answer 400/404 JSON and never crash the server', async () => {
+  const http = require('node:http');
+  const raw = (path) => new Promise((resolve, reject) => {
+    const req = http.request({ host: 'localhost', port: APP_PORT, path, method: 'GET' }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => resolve({ status: res.statusCode, data }));
+    });
+    req.on('error', reject);
+    req.setTimeout(3000, () => req.destroy(new Error('timeout')));
+    req.end();
+  });
+  for (const path of ['/blog/%', '/public/payment-links/%E0%A4%A', '/public/payment-links/%E0%A4%A/payments/%', '/public/contracts/%zz', '/assets/%']) {
+    const r = await raw(path);
+    assert.ok(r.status === 400 || r.status === 404, `${path} -> ${r.status}`);
+    assert.ok(JSON.parse(r.data).error.code);
+  }
+  const health = await api('GET', '/health');
+  assert.equal(health.status, 200); // still alive
+});
+
+test('fixer1: client IP comes from the trusted proxy hop, not from the first (client-written) X-Forwarded-For entry', () => {
+  const { clientIp } = require('../src/utils/rateLimit');
+  const req = (headers, ip = '127.0.0.1') => ({ headers, socket: { remoteAddress: ip } });
+  const saved = { cf: process.env.TRUST_CF_CONNECTING_IP, hops: process.env.TRUSTED_PROXY_HOPS };
+  try {
+    delete process.env.TRUSTED_PROXY_HOPS;
+    process.env.TRUST_CF_CONNECTING_IP = '0';
+    // The client rotates the first entry; the hop appended by our proxy (last) is what counts.
+    assert.equal(clientIp(req({ 'x-forwarded-for': '6.6.6.6, 203.0.113.9' })), '203.0.113.9');
+    assert.equal(clientIp(req({ 'x-forwarded-for': '7.7.7.7, 203.0.113.9' })), '203.0.113.9');
+    assert.equal(clientIp(req({ 'x-forwarded-for': '198.51.100.4' })), '198.51.100.4');
+    // Garbage in the header falls back to the socket peer; a forged cf-connecting-ip is ignored when not trusted.
+    assert.equal(clientIp(req({ 'x-forwarded-for': 'not-an-ip' }, '10.1.1.1')), '10.1.1.1');
+    assert.equal(clientIp(req({ 'cf-connecting-ip': '6.6.6.6' }, '10.1.1.1')), '10.1.1.1');
+    assert.equal(clientIp(req({}, '10.1.1.1')), '10.1.1.1');
+    // Behind Cloudflare (production default) its header is authoritative, and must be a real address.
+    process.env.TRUST_CF_CONNECTING_IP = '1';
+    assert.equal(clientIp(req({ 'cf-connecting-ip': '192.0.2.55', 'x-forwarded-for': '6.6.6.6, 172.70.0.1' })), '192.0.2.55');
+    assert.equal(clientIp(req({ 'cf-connecting-ip': 'junk', 'x-forwarded-for': '6.6.6.6, 172.70.0.1' })), '172.70.0.1');
+    // More trusted hops are configurable.
+    process.env.TRUST_CF_CONNECTING_IP = '0';
+    process.env.TRUSTED_PROXY_HOPS = '2';
+    assert.equal(clientIp(req({ 'x-forwarded-for': '6.6.6.6, 203.0.113.9, 172.70.0.1' })), '203.0.113.9');
+  } finally {
+    if (saved.cf === undefined) delete process.env.TRUST_CF_CONNECTING_IP; else process.env.TRUST_CF_CONNECTING_IP = saved.cf;
+    if (saved.hops === undefined) delete process.env.TRUSTED_PROXY_HOPS; else process.env.TRUSTED_PROXY_HOPS = saved.hops;
+  }
+});
+
+test('fixer1: rotating the first X-Forwarded-For entry no longer escapes the per-IP rate limit', async () => {
+  let limited = 0;
+  for (let i = 0; i < 25; i++) {
+    const r = await api('POST', '/auth/reset-password', { headers: { 'x-forwarded-for': `${100 + i}.1.1.1, 203.0.113.250` }, body: { token: 'x'.repeat(40), password: 'whatever-123' } });
+    if (r.status === 429) limited += 1;
+  }
+  assert.ok(limited >= 5, `expected the 15/15min limit to bite, got ${limited} x 429`);
+});
+
+test('fixer1: resend-otp is limited per account, not only per IP', async () => {
+  const r0 = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Resend Co', email: 'resend-co@example.com', password: 'password123' } });
+  assert.equal(r0.status, 201);
+  const statuses = [];
+  for (let i = 0; i < 8; i++) {
+    const r = await api('POST', '/auth/resend-otp', { headers: freshIp(), body: { merchant_id: r0.data.merchant_id } });
+    statuses.push(r.status);
+  }
+  assert.deepEqual(statuses.slice(0, 5), [200, 200, 200, 200, 200]);
+  assert.deepEqual(statuses.slice(5), [429, 429, 429]);
+});
+
+test('fixer1: a signup code works once even when used twice in parallel', async () => {
+  const r0 = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Race Otp Co', email: 'race-otp@example.com', password: 'password123' } });
+  const code = extractOtpFromEmail('race-otp@example.com');
+  const both = await Promise.all([1, 2].map(() => api('POST', '/auth/verify-otp', { headers: freshIp(), body: { merchant_id: r0.data.merchant_id, code } })));
+  assert.equal(both.filter((r) => r.status === 200).length, 1);
+});
+
+test('fixer1: a password change ends every older session (owner and admin) and hands back a fresh token', async () => {
+  const reg = await registerAndVerify({ business_name: 'Revoke Co', email: 'owner@revoke-co.com', password: 'old-password-1' });
+  const stolen = (await loginWithOtp('owner@revoke-co.com', 'old-password-1')).data.session_token;
+  assert.equal((await api('GET', '/auth/me', { token: stolen })).status, 200);
+  await new Promise((r) => setTimeout(r, 1100)); // tokens carry whole-second timestamps
+  const change = await api('POST', '/dashboard/account/password', { token: reg.data.session_token, body: { current_password: 'old-password-1', new_password: 'brand-new-pass' } });
+  assert.equal(change.status, 200);
+  assert.ok(change.data.session_token);
+  const old = await api('GET', '/auth/me', { token: stolen });
+  assert.equal(old.status, 401);
+  assert.equal(old.data.error.code, 'SESSION_ENDED');
+  assert.equal((await api('GET', '/auth/me', { token: change.data.session_token })).status, 200);
+
+  // Admin
+  const adm = await adminLogin('admin');
+  const stolenAdmin = (await loginWithOtp(adm.email, adm.password, '/admin')).data.session_token;
+  assert.equal((await api('GET', '/admin/me', { token: stolenAdmin })).status, 200);
+  await new Promise((r) => setTimeout(r, 1100));
+  const ch = await api('POST', '/admin/account/password', { token: adm.token, body: { current_password: adm.password, new_password: 'another-admin-pass-2' } });
+  assert.equal(ch.status, 200);
+  assert.ok(ch.data.session_token);
+  assert.equal((await api('GET', '/admin/me', { token: stolenAdmin })).status, 401);
+  assert.equal((await api('GET', '/admin/me', { token: ch.data.session_token })).status, 200);
+});
+
+test('fixer1: register validates types/email/password length and refuses an email already invited to a team', async () => {
+  const bad = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: { a: 1 }, email: 'x@y.co', password: 'password123' } });
+  assert.equal(bad.status, 400);
+  const mail = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Mail Co', email: 'notanemail', password: 'password123' } });
+  assert.equal(mail.status, 400);
+  assert.equal(mail.data.error.code, 'INVALID_EMAIL');
+  const long = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Long Co', email: 'long-pw@example.com', password: 'p'.repeat(5000) } });
+  assert.equal(long.status, 400);
+  const reg = await registerAndVerify({ business_name: 'Invite Owner Co', email: 'owner@invite-owner.com', password: 'password123' });
+  await api('POST', '/dashboard/team/invite', { token: reg.data.session_token, body: { email: 'invitee@invite-owner.com', role: 'viewer' } });
+  const taken = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Squatter Co', email: 'invitee@invite-owner.com', password: 'password123' } });
+  assert.equal(taken.status, 409);
+  assert.equal(taken.data.error.code, 'EMAIL_TAKEN');
+});
+
+test('fixer1: production refuses to boot with a missing or placeholder SESSION_SECRET', () => {
+  const { spawnSync } = require('node:child_process');
+  const run = (secret) => spawnSync(process.execPath, ['-e', "require('./src/config')"], {
+    cwd: require('path').join(__dirname, '..'),
+    env: Object.assign({}, process.env, { NODE_ENV: 'production', SESSION_SECRET: secret }),
+    encoding: 'utf8',
+  });
+  assert.notEqual(run('').status, 0);
+  assert.notEqual(run('CHANGE_ME_LONG_RANDOM_VALUE_0123456789abcdef').status, 0);
+  assert.notEqual(run('short').status, 0);
+  assert.equal(run('a'.repeat(48)).status, 0);
 });
