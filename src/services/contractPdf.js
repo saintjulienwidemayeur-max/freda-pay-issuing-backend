@@ -15,6 +15,8 @@ const MUTED = rgb(0.4, 0.4, 0.45);
 const LINE = rgb(0.85, 0.83, 0.87);
 const SIZES = { p: 10.5, li: 10.5, blockquote: 10.5, h1: 19, h2: 14.5, h3: 12 };
 const FALLBACK_CHARS = { '≈': '~', '→': '->', '←': '<-', '✓': 'v', '✔': 'v', '’': "'", '‘': "'", '“': '"', '”': '"', ' ': ' ', ' ': ' ', '​': '', '﻿': '' };
+/** Letters outside WinAnsi that have a plain look-alike (accents are handled by decomposition). */
+const LOOKALIKE = { 'ł': 'l', 'Ł': 'L', 'đ': 'd', 'Đ': 'D', 'ı': 'i', 'İ': 'I', 'ø': 'o', 'Ø': 'O', 'ħ': 'h', 'ŧ': 't', '‐': '-', '‑': '-', '‒': '-', '−': '-', '‚': ',', '′': "'", '″': '"', '‹': '<', '›': '>', '№': 'No', '™': '(TM)', '℅': 'c/o', '＄': '$', '½': '1/2', '¼': '1/4', '¾': '3/4', '×': 'x', '÷': '/', '‣': '•', '◦': 'o', '▪': '-', '■': '-', '…': '...' };
 
 function fmtDate(iso) {
   if (!iso) return '-';
@@ -46,6 +48,12 @@ async function buildPdf(c) {
     m: await doc.embedFont(StandardFonts.Courier),
   };
   const charset = new Set(f.r.getCharacterSet());
+  const lookalike = (ch) => {
+    if (LOOKALIKE[ch] !== undefined) return LOOKALIKE[ch];
+    const base = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (base && base !== ch && [...base].every((b) => charset.has(b.codePointAt(0)))) return base;
+    return '?';
+  };
   const safe = (s) => {
     let out = '';
     for (const ch of String(s)) {
@@ -53,7 +61,7 @@ async function buildPdf(c) {
       if (FALLBACK_CHARS[ch] !== undefined) out += FALLBACK_CHARS[ch];
       else if (cp === 9 || cp === 10 || cp === 13) out += ' ';
       else if (charset.has(cp)) out += ch;
-      else out += '?';
+      else out += lookalike(ch);
     }
     return out;
   };
@@ -92,6 +100,23 @@ async function buildPdf(c) {
     }
   };
   // Words of a run list laid out in lines no wider than `width` (a word wider than the line is cut).
+  // Longest prefix of `text` (at least one character) that fits in `width`; binary search, so a very long word stays cheap.
+  const cutToWidth = (text, font, size, width) => {
+    let lo = 1, hi = text.length;
+    if (font.widthOfTextAtSize(text, size) <= width) return text.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (font.widthOfTextAtSize(text.slice(0, mid), size) <= width) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  };
+  // One line: the text is shortened with "..." when it is wider than `width`.
+  const fit = (txt, font, size, width) => {
+    const t = safe(txt);
+    if (font.widthOfTextAtSize(t, size) <= width) return t;
+    const n = cutToWidth(t, font, size, width - font.widthOfTextAtSize('...', size));
+    return `${t.slice(0, n)}...`;
+  };
   const buildLines = (runs, size, width, forceBold, forceItalic) => {
     const words = [];
     for (const r of runs) {
@@ -115,8 +140,7 @@ async function buildPdf(c) {
       if (!w.space && w.w > width) {
         let rest = w.text;
         while (rest.length) {
-          let n = rest.length;
-          while (n > 1 && w.font.widthOfTextAtSize(rest.slice(0, n), size) > width) n--;
+          const n = cutToWidth(rest, w.font, size, width);
           const piece = rest.slice(0, n); rest = rest.slice(n);
           line.push({ text: piece, font: w.font, w: w.font.widthOfTextAtSize(piece, size), u: w.u }); lw += line[line.length - 1].w;
           if (rest.length) pushLine(false);
@@ -139,16 +163,18 @@ async function buildPdf(c) {
     const scale = contentW / widths.reduce((a, b) => a + b, 0);
     widths = widths.map((w) => w * scale);
     y -= 4;
-    for (const row of blk.rows) {
-      const cells = row.cells.map((cell, c) => ({ cell, lines: buildLines(cell.runs, size, widths[c] - 2 * padX, cell.head, false) }));
-      const h = Math.max(...cells.map((x) => x.lines.length)) * lineH + 2 * padY;
-      ensure(h);
+    const fullLines = Math.floor((PAGE.h - MARGIN.t - MARGIN.b - 2 * padY) / lineH);
+    const header = blk.rows[0].cells.every((x) => x.head) && blk.rows.length > 1 ? blk.rows[0] : null;
+    const prepare = (row) => row.cells.map((cell, c) => ({ cell, lines: buildLines(cell.runs, size, widths[c] - 2 * padX, cell.head, false) }));
+    // Draws lines [from, to) of every cell of a row as one bordered band.
+    const drawBand = (cells, from, to) => {
+      const h = (to - from) * lineH + 2 * padY;
       let x = MARGIN.l;
       cells.forEach(({ cell, lines }, c) => {
         page.drawRectangle({ x, y: y - h, width: widths[c], height: h, borderColor: LINE, borderWidth: 0.7, color: cell.head ? rgb(0.955, 0.955, 0.96) : undefined });
         const saved = y;
         y -= padY - 1.5;
-        lines.forEach((ln, idx) => {
+        lines.slice(from, to).forEach((ln) => {
           if (ln.items.length) drawLine(ln.items, size, cell.align || 'left', true, lineH, x + padX, widths[c] - 2 * padX);
           y -= lineH;
         });
@@ -156,6 +182,30 @@ async function buildPdf(c) {
         x += widths[c];
       });
       y -= h;
+    };
+    const headerCells = header ? prepare(header) : null;
+    const headerH = header ? Math.max(...headerCells.map((x) => x.lines.length)) * lineH + 2 * padY : 0;
+    // A page break inside the table repeats its header row.
+    const breakPage = (row) => { newPage(); if (header && row !== header && headerH < PAGE.h / 3) drawBand(headerCells, 0, Math.max(...headerCells.map((x) => x.lines.length))); };
+    for (const row of blk.rows) {
+      const cells = row === header ? headerCells : prepare(row);
+      const total = Math.max(...cells.map((x) => x.lines.length));
+      if (total <= fullLines) {
+        const h = total * lineH + 2 * padY;
+        if (y - h < MARGIN.b) breakPage(row);
+        drawBand(cells, 0, total);
+        continue;
+      }
+      // A row taller than a page continues on the next page(s), a band of lines at a time.
+      let done = 0;
+      while (done < total) {
+        let avail = Math.floor((y - MARGIN.b - 2 * padY) / lineH);
+        if (avail < 3) { breakPage(row); avail = Math.floor((y - MARGIN.b - 2 * padY) / lineH); }
+        const take = Math.min(avail, total - done);
+        drawBand(cells, done, done + take);
+        done += take;
+        if (done < total) breakPage(row);
+      }
     }
     y -= 8;
   };
@@ -194,7 +244,7 @@ async function buildPdf(c) {
   const colW = (contentW - 24) / 2;
   const BOX_H = 74, BLOCK_H = 16 + BOX_H + 14 + 13 + 12 + 12 + 12 + 18;
   const sigBlock = async (x, label, name, email, signedAt, sig, pending) => {
-    page.drawText(safe(label), { x, y: y - 9, size: 9, font: f.b, color: MUTED });
+    page.drawText(fit(label, f.b, 9, colW), { x, y: y - 9, size: 9, font: f.b, color: MUTED });
     const boxTop = y - 16;
     page.drawRectangle({ x, y: boxTop - BOX_H, width: colW, height: BOX_H, borderColor: LINE, borderWidth: 0.8, color: rgb(0.995, 0.995, 0.995) });
     if (sig && sig.image) {
@@ -207,8 +257,8 @@ async function buildPdf(c) {
       page.drawText(pending ? 'En attente de signature' : '', { x: x + 10, y: boxTop - BOX_H / 2 - 3, size: 9, font: f.i, color: MUTED });
     }
     let ty = boxTop - BOX_H - 14;
-    page.drawText(safe(name || ''), { x, y: ty, size: 10.5, font: f.b, color: INK }); ty -= 13;
-    if (email) { page.drawText(safe(email), { x, y: ty, size: 9, font: f.r, color: MUTED }); ty -= 12; }
+    page.drawText(fit(name || '', f.b, 10.5, colW), { x, y: ty, size: 10.5, font: f.b, color: INK }); ty -= 13;
+    if (email) { page.drawText(fit(email, f.r, 9, colW), { x, y: ty, size: 9, font: f.r, color: MUTED }); ty -= 12; }
     if (signedAt) { page.drawText(`Signé le ${fmtDate(signedAt)}`, { x, y: ty, size: 8.5, font: f.r, color: MUTED }); ty -= 12; }
     if (sig) { page.drawText(sig.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main', { x, y: ty, size: 8, font: f.i, color: MUTED }); }
   };
@@ -233,7 +283,12 @@ async function buildPdf(c) {
   const lead = 'Ce certificat atteste que le document ci-dessous a été signé électroniquement sur la plateforme Freda Pay Issuing. Il consigne les éléments de preuve recueillis lors de chaque signature.';
   const wrap = (text, font, size, width) => {
     const out = []; let cur = '';
-    for (const w of safe(text).split(' ')) {
+    for (let w of safe(text).split(' ')) {
+      while (font.widthOfTextAtSize(w, size) > width && w.length > 1) { // a word wider than the line is cut
+        if (cur) { out.push(cur); cur = ''; }
+        const n = cutToWidth(w, font, size, width);
+        out.push(w.slice(0, n)); w = w.slice(n);
+      }
       const t = cur ? `${cur} ${w}` : w;
       if (cur && font.widthOfTextAtSize(t, size) > width) { out.push(cur); cur = w; } else cur = t;
     }

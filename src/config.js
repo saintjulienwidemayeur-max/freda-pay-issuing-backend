@@ -57,7 +57,7 @@ const config = {
       pct: Number(process.env.TRANZAK_COST_PCT != null && process.env.TRANZAK_COST_PCT !== '' ? process.env.TRANZAK_COST_PCT : 4),
       fixedUSD: Number(process.env.TRANZAK_COST_FIXED_USD != null && process.env.TRANZAK_COST_FIXED_USD !== '' ? process.env.TRANZAK_COST_FIXED_USD : 0.30),
     },
-    minimumUSD: 0.5,
+    minimumUSD: 1, // below this the plan fee (e.g. 7 % + 0.50 $) leaves the merchant nothing
     // Minimum gap between two status polls of the same payment (the partner allows 60 requests/min per IP: webhooks are the main path).
     pollMinGapMs: parseInt(process.env.TRANZAK_POLL_MIN_GAP_MS || '8000', 10),
     // A card payment still pending after this long is checked by the background reconciliation.
@@ -207,6 +207,7 @@ const config = {
   //   MonCash / Natcash: 5 % of the amount        Bank transfer: a fixed 100 HTG (processed by hand by the team)
   payoutFees: {
     mobilePct: 0.05,
+    mobileMinHTG: 20, // MonCash / Natcash withdrawals: same floor as a payment, below it the 5 % fee rounds to nothing
     bankFixedHTG: 100,
     bankMinHTG: 1000, // below this the fixed fee would eat the withdrawal
     // Withdrawal of the USD Gateway balance (card payments): bank transfer or Zelle, by hand by the team. PROVISIONAL.

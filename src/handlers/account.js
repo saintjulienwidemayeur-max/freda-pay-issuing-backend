@@ -36,6 +36,11 @@ async function update(ctx) {
     // KYB status resets to not_started since this is now a business account
     // and hasn't gone through business verification yet.
     patch.kyb_status = 'not_started';
+    // A verified individual is not a verified business: Live stays off until the KYB is approved.
+    patch.gateway_live_enabled = false;
+    patch.live_enabled = false;
+    patch.issuing_live_enabled = false;
+    patch.active_mode = 'sandbox';
   } else if (entity_type && current.account_type === 'business' && !identityLocked) {
     patch.entity_type = entity_type;
   }

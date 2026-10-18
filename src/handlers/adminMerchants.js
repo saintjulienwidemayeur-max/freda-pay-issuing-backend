@@ -113,7 +113,8 @@ async function credit(ctx) {
   const { wallet, amount, note } = ctx.body || {};
   if (!['master_wallet', 'gateway', 'gateway_usd'].includes(wallet)) throw httpError(400, 'INVALID_WALLET', "wallet doit être 'master_wallet', 'gateway' (HTG) ou 'gateway_usd'.");
   const amountNum = Number(amount);
-  if (!(amountNum > 0)) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
+  if (!(amountNum > 0) || !Number.isFinite(amountNum)) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
+  if (amountNum > 100000) throw httpError(400, 'AMOUNT_TOO_HIGH', 'Un crédit manuel est limité à 100 000 par opération.');
 
   // Which wallet gets the money: real (live) or play (sandbox). Explicit wins;
   // otherwise a live-enabled merchant is credited live, anyone else sandbox.

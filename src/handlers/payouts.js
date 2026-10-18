@@ -6,6 +6,7 @@ const pricing = require('../services/pricing');
 const ledger = require('../services/ledger');
 const { fetchPage } = require('../utils/pagination');
 const { resolveMode } = require('../utils/mode');
+const { parseAmount } = require('../utils/money');
 const { generatePayoutId, namespaceReference } = require('../utils/ids');
 
 const VALID_METHODS = ['moncash', 'natcash', 'bank'];
@@ -30,9 +31,7 @@ async function create(ctx) {
   if (amount == null || !method || !reference) {
     throw httpError(400, 'MISSING_FIELDS', 'amount, method et reference sont requis.');
   }
-  if (typeof amount !== 'number' || amount <= 0) {
-    throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
-  }
+  parseAmount(amount);
   if (!VALID_METHODS.includes(method)) {
     throw httpError(400, 'INVALID_METHOD', "method doit être 'moncash', 'natcash' ou 'bank'.");
   }
@@ -41,6 +40,9 @@ async function create(ctx) {
   }
   if (method !== 'bank' && (!recipient || !PHONE_RE.test(recipient))) {
     throw httpError(400, recipient ? 'INVALID_RECIPIENT' : 'MISSING_FIELDS', 'recipient doit être au format 509XXXXXXXX.');
+  }
+  if (method !== 'bank' && amount < config.payoutFees.mobileMinHTG) {
+    throw httpError(400, 'AMOUNT_TOO_LOW', `Le montant minimum d'un retrait MonCash / Natcash est de ${config.payoutFees.mobileMinHTG} HTG.`);
   }
 
   const existing = await payoutOrchestrator.getByOwnReference(ctx.merchantId, reference);
@@ -111,7 +113,7 @@ async function quote(ctx) {
   const currency = ctx.query && String(ctx.query.currency || 'HTG').toUpperCase() === 'USD' ? 'USD' : 'HTG';
   if (currency === 'USD' && method !== 'bank') throw httpError(400, 'INVALID_METHOD', "Le solde USD se retire par virement bancaire ou Zelle : method 'bank'.");
   if (!VALID_METHODS.includes(method)) throw httpError(400, 'INVALID_METHOD', "method doit être 'moncash', 'natcash' ou 'bank'.");
-  if (!(amount > 0)) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
+  if (!(amount > 0 && amount <= 1e7)) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: ctx.merchantId });
   const { fee, kind, pct } = pricing.computePayoutFee(method, amount, override, currency);
   const total = Math.round((amount + fee) * 100) / 100;

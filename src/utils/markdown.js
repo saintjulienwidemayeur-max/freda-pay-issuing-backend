@@ -14,14 +14,30 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Only http(s) (and mailto for links, site-relative paths, anchors) may end up in an href/src: never javascript: or data:. */
+function safeUrl(raw, { allowMailto } = {}) {
+  const u = String(raw).replace(/&amp;/g, '&').trim();
+  if (/^https?:\/\/[^\s"'<>]+$/i.test(u)) return u;
+  if (allowMailto && /^mailto:[^\s"'<>]+$/i.test(u)) return u;
+  if (/^(\/(?!\/)|#)[^\s"'<>]*$/.test(u)) return u;
+  return null;
 }
 
 function inline(text) {
   let out = escapeHtml(text);
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
-  out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img src="$2" alt="$1" loading="lazy">');
-  out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" rel="noopener">$1</a>');
+  out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+    const ok = safeUrl(url);
+    return ok ? `<img src="${escapeHtml(ok)}" alt="${alt}" loading="lazy">` : alt;
+  });
+  out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
+    const ok = safeUrl(url, { allowMailto: true });
+    return ok ? `<a href="${escapeHtml(ok)}" rel="noopener nofollow">${label}</a>` : label;
+  });
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
   return out;
@@ -122,4 +138,4 @@ function readingTimeMinutes(markdown) {
   return Math.max(1, Math.round(words / 200));
 }
 
-module.exports = { markdownToHtml, escapeHtml, readingTimeMinutes };
+module.exports = { markdownToHtml, escapeHtml, safeUrl, readingTimeMinutes };

@@ -66,6 +66,11 @@ function cleanContent(body) {
   if (typeof body.body_html !== 'string' || body.body_html.length > MAX_BODY) throw httpError(400, 'INVALID_BODY', 'Le texte du contrat est trop long ou manquant.');
   const html = sanitize(body.body_html);
   if (html.replace(/<[^>]*>/g, '').trim().length < 20) throw httpError(400, 'INVALID_BODY', 'Le contrat est trop court : écrivez le texte du contrat.');
+  const plain = html.replace(/<[^>]*>/g, '');
+  if (/\S{300,}/.test(plain)) throw httpError(400, 'INVALID_BODY', 'Un mot dépasse 300 caractères : ajoutez des espaces.');
+  // Every [[ must close with ]] on the same line, no tag inside (a blank that cannot be read cannot be signed).
+  const stripped = plain.replace(/\[\[[^\[\]\n]{1,80}\]\]/g, '');
+  if (/\[\[|\]\]/.test(stripped)) throw httpError(400, 'INVALID_BODY', 'Un champ [[...]] est mal écrit : il doit tenir sur une seule ligne, sans crochet à l’intérieur (80 caractères maximum).');
   return { title, html };
 }
 
@@ -278,7 +283,7 @@ async function adminCreate(ctx) {
   let recipientName, recipientEmail, merchantId = null;
   if (b.merchant_id) {
     const m = await supabase.selectOne('merchants', { id: String(b.merchant_id) });
-    if (!m || m.deleted_at) throw httpError(404, 'MERCHANT_NOT_FOUND', 'Machann introuvable.');
+    if (!m || m.deleted_at) throw httpError(404, 'MERCHANT_NOT_FOUND', 'Marchand introuvable.');
     merchantId = m.id;
     recipientName = m.business_name || m.email;
     recipientEmail = m.email;
@@ -301,17 +306,23 @@ async function adminCreate(ctx) {
     admin_name: cleanText(b.admin_name, 120) || admin.name || 'Freda Pay Issuing', admin_email: admin.email || config.brevo.senderEmail,
     admin_signature: adminSig, admin_signed_at: now, admin_signed_ip: ipOf(ctx), fields: {},
   });
+  // Extra signers are saved BEFORE anyone is emailed: if one fails, the contract is removed and nothing was sent.
+  row.signers = [];
+  try {
+    for (const input of extraIn) {
+      const { row: sr } = signerRow(row.id, input, ctx.adminId);
+      row.signers.push(await supabase.insert(signerTable, sr));
+    }
+  } catch (err) {
+    await supabase.delete(signerTable, { contract_id: row.id }).catch(() => {});
+    await supabase.delete('contracts', { id: row.id }).catch(() => {});
+    throw err;
+  }
   const url = merchantId ? mail.dashboardUrl() : mail.signUrl(token);
   const emailed = await mail.sent(row, url);
-  // Extra signers are saved now and get a heads-up; their private link is sent once the main recipient has signed.
-  row.signers = [];
+  // Extra signers get a heads-up; their private link is sent once the main recipient has signed.
   const invites = [];
-  for (const input of extraIn) {
-    const { row: sr } = signerRow(row.id, input, ctx.adminId);
-    const saved = await supabase.insert(signerTable, sr);
-    row.signers.push(saved);
-    invites.push({ id: saved.id, email: saved.email, emailed: (await resendInvite(row, saved)).emailed });
-  }
+  for (const saved of row.signers) invites.push({ id: saved.id, email: saved.email, emailed: (await resendInvite(row, saved)).emailed });
   return { status: 201, body: { contract: publicView(row, { admin: true }), emailed, sign_url: merchantId ? null : url, invites } };
 }
 

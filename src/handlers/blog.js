@@ -1,6 +1,6 @@
 'use strict';
 const supabase = require('../lib/supabase');
-const { markdownToHtml, escapeHtml, readingTimeMinutes } = require('../utils/markdown');
+const { markdownToHtml, escapeHtml, safeUrl, readingTimeMinutes } = require('../utils/markdown');
 const config = require('../config');
 
 const siteUrl = require('../services/siteUrl');
@@ -73,7 +73,7 @@ function layout({ title, description, canonical, ogImage, jsonLd, bodyHtml, robo
 <title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(description)}">
 <meta name="robots" content="${robots || 'index, follow, max-snippet:-1, max-image-preview:large'}">
-<link rel="canonical" href="${canonical}">
+<link rel="canonical" href="${escapeHtml(canonical)}">
 <link rel="icon" href="${site()}/favicon.ico" sizes="48x48">
 <link rel="icon" type="image/png" href="${site()}/favicon-96.png" sizes="96x96">
 <link rel="apple-touch-icon" href="${site()}/apple-touch-icon.png">
@@ -81,14 +81,14 @@ function layout({ title, description, canonical, ogImage, jsonLd, bodyHtml, robo
 <meta property="og:site_name" content="Freda Pay Issuing">
 <meta property="og:title" content="${escapeHtml(title)}">
 <meta property="og:description" content="${escapeHtml(description)}">
-<meta property="og:url" content="${canonical}">
-<meta property="og:image" content="${ogImage}">
+<meta property="og:url" content="${escapeHtml(canonical)}">
+<meta property="og:image" content="${escapeHtml(ogImage)}">
 <meta property="og:locale" content="fr_FR">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${escapeHtml(title)}">
 <meta name="twitter:description" content="${escapeHtml(description)}">
-<meta name="twitter:image" content="${ogImage}">
-${jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>` : ''}
+<meta name="twitter:image" content="${escapeHtml(ogImage)}">
+${jsonLd ? `<script type="application/ld+json">${jsonForScript(jsonLd)}</script>` : ''}
 <style>${PAGE_CSS}</style>
 </head>
 <body>
@@ -109,6 +109,15 @@ ${bodyHtml}
 </html>`;
 }
 
+/** A post image is shown only when it is a plain http(s) URL (older rows may hold anything). */
+function imageUrl(raw, fallback) {
+  return (raw && /^https?:\/\//i.test(String(raw)) && safeUrl(raw)) || fallback;
+}
+/** JSON for an inline <script>: a '<' inside a string can never close the tag. */
+function jsonForScript(obj) {
+  return JSON.stringify(obj).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+}
+
 function fmtDate(iso) {
   if (!iso) return '';
   return new Date(iso).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -119,8 +128,8 @@ async function listPage(ctx) {
   const posts = await supabase.select('blog_posts', { status: 'published' }, { order: 'published_at.desc', limit: 50 });
   const cards = posts.length
     ? posts.map((p) => `
-      <a class="pcard" href="${site()}/blog/${p.slug}">
-        <img src="${p.cover_image_url || `${site()}/og-image.png`}" alt="">
+      <a class="pcard" href="${escapeHtml(`${site()}/blog/${p.slug}`)}">
+        <img src="${escapeHtml(imageUrl(p.cover_image_url, `${site()}/og-image.png`))}" alt="">
         <div>
           <h2>${escapeHtml(p.title)}</h2>
           <p>${escapeHtml(p.excerpt || '')}</p>
@@ -156,6 +165,7 @@ async function postPage(ctx) {
   const post = await supabase.selectOne('blog_posts', { slug: ctx.params.slug, status: 'published' });
   if (!post) return rawHtml(ctx, notFoundPage(), 404);
 
+  const cover = imageUrl(post.cover_image_url, null);
   const contentHtml = markdownToHtml(post.content_markdown);
   const minutes = readingTimeMinutes(post.content_markdown);
   const tagsHtml = (post.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('');
@@ -166,7 +176,7 @@ async function postPage(ctx) {
       <span class="eyebrow">Article</span>
       <h1>${escapeHtml(post.title)}</h1>
       <div class="meta">${escapeHtml(post.author_name || 'Freda Pay Issuing')} · ${fmtDate(post.published_at)} · ${minutes} min de lecture</div>
-      ${post.cover_image_url ? `<img class="cover" src="${post.cover_image_url}" alt="${escapeHtml(post.title)}">` : ''}
+      ${cover ? `<img class="cover" src="${escapeHtml(cover)}" alt="${escapeHtml(post.title)}">` : ''}
       <article>${contentHtml}</article>
       ${tagsHtml ? `<div class="tags">${tagsHtml}</div>` : ''}
     </div>`;
@@ -177,11 +187,11 @@ async function postPage(ctx) {
     title: `${post.title} : Blog Freda Pay Issuing`,
     description,
     canonical,
-    ogImage: post.cover_image_url || `${site()}/og-image.png`,
+    ogImage: cover || `${site()}/og-image.png`,
     bodyHtml: body,
     jsonLd: {
       '@context': 'https://schema.org', '@type': 'BlogPosting',
-      headline: post.title, description, image: imageObject(post.cover_image_url || `${site()}/og-image.png`, new Date(post.published_at || Date.now()).getFullYear()),
+      headline: post.title, description, image: imageObject(cover || `${site()}/og-image.png`, new Date(post.published_at || Date.now()).getFullYear()),
       datePublished: post.published_at, dateModified: post.updated_at || post.published_at,
       author: { '@type': 'Person', name: post.author_name || 'Freda Pay Issuing' },
       publisher: { '@type': 'Organization', name: 'Freda Pay LLC', logo: imageObject(LOGO_URL, 2026) },

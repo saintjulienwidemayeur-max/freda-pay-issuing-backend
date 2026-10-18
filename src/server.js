@@ -243,7 +243,7 @@ router.get('/dashboard/downloads/:name', session.requireSession, downloadHandler
 // ---- Disputes (merchant opens, admin reviews) ----
 router.post('/dashboard/payments/:id/dispute', session.requireSession, disputeHandlers.create);
 router.get('/dashboard/disputes', session.requireSession, disputeHandlers.mine);
-router.get('/admin/disputes', adminSession.requireAdminSession, adminDisputeHandlers.list);
+router.get('/admin/disputes', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDisputeHandlers.list(ctx); });
 router.post('/admin/disputes/:id/resolve', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDisputeHandlers.resolve(ctx); });
 router.post('/admin/disputes/:id/reject', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDisputeHandlers.reject(ctx); });
 
@@ -253,7 +253,7 @@ router.get('/dashboard/gateway-summary', session.requireSession, gatewaySummaryH
 // ---- Issuing Live access (always a separate admin-reviewed request, never auto-granted by KYC) ----
 router.post('/dashboard/issuing-access/request', session.requireSession, issuingAccessHandlers.request);
 router.get('/dashboard/issuing-access', session.requireSession, issuingAccessHandlers.mine);
-router.get('/admin/issuing-access', adminSession.requireAdminSession, adminIssuingAccessHandlers.listPending);
+router.get('/admin/issuing-access', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminIssuingAccessHandlers.listPending(ctx); });
 
 // ---- Manual deposits (Zelle / bank): the admin sees the receipt, confirms or refuses; the merchant is emailed ----
 router.get('/admin/diagnostic/maplerad', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminProviderHandlers.diagnostic(ctx); });
@@ -294,8 +294,8 @@ router.get('/public/contracts/:token', rateLimit.middleware('contract-view', 60,
 router.get('/public/contracts/:token/pdf', rateLimit.middleware('contract-pdf', 30, 15 * 60 * 1000), contractHandlers.publicPdf);
 router.post('/public/contracts/:token/sign', rateLimit.middleware('contract-sign-public', 20, 15 * 60 * 1000), contractHandlers.publicSign);
 
-router.get('/admin/deposits', adminSession.requireAdminSession, adminDepositHandlers.list);
-router.get('/admin/deposits/:id/receipt', adminSession.requireAdminSession, adminDepositHandlers.receipt);
+router.get('/admin/deposits', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDepositHandlers.list(ctx); });
+router.get('/admin/deposits/:id/receipt', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDepositHandlers.receipt(ctx); });
 router.post('/admin/deposits/:id/approve', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDepositHandlers.approve(ctx); });
 router.post('/admin/deposits/:id/reject', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminDepositHandlers.reject(ctx); });
 router.post('/admin/issuing-access/:id/approve', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminIssuingAccessHandlers.approve(ctx); });
@@ -315,10 +315,10 @@ router.post('/admin/accept-invite', rateLimit.middleware('admin-accept-invite', 
 router.get('/admin/me', adminSession.requireAdminSession, adminAuthHandlers.me);
 router.post('/admin/account/password', adminSession.requireAdminSession, adminAuthHandlers.changePassword);
 
-router.get('/admin/overview', adminSession.requireAdminSession, adminMerchantHandlers.overview);
-router.get('/admin/visits', adminSession.requireAdminSession, trackHandlers.adminVisits);
-router.get('/admin/merchants', adminSession.requireAdminSession, adminMerchantHandlers.list);
-router.get('/admin/merchants/:id', adminSession.requireAdminSession, adminMerchantHandlers.get);
+router.get('/admin/overview', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.overview(ctx); });
+router.get('/admin/visits', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return trackHandlers.adminVisits(ctx); });
+router.get('/admin/merchants', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.list(ctx); });
+router.get('/admin/merchants/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.get(ctx); });
 router.post('/admin/merchants/:id/credit', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.credit(ctx); });
 router.put('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.setPricing(ctx); });
 router.del('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.clearPricing(ctx); });
@@ -328,13 +328,13 @@ router.del('/admin/merchants/:id', adminSession.requireAdminSession, (ctx) => { 
 router.post('/admin/merchants/:id/restore', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.restore(ctx); });
 
 // ---- Admin team (owner only manages other admins) ----
-router.get('/admin/team', adminSession.requireAdminSession, adminTeamHandlers.list);
+router.get('/admin/team', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTeamHandlers.list(ctx); });
 router.post('/admin/team/invite', adminSession.requireAdminSession, (ctx) => { if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut inviter.'), { httpStatus: 403, code: 'OWNER_ONLY' }); return adminTeamHandlers.invite(ctx); });
 router.post('/admin/team/:id/resend', adminSession.requireAdminSession, (ctx) => { if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut renvoyer une invitation.'), { httpStatus: 403, code: 'OWNER_ONLY' }); return adminTeamHandlers.resend(ctx); });
 router.del('/admin/team/:id', adminSession.requireAdminSession, (ctx) => { if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut retirer un accès.'), { httpStatus: 403, code: 'OWNER_ONLY' }); return adminTeamHandlers.remove(ctx); });
 
-router.get('/admin/verifications', adminSession.requireAdminSession, adminVerificationHandlers.listPending);
-router.get('/admin/verifications/:id/document', adminSession.requireAdminSession, adminVerificationHandlers.viewDocument);
+router.get('/admin/verifications', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.listPending(ctx); });
+router.get('/admin/verifications/:id/document', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.viewDocument(ctx); });
 router.post('/admin/verifications/:id/approve', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.approve(ctx); });
 router.post('/admin/verifications/:id/reject', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.reject(ctx); });
 

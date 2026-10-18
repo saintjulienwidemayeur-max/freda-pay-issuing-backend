@@ -6,6 +6,7 @@ const supabase = require('../lib/supabase');
 const { generateCardId } = require('../utils/ids');
 const { fetchPage } = require('../utils/pagination');
 const { resolveMode } = require('../utils/mode');
+const { parseAmount } = require('../utils/money');
 
 const VALID_BRANDS = ['VISA', 'MASTERCARD'];
 
@@ -82,6 +83,8 @@ async function createCard(ctx) {
 
   if (!reference) throw httpError(400, 'MISSING_FIELDS', 'reference est requis.');
   if (brand && !VALID_BRANDS.includes(brand)) throw httpError(400, 'INVALID_BRAND', "brand doit être 'VISA' ou 'MASTERCARD'.");
+  // Strict number before anything is charged: a string like "100" must never reach the wallet arithmetic.
+  if (kind === 'business' || (amount != null && amount !== 0)) parseAmount(amount);
 
   const existing = await cardOrchestrator.getByOwnReference(ctx.merchantId, reference);
   if (existing) return { status: 200, body: toPublicCard(existing, ctx) };
@@ -232,7 +235,7 @@ async function simulateTransaction(ctx) {
 
   const amount = ctx.body && ctx.body.amount;
   const type = ctx.body && ctx.body.type === 'DEBIT' ? 'DEBIT' : 'CREDIT';
-  if (typeof amount !== 'number' || amount <= 0) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
+  parseAmount(amount);
 
   try {
     const res = await maplerad.forMode('sandbox').mockCardTransaction(card.maplerad_card_id, Math.round(amount * 100), type);
@@ -271,7 +274,7 @@ function withOperation(card, ctx) {
 
 async function fund(ctx) {
   const amount = ctx.body && ctx.body.amount;
-  if (typeof amount !== 'number' || amount <= 0) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
+  parseAmount(amount);
   try {
     const card = await cardOrchestrator.fundCard(ctx.merchantId, ctx.params.id, amount, idempotencyKey(ctx));
     return { status: 200, body: withOperation(card, ctx) };
@@ -282,7 +285,7 @@ async function fund(ctx) {
 
 async function withdraw(ctx) {
   const amount = ctx.body && ctx.body.amount;
-  if (typeof amount !== 'number' || amount <= 0) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
+  parseAmount(amount);
   try {
     const card = await cardOrchestrator.withdrawFromCard(ctx.merchantId, ctx.params.id, amount, idempotencyKey(ctx));
     return { status: 200, body: withOperation(card, ctx) };

@@ -9,6 +9,7 @@ process.env.PLOPPLOP_BASE_URL = 'http://localhost:4501';
 process.env.PLOPPLOP_CLIENT_ID = 'pp_test_client';
 process.env.PLOPPLOP_CLIENT_SECRET = 'test_secret_value';
 process.env.PAYOUT_COOLDOWN_MS = '50'; // fast for tests
+process.env.ALLOW_PRIVATE_WEBHOOKS = '1'; // the local mock webhook receivers live on localhost (SSRF guard has its own tests)
 
 process.env.MOCK_CLIENT_ID = 'pp_test_client';
 process.env.MOCK_CLIENT_SECRET = 'test_secret_value';
@@ -2031,8 +2032,8 @@ test('rejecting a KYC submission records the reason and does not enable Live', a
 test('an editor admin cannot review verifications (compliance-only action)', async () => {
   const { token } = await adminLogin('editor');
   const r = await api('GET', '/admin/verifications', { token });
-  assert.equal(r.status, 200); // listing is fine
-  // but approving requires owner/admin
+  assert.equal(r.status, 403); // editors (blog only) cannot even list KYC submissions
+  // approving requires owner/admin too
   const fake = await api('POST', '/admin/verifications/vs_doesnotexist/approve', { token });
   assert.equal(fake.status, 403);
   assert.equal(fake.data.error.code, 'INSUFFICIENT_ROLE');
@@ -5783,4 +5784,257 @@ test('contracts: tables are kept, [[Signature ...]] marks are not blanks to fill
   const pdf = await rawGet(`/dashboard/contracts/${c.id}/pdf`, m.token);
   assert.equal(pdf.status, 200);
   assert.equal(pdf.buf.slice(0, 5).toString(), '%PDF-');
+});
+
+// ===== fixer2: money integrity =====
+
+const f2Balance = async (token) => (await api('GET', '/dashboard/balance', { token })).data;
+const f2Entries = (relatedId, type) => mockTables.ledger_entries.filter((e) => e.related_id === relatedId && (!type || e.type === type));
+
+test('fixer2: concurrent status polls credit a confirmed MonCash payment once', async () => {
+  const live = await liveWithGateway('f2pay', 0);
+  const create = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, method: 'moncash', reference: 'F2-PAY-1' } });
+  assert.equal(create.status, 201);
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_F2-PAY-1` }) });
+  const polls = await Promise.all(Array.from({ length: 6 }, () => api('GET', `/dashboard/payments/${create.data.id}`, { token: live.token })));
+  assert.ok(polls.every((p) => p.status === 200 && p.data.status === 'succeeded'));
+  assert.equal(f2Entries(create.data.id, 'payment_credit').length, 1);
+  assert.equal(await gw(live.token), polls[0].data.net_amount);
+});
+
+test('fixer2: concurrent status polls credit a confirmed automatic wallet top-up once', async () => {
+  const live = await makeLiveMerchant('f2topup', { fundUsd: 0 });
+  const create = await api('POST', '/dashboard/wallet/topups', { token: live.token, body: { method: 'moncash', amount_htg: 13300, reference: 'F2-TOPUP-1' } });
+  assert.equal(create.status, 201);
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_F2-TOPUP-1` }) });
+  const polls = await Promise.all(Array.from({ length: 6 }, () => api('GET', `/dashboard/wallet/topups/${create.data.id}`, { token: live.token })));
+  assert.ok(polls.every((p) => p.status === 200 && p.data.status === 'succeeded'));
+  assert.equal(f2Entries(create.data.id, 'wallet_topup').length, 1);
+  assert.equal((await f2Balance(live.token)).master_wallet.available, polls[0].data.credited_usd);
+});
+
+test('fixer2: parallel card creations can never take the Master Wallet under its minimum reserve', async () => {
+  const live = await makeLiveMerchant('f2race', { fundUsd: 130 }); // 130 - 50 reserve = room for a few 20 $ cards only
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+    api('POST', '/dashboard/cards', { token: live.token, body: { reference: `F2-RACE-${i}`, kind: 'business', business_name: 'Race Co', brand: 'VISA', amount: 20 } })));
+  const ok = results.filter((r) => r.status === 202).length;
+  const refused = results.filter((r) => r.status === 400 && r.data.error.code === 'BELOW_MINIMUM_BALANCE').length;
+  assert.ok(ok >= 1 && refused >= 1 && ok + refused === 8, JSON.stringify(results.map((r) => r.status)));
+  assert.ok((await f2Balance(live.token)).master_wallet.available >= 50);
+});
+
+test('fixer2: terminating a card does not refund what the card spent online', async () => {
+  const live = await liveMerchantWithActivity('f2term'); // business card pre-funded with 100 $
+  await sendProviderEvent(purchase(live.card.maplerad_card_id, { amount: 3000, reference: 'f2-spend-1' }), MOCK_LIVE_WHSEC);
+  const before = (await f2Balance(live.token)).master_wallet.available;
+  const term = await api('POST', `/dashboard/cards/${live.card.id}/terminate`, { token: live.token });
+  assert.equal(term.status, 200);
+  const after = (await f2Balance(live.token)).master_wallet.available;
+  assert.equal(Math.round((after - before) * 100) / 100, 70); // 100 loaded - 30 spent, not 100
+});
+
+test('fixer2: money amounts must be real positive numbers with at most two decimals (French 400, nothing charged)', async () => {
+  const live = await makeLiveMerchant('f2amounts', { fundUsd: 300 });
+  const before = (await f2Balance(live.token)).master_wallet.available;
+  for (const bad of ['100', -100, 0, true, null, 10.005, 1e12, {}, [5]]) {
+    const r = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: `F2-BAD-${JSON.stringify(bad)}`, kind: 'business', business_name: 'Bad Co', brand: 'VISA', amount: bad } });
+    assert.equal(r.status, 400, `card amount ${JSON.stringify(bad)}`);
+    assert.equal(r.data.error.code, 'INVALID_AMOUNT');
+  }
+  const ind = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'F2-BAD-IND', kind: 'individual', brand: 'VISA', amount: '100' } });
+  assert.equal(ind.status, 400);
+  assert.equal((await f2Balance(live.token)).master_wallet.available, before); // nothing was debited
+  const card = mockTables.cards.find((c) => c.merchant_id === live.merchantId);
+  assert.equal(card, undefined);
+
+  for (const [path, body] of [
+    ['/dashboard/payments', { amount: '500', method: 'moncash', reference: 'F2-S-1' }],
+    ['/dashboard/payments', { amount: 20.555, method: 'moncash', reference: 'F2-S-2' }],
+    ['/dashboard/payouts', { amount: '2000', method: 'moncash', recipient: '50937001234', reference: 'F2-S-3' }],
+    ['/dashboard/wallet/topups', { method: 'moncash', amount_htg: '13300', reference: 'F2-S-4' }],
+    ['/dashboard/wallet/topups', { method: 'zelle', amount_usd: -5, reference: 'F2-S-5' }],
+    ['/dashboard/payment-links', { amount: '50', currency: 'HTG' }],
+  ]) {
+    const r = await api('POST', path, { token: live.token, body });
+    assert.equal(r.status, 400, `${path} ${JSON.stringify(body)}`);
+    assert.equal(r.data.error.code, 'INVALID_AMOUNT');
+    assert.match(r.data.error.message, /nombre positif|décimales|trop élevé/);
+  }
+});
+
+test('fixer2: fund and withdraw refuse string and fractional-cent amounts', async () => {
+  const live = await liveMerchantWithActivity('f2fund');
+  for (const amount of ['10', 0.001, 10.005, -3]) {
+    assert.equal((await api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount } })).status, 400);
+    assert.equal((await api('POST', `/dashboard/cards/${live.card.id}/withdraw`, { token: live.token, body: { amount } })).status, 400);
+  }
+});
+
+test('fixer2: parallel recharges all land in the card balance (no lost update)', async () => {
+  const live = await liveMerchantWithActivity('f2parfund');
+  await Promise.all([1, 2, 3].map(() => api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount: 10 } })));
+  assert.equal(mockTables.cards.find((c) => c.id === live.card.id).balance, 130);
+});
+
+test('fixer2: a failed-creation webhook delivered again refunds only once, and a late success does not resurrect the card', async () => {
+  const reg = await registerAndVerify({ business_name: 'F2 Refund Co', email: 'f2refund@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const start = (await f2Balance(token)).master_wallet.available;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'F2-REFUND-1', kind: 'business', business_name: 'F2 Refund Co', brand: 'VISA', amount: 20 } });
+  assert.equal(c.status, 202);
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  // The card is pending again in our books, as if the creation had not been confirmed yet.
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  row.status = 'pending';
+  assert.equal(start - (await f2Balance(token)).master_wallet.available, 25);
+  const failed = { event: 'issuing.created.failed', reference: row.maplerad_reference };
+  await sendProviderEvent(failed, MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(failed, MOCK_SANDBOX_WHSEC); // a second delivery with a new event id
+  await sendProviderEvent(failed, MOCK_SANDBOX_WHSEC);
+  assert.equal((await f2Balance(token)).master_wallet.available, start); // refunded exactly once
+  assert.equal(row.status, 'failed');
+  await sendProviderEvent({ event: 'issuing.created.successful', reference: row.maplerad_reference, card: { id: row.maplerad_card_id, masked_pan: '411111******1111', name: 'X', currency: 'USD' } }, MOCK_SANDBOX_WHSEC);
+  assert.equal(row.status, 'failed'); // still failed: it was refunded, it must not come back as a free card
+});
+
+test('fixer2: a card payment too small to leave anything after the fee is refused; a payout below the MonCash minimum too', async () => {
+  const live = await liveWithGateway('f2min');
+  const card = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 0.5, currency: 'USD', method: 'card', reference: 'F2-MIN-1' } });
+  assert.equal(card.status, 400);
+  assert.equal(card.data.error.code, 'AMOUNT_TOO_LOW');
+  const small = await api('POST', '/dashboard/payouts', { token: live.token, body: { amount: 5, method: 'moncash', recipient: '50937001234', reference: 'F2-MIN-2' } });
+  assert.equal(small.status, 400);
+  assert.equal(small.data.error.code, 'AMOUNT_TOO_LOW');
+  const pricing = require('../src/services/pricing');
+  assert.ok(pricing.computeGatewayCardFee('standard', 0.5).net >= 0);
+  assert.ok(pricing.computeGatewayFee('standard', 5).net >= 0);
+});
+
+// ===== fixer3: authorization, blog, contracts =====
+test('fixer3: an editor admin cannot read KYC documents, receipts, merchants, overview, team or disputes (owner/admin still can)', async () => {
+  const { token: editor } = await adminLogin('editor');
+  const { token: owner } = await adminLogin('owner');
+  for (const path of ['/admin/verifications', '/admin/verifications/vs_x/document?path=a/b', '/admin/deposits', '/admin/deposits/dep_x/receipt', '/admin/merchants', '/admin/merchants/mch_x', '/admin/overview', '/admin/visits', '/admin/team', '/admin/disputes', '/admin/issuing-access']) {
+    const r = await api('GET', path, { token: editor });
+    assert.equal(r.status, 403, path);
+    assert.equal(r.data.error.code, 'INSUFFICIENT_ROLE', path);
+  }
+  assert.equal((await api('GET', '/admin/merchants', { token: owner })).status, 200);
+  assert.equal((await api('GET', '/admin/verifications', { token: owner })).status, 200);
+  assert.equal((await api('GET', '/admin/blog', { token: editor })).status, 200); // the blog stays open to editors
+  assert.equal((await api('GET', '/admin/me', { token: editor })).status, 200);
+});
+
+test('fixer3: blog cover URL must be https, and every field is escaped on the public page', async () => {
+  const { token } = await adminLogin('editor');
+  const bad = await api('POST', '/admin/blog', { token, body: { title: 'XSS test', content_markdown: 'texte', cover_image_url: 'x" onerror="alert(1)' } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.data.error.code, 'INVALID_COVER');
+  assert.equal((await api('POST', '/admin/blog', { token, body: { title: 'XSS test', content_markdown: 'texte', cover_image_url: 'javascript:alert(1)' } })).status, 400);
+  assert.equal((await api('POST', '/admin/blog', { token, body: { title: 'XSS test', content_markdown: 'texte', cover_image_url: 'http://insecure.example.com/a.png' } })).status, 400);
+  const ok = await api('POST', '/admin/blog', { token, body: { title: 'Article sûr <b>x</b>', content_markdown: '[clic](javascript:alert(1)) ![i](data:text/html,x) [bon](https://example.com/?a=1&b=2) \'quote\'', cover_image_url: 'https://cdn.example.com/c.png', tags: ['<img src=x>'] } });
+  assert.equal(ok.status, 201);
+  assert.equal((await api('PUT', `/admin/blog/${ok.data.post.id}`, { token, body: { cover_image_url: 'x" onerror="alert(1)' } })).status, 400);
+  await api('POST', `/admin/blog/${ok.data.post.id}/publish`, { token });
+  const html = await (await fetch(baseUrl + '/blog/' + ok.data.post.slug)).text();
+  assert.ok(!/javascript:/i.test(html.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, '')));
+  assert.ok(!/<img src=x>|<b>x<\/b>/.test(html));
+  assert.match(html, /<img class="cover" src="https:\/\/cdn\.example\.com\/c\.png"/);
+  assert.match(html, /<a href="https:\/\/example\.com\/\?a=1&amp;b=2" rel="noopener nofollow">bon<\/a>/);
+  // an old row holding a hostile cover is not rendered either
+  mockTables.blog_posts.find((p) => p.id === ok.data.post.id).cover_image_url = 'javascript:alert(1)" onerror="alert(2)';
+  const html2 = await (await fetch(baseUrl + '/blog/' + ok.data.post.slug)).text();
+  assert.ok(!/onerror|javascript:/i.test(html2.replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, '')));
+  const up = await api('POST', '/admin/blog/upload-cover', { token, body: { base64: 'aGVsbG8=', content_type: 'text/html', filename: 'a.html' } });
+  assert.equal(up.status, 400);
+});
+
+test('fixer3: webhook URLs pointing at local, private, link-local or non-https addresses are refused (no flag), and delivery re-checks', async () => {
+  const urlSafety = require('../src/utils/urlSafety');
+  const saved = process.env.ALLOW_PRIVATE_WEBHOOKS;
+  delete process.env.ALLOW_PRIVATE_WEBHOOKS;
+  try {
+    const reg = await registerAndVerify({ business_name: 'Ssrf Co', email: 'ssrf-co@example.com', password: 'password123' });
+    const token = reg.data.session_token;
+    for (const url of ['http://localhost:4503/x', 'https://localhost/x', 'https://127.0.0.1/x', 'https://10.0.0.5:9/', 'https://192.168.1.1/', 'https://172.16.0.1/', 'https://169.254.169.254/latest/meta-data/', 'https://[::1]/', 'https://[::ffff:7f00:1]/', 'https://[fd00::1]/', 'https://0.0.0.0/', 'https://metadata.google.internal/', 'https://intranet/', 'ftp://example.com/', 'file:///etc/passwd', 'https://user:pw@example.com/', 'https://2130706433/']) {
+      const r = await api('POST', '/dashboard/webhooks', { token, body: { url } });
+      assert.equal(r.status, 400, url);
+      assert.equal(r.data.error.code, 'INVALID_URL', url);
+    }
+    assert.equal((await api('POST', '/dashboard/webhooks', { token, body: { url: 'https://8.8.8.8/hook' } })).status, 201);
+    assert.equal(urlSafety.isBlockedIp('8.8.8.8'), false);
+    assert.equal(urlSafety.isBlockedIp('100.64.0.1'), true);
+    // a stored endpoint that is not allowed any more is not called
+    const row = mockTables.webhook_endpoints.find((e) => e.merchant_id === reg.data.merchant.id);
+    row.url = 'https://169.254.169.254/latest/';
+    const key = await apiKeyFor(reg.data.session_token, 'test');
+    const t = await api('POST', '/v1/webhooks/test', { token: key });
+    assert.equal(t.data.sent, false);
+    assert.equal(t.data.http_status, undefined);
+  } finally {
+    process.env.ALLOW_PRIVATE_WEBHOOKS = saved;
+  }
+});
+
+test('fixer3: a [[field]] split by formatting is merged, so the contract can be signed and the PDF shows the answer', async () => {
+  const h = require('../src/utils/contractHtml');
+  const clean = h.sanitize('<p>Entre [[Nom <b>du</b>  rep]] et [[constructor]] &amp;lt;b&amp;gt;</p>');
+  assert.deepEqual(h.fieldLabels(clean), ['Nom du rep', 'constructor']);
+  assert.match(h.viewHtml(clean), /data-field="Nom du rep"/);
+  const runs = h.toBlocks(clean, { 'Nom du rep': 'Jean' })[0].runs;
+  assert.ok(runs.some((r) => r.field === 'Nom du rep' && r.text === 'Jean'));
+  assert.ok(runs.some((r) => r.field === 'constructor' && r.text === '')); // never the Object.prototype function
+  assert.ok(runs.some((r) => /&lt;b&gt;/.test(r.text || ''))); // typed entities are not decoded twice
+  const m = await makeLiveMerchant('ctrsplit');
+  const html = '<p>Contrat de test avec [[Nom <b>du</b> rep]] et la suite du texte.</p>';
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat split', body_html: html, merchant_id: m.merchantId, admin_signature: typedSig('Admin Freda') } });
+  assert.equal(create.status, 201);
+  assert.deepEqual(create.data.contract.field_labels, ['Nom du rep']);
+  const sign = await api('POST', `/dashboard/contracts/${create.data.contract.id}/sign`, { token: m.token, body: { signer_name: 'Jean Test', fields: { 'Nom du rep': 'Jean' }, signature: typedSig('Jean Test') } });
+  assert.equal(sign.status, 200);
+  assert.equal(sign.data.contract.status, 'COMPLETED');
+  // unreadable blanks and absurd words are refused at creation
+  const open = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat ouvert', body_html: '<p>Un champ [[jamais fermé et assez de texte ici.</p>', merchant_id: m.merchantId, admin_signature: typedSig('A') } });
+  assert.equal(open.status, 400);
+  const word = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat mot', body_html: `<p>${'a'.repeat(400)}</p>`, merchant_id: m.merchantId, admin_signature: typedSig('A') } });
+  assert.equal(word.status, 400);
+});
+
+test('fixer3: contract PDF handles lists in cells, a huge word quickly, long names, oversized rows, accents and loose numbered lists', async () => {
+  const { buildPdf } = require('../src/services/contractPdf');
+  const h = require('../src/utils/contractHtml');
+  // list in a cell: kept inside the cell, not ejected before the table
+  const blocks = h.toBlocks(h.sanitize('<table><tr><td><ul><li>un</li><li>deux</li></ul></td></tr></table>'));
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].kind, 'table');
+  assert.equal(blocks[0].rows[0].cells[0].runs.filter((r) => r.text === '• ').length, 2);
+  // loose numbered list keeps counting
+  const ol = h.toBlocks(h.sanitize('<ol><li>a</li></ol><p></p><ol><li>b</li></ol><ol><li>c</li></ol>')).filter((b) => b.kind === 'li').map((b) => b.prefix);
+  assert.deepEqual(ol, ['1.', '2.', '3.']);
+  const base = { id: 'ctr_f3', title: 'Contrat “œuvre” 5 €', status: 'COMPLETED', admin_name: 'N'.repeat(120), admin_email: `${'e'.repeat(150)}@example.com`, signer_name: 'Zażółć', signer_email: 'a@b.co', fields: {}, signers: [], admin_signed_at: new Date().toISOString(), signed_at: new Date().toISOString() };
+  const t0 = Date.now();
+  const long = await buildPdf({ ...base, body_html: `<p>${'a'.repeat(5000)}</p><p>Voilà l’œuvre à 5 € « ok » Zażółć</p>` });
+  assert.ok(Date.now() - t0 < 3000, `5000-char word took ${Date.now() - t0} ms`);
+  assert.equal(long.slice(0, 5).toString(), '%PDF-');
+  const giant = await buildPdf({ ...base, body_html: `<table><tr><th>H</th><th>I</th></tr><tr><td>${'mot '.repeat(1500)}</td><td>x</td></tr></table>` });
+  assert.equal(giant.slice(0, 5).toString(), '%PDF-');
+  const { PDFDocument } = require('../src/vendor/pdf-lib.min.js');
+  assert.ok((await PDFDocument.load(giant)).getPageCount() >= 3); // the oversized row continues over several pages instead of running off one
+});
+
+test('fixer3: resending an admin invitation links to the panel the request came from; KYC cannot be resubmitted once verified; CSV formulas are neutralised', async () => {
+  const { token } = await adminLogin('owner');
+  const inv = await api('POST', '/admin/team/invite', { token, body: { email: 'resend-panel@fredapay.com', name: 'Resend Panel', role: 'editor' } });
+  assert.equal(inv.status, 201);
+  sentEmails.length = 0;
+  const re = await api('POST', `/admin/team/${inv.data.admin.id}/resend`, { token, body: {}, headers: { Origin: 'https://panel.example.org' } });
+  assert.equal(re.status, 200);
+  const mail = sentEmails.filter((e) => e.to === 'resend-panel@fredapay.com').slice(-1)[0];
+  assert.match(mail.text, /https:\/\/panel\.example\.org\/admin\.html\?invite=[a-f0-9]{64}/);
+
+  const reg = await registerAndVerify({ business_name: 'Kyc Twice Co', email: 'kyc-twice@example.com', password: 'password123' });
+  mockTables.merchants.find((x) => x.id === reg.data.merchant.id).kyc_status = 'verified';
+  const again = await api('POST', '/dashboard/verification/kyc', { token: reg.data.session_token, body: { documents: [{ label: 'ID', base64: 'aGVsbG8=', filename: "a.x')-alert(1)-('" }] } });
+  assert.equal(again.status, 409);
+  assert.equal(again.data.error.code, 'ALREADY_VERIFIED');
 });

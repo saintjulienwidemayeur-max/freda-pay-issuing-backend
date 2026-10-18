@@ -3,6 +3,7 @@ const paymentOrchestrator = require('../services/paymentOrchestrator');
 const { generatePaymentId, namespaceReference } = require('../utils/ids');
 const { fetchPage } = require('../utils/pagination');
 const { resolveMode } = require('../utils/mode');
+const { parseAmount } = require('../utils/money');
 
 async function create(ctx) {
   const { amount, currency, reference, phone } = ctx.body || {};
@@ -12,9 +13,7 @@ async function create(ctx) {
   if (amount == null || !method || !reference) {
     throw httpError(400, 'MISSING_FIELDS', 'amount, method et reference sont requis.');
   }
-  if (typeof amount !== 'number' || amount <= 0) {
-    throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif.');
-  }
+  parseAmount(amount);
 
   const existing = await paymentOrchestrator.getByOwnReference(ctx.merchantId, reference);
   if (existing) {
@@ -76,7 +75,8 @@ async function exportCsv(ctx) {
 }
 
 function csvEscape(v) {
-  const s = String(v == null ? '' : v);
+  let s = String(v == null ? '' : v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // a spreadsheet must never run a reference as a formula
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
