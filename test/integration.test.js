@@ -5755,3 +5755,10 @@ test('contracts: the admin invites a signer later, can resend and remove; removi
   assert.equal(removed.data.contract.status, 'COMPLETED');
   assert.equal((await api('POST', `/admin/contracts/${id}/signers`, { token: m.adminToken, body: { side: 'FREDA', name: 'Tard Venu', email: 'tard@fredapay.example' } })).data.error.code, 'NOT_PENDING');
 });
+
+test('the bare API address answers with a friendly service message', async () => {
+  const res = await fetch(baseUrl + '/');
+  const data = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(data.service, 'Freda Pay Issuing API');
+});

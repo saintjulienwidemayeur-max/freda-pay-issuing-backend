@@ -57,6 +57,8 @@ const adminSession = require('./middleware/adminSession');
 const router = new Router();
 
 // ---- Health ----
+// The bare address of the API: a friendly answer instead of "Route inconnue." for anyone who opens it in a browser.
+router.get('/', async () => ({ status: 200, body: { service: 'Freda Pay Issuing API', status: 'ok', health: '/health', docs: 'https://issuing.fredapay.com/docs' } }));
 router.get('/health', async () => ({ status: 200, body: { ok: true, service: 'freda-pay-backend' } }));
 
 // Machine-readable API spec - same convention as most public APIs (e.g.
