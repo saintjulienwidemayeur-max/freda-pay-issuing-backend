@@ -23,6 +23,10 @@ async function submit(ctx) {
     throw httpError(400, 'KYB_NOT_APPLICABLE', "Le KYB ne s'applique pas à un compte particulier.");
   }
 
+  const currentStatus = merchant[`${kind}_status`];
+  if (currentStatus === 'verified') throw httpError(409, 'ALREADY_VERIFIED', 'Votre compte est déjà vérifié.');
+  if (currentStatus === 'submitted') throw httpError(409, 'ALREADY_SUBMITTED', 'Votre dossier est déjà en cours de vérification.');
+
   const docs = (ctx.body && ctx.body.documents) || [];
   if (!Array.isArray(docs) || docs.length === 0) {
     throw httpError(400, 'MISSING_DOCUMENTS', 'Au moins un document est requis.');
