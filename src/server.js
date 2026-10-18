@@ -288,6 +288,12 @@ router.get('/admin/chat-unread', adminSession.requireAdminSession, chatAdmin(cha
 router.get('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminThread));
 router.post('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminSend));
 const adminApiTrafficHandlers = require('./handlers/adminApiTraffic');
+const apiTrafficAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
+router.get('/admin/api-usage', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.usage));
+router.get('/admin/api-usage/:merchantId', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.usageDetail));
+router.post('/admin/api-blocks', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.block));
+router.post('/admin/api-blocks/:merchantId/remove', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.unblock));
+router.post('/admin/api-keys/:id/revoke', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.revokeKey));
 router.get('/admin/api-traffic', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminApiTrafficHandlers.snapshot(ctx); });
 router.get('/admin/contracts', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminList));
 router.post('/admin/contracts', adminSession.requireAdminSession, contractsAdmin(contractHandlers.adminCreate));
@@ -380,6 +386,10 @@ if (require.main === module) {
   server.listen(config.port, () => {
     // eslint-disable-next-line no-console
     console.log(`Freda Pay backend listening on http://localhost:${config.port}`);
+    // API usage counters are saved every 30 s; blocks are re-read every 30 s. A redeploy flushes the counters first.
+    require('./services/apiUsage').start();
+    require('./services/apiBlocks').start();
+    process.on('SIGTERM', () => { require('./services/apiUsage').flush().finally(() => process.exit(0)); });
     // Emails and the blog link to SITE_URL: verify it really serves the website (a wrong value breaks every button).
     if (process.env.NODE_ENV !== 'test' && process.env.SITE_URL_CHECK !== 'off') siteUrl.verify().catch(() => {});
     if (!config.plopplop.clientId || !config.plopplop.clientSecret) {
