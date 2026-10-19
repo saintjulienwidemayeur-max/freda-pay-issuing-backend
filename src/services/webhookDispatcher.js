@@ -119,4 +119,63 @@ async function deliverNow(merchantId, event, data) {
   }
 }
 
-module.exports = { dispatch, deliverNow };
+/**
+ * Admin check of a merchant's webhook endpoint: sends one test event and explains what came back (reachable? which answer?
+ * how fast?) so a badly configured endpoint can be named: wrong address, certificate, server error, refused, redirect...
+ * Unlike the merchant-facing test, the details are returned: it is only reachable by the admin team.
+ */
+async function probe(merchantId) {
+  const endpoint = await supabase.selectOne('webhook_endpoints', { merchant_id: merchantId, active: true });
+  if (!endpoint) return { configured: false, ok: false, level: 'info', diagnosis: "Aucun webhook enregistré : le marchand doit interroger l'API pour connaître le statut de ses paiements.", checked_at: new Date().toISOString() };
+  let host = null;
+  try { host = new URL(endpoint.url).host; } catch (e) { /* shown as invalid below */ }
+  const result = { configured: true, url_host: host, https: /^https:/i.test(endpoint.url), checked_at: new Date().toISOString() };
+  const finish = (level, diagnosis, extra) => { const out = Object.assign(result, { ok: level === 'ok', level, diagnosis }, extra || {}); webhookHealth.recordProbe(merchantId, out); return out; };
+  if (!host) return finish('bad', "L'adresse du webhook enregistrée est invalide.");
+  try { await urlSafety.assertPublicUrl(endpoint.url); } catch (e) {
+    return finish('bad', "L'adresse n'est pas publique (localhost, adresse interne ou domaine inconnu) : nos serveurs ne peuvent pas l'atteindre depuis Internet.");
+  }
+  const payload = { id: `evt_${randomHex(12)}`, event: 'webhook.test', created_at: new Date().toISOString(), data: { message: 'Test de connexion envoyé par Freda Pay Issuing.' }, sent_by_admin: true };
+  const body = JSON.stringify(payload);
+  const signature = crypto.createHmac('sha256', endpoint.secret).update(body).digest('hex');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  const started = Date.now();
+  try {
+    const res = await fetch(endpoint.url, {
+      redirect: 'manual', method: 'POST', signal: controller.signal, body,
+      headers: { 'Content-Type': 'application/json', 'X-Freda-Signature': `sha256=${signature}`, 'X-Freda-Event-Id': payload.id, 'X-Freda-Delivery-Attempt': '1' },
+    });
+    const ms = Date.now() - started;
+    const s = res.status;
+    const extra = { http_status: s, ms };
+    if (s >= 200 && s < 300) return finish(ms > 5000 ? 'warn' : 'ok', ms > 5000 ? `Le serveur répond (${s}) mais très lentement (${(ms / 1000).toFixed(1)} s) : il risque de dépasser notre délai de 10 s.` : `Le serveur répond correctement (${s}) en ${ms} ms.`, extra);
+    if (s >= 300 && s < 400) return finish('bad', `L'adresse redirige ailleurs (${s}) : nos notifications ne suivent pas les redirections. Le marchand doit enregistrer l'adresse finale.`, extra);
+    if (s === 401 || s === 403) return finish('bad', `Le serveur du marchand refuse la requête (${s}) : il exige une authentification ou bloque nos adresses. Il doit accepter les requêtes signées (en-tête X-Freda-Signature).`, extra);
+    if (s === 404) return finish('bad', "Adresse introuvable (404) : l'URL du webhook est incorrecte ou la route n'existe pas sur le serveur du marchand.", extra);
+    if (s === 405) return finish('bad', "Le serveur refuse la méthode POST (405) : la route du webhook doit accepter POST.", extra);
+    if (s === 429) return finish('warn', 'Le serveur du marchand limite nos requêtes (429).', extra);
+    if (s >= 500) return finish('bad', `Le serveur du marchand plante (${s}) : erreur dans son code ou serveur indisponible.`, extra);
+    return finish('warn', `Réponse inattendue (${s}).`, extra);
+  } catch (err) {
+    const code = (err.cause && err.cause.code) || err.code || '';
+    if (err.name === 'AbortError') return finish('bad', 'Aucune réponse après 8 secondes : le serveur est trop lent ou injoignable.', { ms: 8000 });
+    if (code === 'ENOTFOUND') return finish('bad', 'Nom de domaine introuvable : le domaine du webhook n\'existe pas ou son DNS est mal configuré.');
+    if (code === 'ECONNREFUSED') return finish('bad', 'Connexion refusée : le serveur ne répond pas sur ce port (service arrêté ou mauvais port).');
+    if (/CERT|SSL|TLS|SELF_SIGNED|UNABLE_TO_VERIFY/i.test(code + ' ' + err.message)) return finish('bad', 'Certificat HTTPS invalide, expiré ou auto-signé : le marchand doit installer un certificat valide.');
+    return finish('bad', `Le serveur est injoignable (${code || err.message}).`);
+  } finally { clearTimeout(timer); }
+}
+
+/** Probes every registered webhook (a few at a time) and returns the results by merchant. */
+async function probeAll() {
+  const endpoints = await supabase.select('webhook_endpoints', { active: true }, { select: 'merchant_id', limit: 200 });
+  const ids = endpoints.map((e) => e.merchant_id);
+  const out = {};
+  for (let i = 0; i < ids.length; i += 5) {
+    await Promise.all(ids.slice(i, i + 5).map(async (id) => { out[id] = await probe(id).catch(() => ({ ok: false, level: 'bad', diagnosis: 'Le test a échoué.' })); }));
+  }
+  return out;
+}
+
+module.exports = { dispatch, deliverNow, probe, probeAll };

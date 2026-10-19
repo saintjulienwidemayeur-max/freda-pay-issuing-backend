@@ -172,8 +172,17 @@ async function healthSend(ctx) {
   return { status: 200, body: { sent: true, emailed } };
 }
 
+async function webhookTest(ctx) {
+  const merchantId = String(ctx.params.merchantId);
+  if (!(await supabase.selectOne('merchants', { id: merchantId }))) throw httpError(404, 'MERCHANT_NOT_FOUND', 'Marchand introuvable.');
+  return { status: 200, body: await require('../services/webhookDispatcher').probe(merchantId) };
+}
+async function webhookTestAll() {
+  return { status: 200, body: { results: await require('../services/webhookDispatcher').probeAll() } };
+}
+
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll };

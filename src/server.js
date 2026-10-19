@@ -289,6 +289,8 @@ router.get('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmi
 router.post('/admin/chat/:merchantId', adminSession.requireAdminSession, chatAdmin(chatHandlers.adminSend));
 const adminApiTrafficHandlers = require('./handlers/adminApiTraffic');
 const apiTrafficAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
+router.post('/admin/api-health/test-webhooks', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.webhookTestAll));
+router.post('/admin/api-health/:merchantId/test-webhook', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.webhookTest));
 router.get('/admin/api-health/:merchantId/message', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.healthDraft));
 router.post('/admin/api-health/:merchantId/send', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.healthSend));
 router.get('/admin/api-health', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.health));
