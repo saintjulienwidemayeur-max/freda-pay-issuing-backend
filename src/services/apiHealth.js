@@ -30,6 +30,24 @@ const EXPLAIN = {
   INTERNAL_ERROR: 'Erreur interne chez nous : à vérifier dans les logs du serveur.',
   ERROR: 'Erreur non détaillée.',
 };
+/** How the merchant fixes it. */
+const FIX = {
+  MISSING_API_KEY: "Envoyez la clé dans l'en-tête de chaque requête : Authorization: Bearer VOTRE_CLE_SECRETE.",
+  INVALID_API_KEY: 'Créez une nouvelle clé dans votre tableau de bord (rubrique Clés API) et remplacez-la dans votre code.',
+  LIVE_NOT_ENABLED: 'Terminez la vérification KYC/KYB dans votre tableau de bord pour passer en Live, ou utilisez une clé de test.',
+  ISSUING_LIVE_NOT_ENABLED: "Envoyez votre demande d'accès Issuing Live depuis le tableau de bord.",
+  RATE_LIMITED: "Espacez vos requêtes (maximum 100 par minute), ne vérifiez que les paiements encore « pending » et interrogez toutes les 5 à 10 secondes.",
+  MISSING_FIELDS: "Vérifiez les champs obligatoires de chaque endpoint dans la documentation et envoyez-les tous.",
+  INVALID_AMOUNT: "Envoyez le montant comme un nombre (par exemple 500, pas « 500 HTG »), positif, avec 2 décimales au maximum.",
+  INVALID_METHOD: "Utilisez uniquement les valeurs de la documentation (moncash, natcash, card…).",
+  INVALID_JSON: "Envoyez un corps JSON valide avec l'en-tête Content-Type: application/json.",
+  INVALID_RECIPIENT: 'Le numéro doit être au format 509XXXXXXXX.',
+  DUPLICATE_REFERENCE: 'Générez une référence unique pour chaque opération.',
+  NOT_FOUND: "Vérifiez l'adresse appelée et l'identifiant utilisé (documentation, rubrique API).",
+  INSUFFICIENT_BALANCE: 'Rechargez votre solde avant de relancer ces opérations.',
+  API_BLOCKED: "Écrivez-nous via le chat pour expliquer ce qui s'est passé et demander la levée du blocage.",
+};
+const fixFor = (code) => FIX[code] || null;
 const explain = (code) => EXPLAIN[code] || 'Erreur renvoyée par l\'API : voir la documentation.';
 
 function mergeCodes(rows) {
@@ -113,4 +131,29 @@ async function all() {
   return { generated_at: new Date().toISOString(), summary: { ok: count('ok'), warning: count('warning'), problem: count('problem'), inactive: count('inactive') }, merchants: list };
 }
 
-module.exports = { all, evaluate, explain };
+/**
+ * The message an admin can send a merchant about the state of its integration: what was found and how to fix it.
+ * Returns null when everything is fine (nothing to report).
+ */
+async function draftMessage(merchantId) {
+  const list = await all();
+  const m = list.merchants.find((x) => x.merchant_id === merchantId);
+  if (!m) return { found: false };
+  if (m.status === 'ok') return { found: true, status: m.status, message: null };
+  const lines = [`Bonjour ${m.business_name || ''},`.replace(' ,', ','), '', "Nous avons vérifié la connexion de votre intégration API avec Freda Pay Issuing. Voici ce que nous avons trouvé :", ''];
+  const real = m.problems.filter((p) => p.severity === 'bad' || p.severity === 'warn');
+  for (const p of real) lines.push(`- ${p.title} : ${p.detail}`);
+  if (m.errors.length) {
+    lines.push('', 'Erreurs provoquées par vos appels :');
+    for (const e of m.errors.slice(0, 5)) {
+      lines.push(`- ${e.code} (${e.count} fois) : ${e.explanation}`);
+      const fix = fixFor(e.code);
+      if (fix) lines.push(`  Pour corriger : ${fix}`);
+    }
+  }
+  if (m.status === 'inactive') lines.push('', "Votre intégration n'est pas encore branchée. Notre documentation vous guide pas à pas : https://issuing.fredapay.com/docs");
+  lines.push('', 'Si vous avez besoin d\'aide, répondez ici : nous sommes disponibles.', 'L\'équipe Freda Pay Issuing');
+  return { found: true, status: m.status, message: lines.join('\n').slice(0, 1900), merchant: { id: m.merchant_id, business_name: m.business_name, email: m.email } };
+}
+
+module.exports = { all, evaluate, explain, fixFor, draftMessage };
