@@ -6473,3 +6473,46 @@ test('API health: the team can send a merchant the error message of its connecti
   assert.equal((await api('POST', `/admin/api-health/${bad.merchantId}/send`, { token: owner, body: { message: ' ' } })).data.error.code, 'EMPTY_MESSAGE');
   assert.equal((await api('GET', `/admin/api-health/${bad.merchantId}/message`, { token: (await adminLogin('editor')).token })).status, 403);
 });
+
+test('webhook endpoint check: the admin sees whether a merchant endpoint is well configured and why not', async () => {
+  const http = require('node:http');
+  const answers = { '/ok': [200, ''], '/missing': [404, ''], '/boom': [500, ''], '/denied': [403, ''], '/moved': [302, 'https://elsewhere.example/hook'] };
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    const [code, loc] = answers[req.url] || [200, ''];
+    res.writeHead(code, loc ? { Location: loc } : {}); res.end('{}');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const { token: owner } = await adminLogin('owner');
+    const m = await makeLiveMerchant('whprobe');
+    const probe = async (path) => {
+      mockTables.webhook_endpoints = (mockTables.webhook_endpoints || []).filter((e) => e.merchant_id !== m.merchantId);
+      mockTables.webhook_endpoints.push({ id: 'wh_' + path.replace('/', ''), merchant_id: m.merchantId, url: base + path, secret: 'whsec_x', active: true, created_at: new Date().toISOString() });
+      return (await api('POST', `/admin/api-health/${m.merchantId}/test-webhook`, { token: owner })).data;
+    };
+    const ok = await probe('/ok');
+    assert.equal(ok.ok, true); assert.equal(ok.http_status, 200); assert.equal(ok.https, false);
+    const missing = await probe('/missing');
+    assert.equal(missing.ok, false); assert.match(missing.diagnosis, /404/);
+    assert.match((await probe('/boom')).diagnosis, /plante \(500\)/);
+    assert.match((await probe('/denied')).diagnosis, /refuse la requête \(403\)/);
+    assert.match((await probe('/moved')).diagnosis, /redirige/);
+    // nothing is listening on a closed port
+    mockTables.webhook_endpoints.find((e) => e.merchant_id === m.merchantId).url = 'http://127.0.0.1:1/x';
+    assert.match((await api('POST', `/admin/api-health/${m.merchantId}/test-webhook`, { token: owner })).data.diagnosis, /refusée|injoignable/);
+    // no endpoint at all
+    mockTables.webhook_endpoints = mockTables.webhook_endpoints.filter((e) => e.merchant_id !== m.merchantId);
+    const none = (await api('POST', `/admin/api-health/${m.merchantId}/test-webhook`, { token: owner })).data;
+    assert.equal(none.configured, false);
+    // a private address is refused when the explicit test allowance is off
+    process.env.ALLOW_PRIVATE_WEBHOOKS = '0';
+    mockTables.webhook_endpoints.push({ id: 'wh_p', merchant_id: m.merchantId, url: 'http://127.0.0.1:9/x', secret: 's', active: true });
+    assert.match((await api('POST', `/admin/api-health/${m.merchantId}/test-webhook`, { token: owner })).data.diagnosis, /pas publique/);
+    process.env.ALLOW_PRIVATE_WEBHOOKS = '1';
+    const all = await api('POST', '/admin/api-health/test-webhooks', { token: owner });
+    assert.equal(all.status, 200);
+    assert.equal((await api('POST', `/admin/api-health/${m.merchantId}/test-webhook`, { token: (await adminLogin('editor')).token })).status, 403);
+  } finally { process.env.ALLOW_PRIVATE_WEBHOOKS = '1'; await new Promise((r) => srv.close(r)); }
+});

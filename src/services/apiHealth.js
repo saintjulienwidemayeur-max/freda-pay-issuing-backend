@@ -76,6 +76,7 @@ function evaluate({ merchant, keys, rows7, recent, webhookEndpoint, block }) {
   if (requests > 0) add('limit', 'Limite de requêtes respectée', limited === 0 ? 'ok' : (limitedRate > 10 ? 'bad' : 'warn'), limited === 0 ? 'Aucune requête refusée.' : `${limited} requête(s) refusée(s) (429), soit ${limitedRate} %.`);
   if (keys.live > 0 && !merchant.gateway_live_enabled) add('live', 'Accès Live', 'bad', 'Le marchand a une clé Live mais son compte n\'est pas validé pour le Live.');
   else if (keys.live > 0) add('live', 'Accès Live', 'ok', 'Compte autorisé en Live.');
+  if (webhookEndpoint && !/^https:/i.test(webhookEndpoint.url)) add('webhook-https', 'Webhook sécurisé', 'warn', "L'adresse du webhook n'est pas en HTTPS : les notifications circulent sans chiffrement.");
   if (webhookEndpoint) {
     const bad = wh.failed_24h > 0 && (!wh.last_ok || (wh.last_failed && wh.last_failed > wh.last_ok));
     add('webhook', 'Webhook livré', bad ? 'bad' : (wh.failed_24h > 0 ? 'warn' : 'ok'), bad ? `Le serveur du marchand refuse nos notifications (${wh.failed_24h} échec(s) en 24 h${wh.last_error ? `, dernière erreur : ${wh.last_error}` : ''}).` : (wh.delivered_24h ? `${wh.delivered_24h} notification(s) livrée(s) en 24 h.` : 'Webhook enregistré, aucune notification envoyée récemment.'));
@@ -97,7 +98,7 @@ function evaluate({ merchant, keys, rows7, recent, webhookEndpoint, block }) {
     merchant_id: merchant.id, business_name: merchant.business_name, email: merchant.email,
     status, checks, problems, errors: errorList.concat(recentCodes),
     requests_7d: requests, error_rate: errorRate, limited_7d: limited,
-    last_call: recent.last_seen, keys, webhook: webhookEndpoint ? { url_host: hostOf(webhookEndpoint.url), ...wh } : null,
+    last_call: recent.last_seen, keys, webhook: webhookEndpoint ? { url_host: hostOf(webhookEndpoint.url), https: /^https:/i.test(webhookEndpoint.url), probe: webhookHealth.getProbe(merchant.id), ...wh } : null,
     block: block ? { reason: block.reason, until: block.until ? new Date(block.until).toISOString() : null } : null,
   };
 }

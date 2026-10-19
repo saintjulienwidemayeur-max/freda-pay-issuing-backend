@@ -27,6 +27,11 @@ function get(merchantId) {
   };
 }
 
-function reset() { stats.clear(); }
+/** The last admin test of a merchant's webhook endpoint, kept to show it on the health cards. */
+const probes = new Map();
+function recordProbe(merchantId, result) { probes.set(merchantId, result); }
+function getProbe(merchantId) { return probes.get(merchantId) || null; }
 
-module.exports = { record, get, reset };
+function reset() { stats.clear(); probes.clear(); }
+
+module.exports = { record, get, recordProbe, getProbe, reset };
