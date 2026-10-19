@@ -139,8 +139,41 @@ async function revokeKey(ctx) {
   return { status: 200, body: { ok: true } };
 }
 
+async function healthDraft(ctx) {
+  const d = await require('../services/apiHealth').draftMessage(String(ctx.params.merchantId));
+  if (!d.found) throw httpError(404, 'MERCHANT_NOT_FOUND', 'Marchand introuvable ou sans activité API.');
+  if (!d.message) throw httpError(409, 'NO_PROBLEM', "Cette intégration est bien connectée : il n'y a rien à signaler.");
+  return { status: 200, body: { status: d.status, message: d.message, merchant: d.merchant } };
+}
+
+/** Sends the (editable) message to the merchant: in its dashboard chat, and by email when asked. */
+async function healthSend(ctx) {
+  const merchantId = String(ctx.params.merchantId);
+  const merchant = await supabase.selectOne('merchants', { id: merchantId });
+  if (!merchant) throw httpError(404, 'MERCHANT_NOT_FOUND', 'Marchand introuvable.');
+  const message = String((ctx.body && ctx.body.message) || '').trim();
+  if (message.length < 5) throw httpError(400, 'EMPTY_MESSAGE', 'Le message est vide.');
+  if (message.length > 2000) throw httpError(400, 'MESSAGE_TOO_LONG', 'Message trop long (2000 caractères maximum).');
+  await require('./chat').postAdminMessage({ merchantId, body: message, adminName: ctx.admin && ctx.admin.name });
+  let emailed = false;
+  if (ctx.body && ctx.body.email) {
+    const { buildEmail } = require('../templates/notificationEmail');
+    const brevo = require('../services/brevo');
+    const config = require('../config');
+    try {
+      const built = buildEmail({ subject: 'Votre connexion API : ce que nous avons trouvé', eyebrow: 'Connexion API', heading: 'Votre intégration API demande votre attention', paragraphs: message.split(/\n{2,}/).map((p) => p.replace(/\n/g, ' ')), tone: 'warning' });
+      await brevo.sendEmail({ to: merchant.email, toName: merchant.business_name || merchant.email, subject: built.subject, html: built.html, text: built.text, senderEmail: config.brevo.adminSenderEmail, senderName: config.brevo.adminSenderName });
+      emailed = true;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('API health email failed:', err.message);
+    }
+  }
+  return { status: 200, body: { sent: true, emailed } };
+}
+
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend };

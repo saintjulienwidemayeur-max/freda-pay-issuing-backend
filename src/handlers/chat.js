@@ -141,4 +141,14 @@ async function adminSend(ctx) {
   return { status: 201, body: { message: (await withUrls([row]))[0] } };
 }
 
-module.exports = { merchantList, merchantUnread, merchantRead, merchantSend, adminConversations, adminUnread, adminThread, adminSend };
+/** Used by the integration health view: the team writes to a merchant from outside the chat page. */
+async function postAdminMessage({ merchantId, body, adminName }) {
+  const id = `msg_${crypto.randomBytes(8).toString('hex')}`;
+  const row = await supabase.insert('chat_messages', {
+    id, merchant_id: merchantId, sender: 'admin', author_name: String(adminName || 'Support Freda Pay Issuing').slice(0, 120),
+    body: cleanBody(body, false), read_by_merchant: false, read_by_admin: true,
+  });
+  return view(row);
+}
+
+module.exports = { postAdminMessage, merchantList, merchantUnread, merchantRead, merchantSend, adminConversations, adminUnread, adminThread, adminSend };

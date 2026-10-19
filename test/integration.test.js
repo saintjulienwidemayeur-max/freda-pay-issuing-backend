@@ -6445,3 +6445,31 @@ test('email alerts: a merchant that saturates the API and a new chat message eac
   assert.ok(chat.length >= 1);
   assert.equal(chat.length, new Set(chat.map((e) => e.to)).size);
 });
+
+test('API health: the team can send a merchant the error message of its connection (chat, and email on request)', async () => {
+  const apiUsage = require('../src/services/apiUsage');
+  const apiTraffic = require('../src/services/apiTraffic');
+  apiTraffic.reset(); apiUsage.reset();
+  const bad = await makeLiveMerchant('healthmsg');
+  const good = await makeLiveMerchant('healthmsgok');
+  const bk = (await api('POST', '/dashboard/api-keys', { token: bad.token, body: { mode: 'live' } })).data.secret;
+  const gk = (await api('POST', '/dashboard/api-keys', { token: good.token, body: { mode: 'live' } })).data.secret;
+  for (let i = 0; i < 6; i++) await api('POST', '/v1/payments', { token: bk, body: { amount: 'abc' } });
+  for (let i = 0; i < 3; i++) await api('GET', '/v1/payments', { token: gk });
+  await apiUsage.flush();
+  const { token: owner } = await adminLogin('owner');
+  const draft = await api('GET', `/admin/api-health/${bad.merchantId}/message`, { token: owner });
+  assert.equal(draft.status, 200);
+  assert.match(draft.data.message, /MISSING_FIELDS/);
+  assert.match(draft.data.message, /Pour corriger/);
+  assert.equal((await api('GET', `/admin/api-health/${good.merchantId}/message`, { token: owner })).data.error.code, 'NO_PROBLEM');
+  sentEmails.length = 0;
+  const sent = await api('POST', `/admin/api-health/${bad.merchantId}/send`, { token: owner, body: { message: draft.data.message, email: true } });
+  assert.equal(sent.status, 200);
+  assert.equal(sent.data.emailed, true);
+  assert.ok(sentEmails.some((e) => e.to === emailOf(bad) && /connexion API/i.test(e.subject)));
+  const chat = await api('GET', '/dashboard/chat', { token: bad.token });
+  assert.ok(chat.data.messages.some((m) => m.sender === 'admin' && /MISSING_FIELDS/.test(m.body)));
+  assert.equal((await api('POST', `/admin/api-health/${bad.merchantId}/send`, { token: owner, body: { message: ' ' } })).data.error.code, 'EMPTY_MESSAGE');
+  assert.equal((await api('GET', `/admin/api-health/${bad.merchantId}/message`, { token: (await adminLogin('editor')).token })).status, 403);
+});
