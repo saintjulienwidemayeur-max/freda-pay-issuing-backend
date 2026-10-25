@@ -148,6 +148,7 @@ function translateKnownMessage(rawMessage) {
   if (m.includes('kyc') || (m.includes('tier') && (m.includes('required') || m.includes('upgrade') || m.includes('must be') || m.includes('above')))) return "Le titulaire doit d'abord compléter sa vérification d'identité.";
   if (m.includes('rate limit') || m.includes('too many requests')) return 'Trop de requêtes envoyées. Réessayez dans un instant.';
   if (m.includes('unauthorized') || m.includes('invalid key') || m.includes('invalid secret') || m.includes('invalid token') || (m.includes('ip') && (m.includes('not allowed') || m.includes('whitelist')))) return TEMPORARY_FAILURE;
+  if (m.includes('not available') || m.includes('unavailable') || m.includes('maintenance')) return TEMPORARY_FAILURE;
   if (m.includes('not active') || (m.includes('account') && m.includes('suspend'))) return TEMPORARY_FAILURE;
 
   return null;

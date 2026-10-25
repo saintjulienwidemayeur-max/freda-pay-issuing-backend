@@ -6536,3 +6536,10 @@ test('admin "Erreurs cartes": a failed card creation keeps the provider message 
   assert.ok(mine.request_keys && !/PROV-1/.test(mine.request_keys), 'field names only, never values');
   assert.equal((await api('GET', '/admin/provider-errors', { token: (await adminLogin('editor')).token })).status, 403);
 });
+
+test('provider "service is not available" shows the temporary-unavailable sentence, with an admin hint', () => {
+  const maplerad = require('../src/services/maplerad');
+  const providerErrors = require('../src/services/providerErrors');
+  assert.match(maplerad.translateKnownMessage('service is not available at the moment'), /momentanément indisponible/);
+  assert.match(providerErrors.hintFor({ message: 'service is not available at the moment', http_status: 400 }), /indisponible/);
+});
