@@ -130,8 +130,9 @@ async function createCard(ctx) {
     }
     return { status: 202, body: toPublicCard(card, ctx) }; // 202: creation confirmed async via webhook
   } catch (err) {
-    if (err.httpStatus) throw httpError(err.httpStatus, err.code, err.message);
-    throw httpError(502, 'CARD_SERVICE_ERROR', err.message);
+    const out = err.httpStatus ? httpError(err.httpStatus, err.code, err.message) : httpError(502, 'CARD_SERVICE_ERROR', err.message);
+    if (err.providerInfo) out.providerInfo = err.providerInfo; // kept for the admin "Erreurs cartes" view
+    throw out;
   }
 }
 
@@ -169,7 +170,9 @@ async function getTransactions(ctx) {
       page_size: ctx.query.page_size,
     });
   } catch (err) {
-    throw httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
+    const out = httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
+    if (err.providerInfo) out.providerInfo = err.providerInfo;
+    throw out;
   }
 
   const raw = (res && (res.data || res.transactions || res.result)) || [];

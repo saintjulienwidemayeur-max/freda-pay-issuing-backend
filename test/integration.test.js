@@ -6516,3 +6516,23 @@ test('webhook endpoint check: the admin sees whether a merchant endpoint is well
     assert.equal((await api('POST', `/admin/api-health/${m.merchantId}/test-webhook`, { token: (await adminLogin('editor')).token })).status, 403);
   } finally { process.env.ALLOW_PRIVATE_WEBHOOKS = '1'; await new Promise((r) => srv.close(r)); }
 });
+
+test('admin "Erreurs cartes": a failed card creation keeps the provider message for the team, the merchant only sees the French sentence', async () => {
+  const providerErrors = require('../src/services/providerErrors');
+  providerErrors.reset();
+  const reg = await registerAndVerify({ business_name: 'Prov Err Co', email: 'prov-err@example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  mapleradBehavior.softErrorNextCard = true;
+  const r = await api('POST', '/dashboard/cards', { token, body: { reference: 'PROV-1', kind: 'business', business_name: 'Prov Err Co', brand: 'VISA', amount: 15 } });
+  assert.equal(r.status, 400);
+  assert.doesNotMatch(JSON.stringify(r.data), /CreateCardRequest|CustomerID/);
+  const { token: owner } = await adminLogin('owner');
+  const list = await api('GET', '/admin/provider-errors', { token: owner });
+  assert.equal(list.status, 200);
+  const mine = list.data.errors.find((e) => /PROV-1|\/dashboard\/cards/.test(e.route || '') && e.merchant_name);
+  assert.ok(mine, JSON.stringify(list.data.errors.slice(0, 2)));
+  assert.match(mine.message, /CustomerID|validation|required/i);
+  assert.ok(mine.hint && mine.hint.length > 10);
+  assert.ok(mine.request_keys && !/PROV-1/.test(mine.request_keys), 'field names only, never values');
+  assert.equal((await api('GET', '/admin/provider-errors', { token: (await adminLogin('editor')).token })).status, 403);
+});
