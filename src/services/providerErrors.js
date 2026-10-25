@@ -12,6 +12,7 @@ const MAX_MEMORY = 100;
 function hintFor({ message, http_status }) {
   const m = String(message || '').toLowerCase();
   if (http_status === 401 || http_status === 403) return "Le fournisseur refuse nos accès : clés, accès Live non activé ou adresse IP du serveur non autorisée (voir Paramètres, Diagnostic Maplerad).";
+  if (/not available|unavailable|maintenance/.test(m)) return "Le fournisseur répond « service indisponible » : panne ou maintenance de son côté, ou ce type de carte (ex. carte business) n'est pas activé sur notre compte. Contacter le support du fournisseur.";
   if (/name/.test(m) && /required|empty/.test(m)) return "Le nom de la carte est vide : le marchand doit envoyer un nom d'entreprise (business_name).";
   if (/field validation/.test(m)) return `Un champ envoyé est manquant ou au mauvais format (${(m.match(/for '([^']+)'/) || [])[1] || 'voir le message'}).`;
   if (/insufficient/.test(m)) return 'Le solde du compte chez le fournisseur est insuffisant : rechargez-le.';
