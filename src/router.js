@@ -181,6 +181,7 @@ function createHandler(router, options) {
       }
     } catch (err) {
       res.__errorCode = err.code || (err.httpStatus ? 'ERROR' : 'INTERNAL_ERROR'); // for the admin API health view
+      if (err.providerInfo) require('./services/providerErrors').record(Object.assign({}, err.providerInfo, { merchant_id: ctx.merchantId || null, route: `${req.method} ${pathname}` })).catch(() => {}); // admin "Erreurs cartes" view
       const status = err.httpStatus || 500;
       // Any error without an explicit httpStatus is unexpected (a bug, not a
       // handled business-logic case) - never leak its raw message to the

@@ -46,6 +46,7 @@ const tables = {
   chat_messages: [],
   api_usage_daily: [],
   api_blocks: [],
+  provider_errors: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();

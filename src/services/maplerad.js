@@ -143,7 +143,7 @@ function translateKnownMessage(rawMessage) {
   if (m.includes('invalid') && m.includes('email')) return 'Adresse email invalide.';
   if (m.includes('invalid') && (m.includes('amount') || m.includes('min') || m.includes('max'))) return 'Montant invalide.';
   if (m.includes('invalid') && m.includes('brand')) return 'Marque de carte invalide (VISA ou MASTERCARD).';
-  if (m.includes('field validation') || m.includes("'required' tag") || m.includes('is required') || m.includes('missing')) return 'Une information obligatoire est manquante ou invalide.';
+  if (m.includes('field validation') || m.includes("'required' tag") || m.includes('is required') || m.includes('missing')) return 'Une information obligatoire est manquante ou invalide.'; // the provider's field names stay in the admin view, never shown to merchants
   if (m.includes('base64')) return "L'image de la pièce d'identité n'a pas pu être acceptée. Envoyez-la à nouveau en Base64 (data:image/jpeg;base64,...) ou avec un lien https direct vers l'image.";
   if (m.includes('kyc') || (m.includes('tier') && (m.includes('required') || m.includes('upgrade') || m.includes('must be') || m.includes('above')))) return "Le titulaire doit d'abord compléter sa vérification d'identité.";
   if (m.includes('rate limit') || m.includes('too many requests')) return 'Trop de requêtes envoyées. Réessayez dans un instant.';
@@ -154,7 +154,7 @@ function translateKnownMessage(rawMessage) {
 }
 
 /** Builds the merchant-safe error for a failed provider response and throws it. */
-function throwProviderError(mode, method, path, httpStatus, data) {
+function throwProviderError(mode, method, path, httpStatus, data, body) {
   const rawMessage = data && (data.message || data.error || data.msg);
   // The raw provider text is for the operator only.
   // eslint-disable-next-line no-console
@@ -173,6 +173,8 @@ function throwProviderError(mode, method, path, httpStatus, data) {
   }
   err.providerStatus = httpStatus;
   err.providerRawMessage = typeof rawMessage === 'string' ? rawMessage : null; // internal only, never sent to clients
+  // What the admin panel shows (raw message, field NAMES sent, never their values); the router saves it with the merchant.
+  err.providerInfo = { mode: mode === 'live' ? 'live' : 'sandbox', method, path, http_status: httpStatus, message: typeof rawMessage === 'string' ? rawMessage : JSON.stringify(data || null), request_keys: body && typeof body === 'object' ? Object.keys(body) : [], shown_to_merchant: message };
   throw err;
 }
 
@@ -205,12 +207,12 @@ async function request(mode, method, path, body) {
     data = null;
   }
 
-  if (!res.ok) throwProviderError(mode, method, path, res.status, data);
+  if (!res.ok) throwProviderError(mode, method, path, res.status, data, body);
 
   // The provider can answer HTTP 200 with { "status": false, "message": ... }.
   // That is a failure, not a success: treating it as success is what left
   // cards "pending" forever and holders "verified" with no id.
-  if (data && data.status === false) throwProviderError(mode, method, path, 400, data);
+  if (data && data.status === false) throwProviderError(mode, method, path, 400, data, body);
 
   return data;
 }

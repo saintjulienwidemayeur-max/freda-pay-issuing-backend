@@ -181,8 +181,16 @@ async function webhookTestAll() {
   return { status: 200, body: { results: await require('../services/webhookDispatcher').probeAll() } };
 }
 
+/** Recent failures of the card provider, with its own message and what to check. */
+async function providerErrors() {
+  const rows = await require('../services/providerErrors').list(100);
+  const ids = [...new Set(rows.map((r) => r.merchant_id).filter(Boolean))];
+  const names = ids.length ? await namesFor(ids) : {};
+  return { status: 200, body: { errors: rows.map((r) => Object.assign({}, r, { merchant_name: r.merchant_id && names[r.merchant_id] ? (names[r.merchant_id].business_name || names[r.merchant_id].email) : null })) } };
+}
+
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors };
