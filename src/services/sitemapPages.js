@@ -10,14 +10,14 @@
  * `updated` is the date the page's content last changed meaningfully (YYYY-MM-DD).
  */
 const PAGES = [
-  { path: '/', changefreq: 'weekly', priority: '1.0', updated: '2026-10-17' },
-  { path: '/api-moncash-natcash', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
-  { path: '/en/', changefreq: 'weekly', priority: '0.8', updated: '2026-10-17' },
-  { path: '/en/card-payments-haiti', changefreq: 'monthly', priority: '0.8', updated: '2026-10-17' },
-  { path: '/a-propos', changefreq: 'monthly', priority: '0.7', updated: '2026-10-17' },
-  { path: '/paiement-par-carte-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
-  { path: '/cartes-virtuelles-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-17' },
-  { path: '/docs', changefreq: 'weekly', priority: '0.9', updated: '2026-10-17' },
+  { path: '/', changefreq: 'weekly', priority: '1.0', updated: '2026-10-26', alternates: [{ lang: 'fr', path: '/' }, { lang: 'en', path: '/en/' }, { lang: 'x-default', path: '/' }] },
+  { path: '/api-moncash-natcash', changefreq: 'monthly', priority: '0.9', updated: '2026-10-26' },
+  { path: '/en/', changefreq: 'weekly', priority: '0.8', updated: '2026-10-26', alternates: [{ lang: 'fr', path: '/' }, { lang: 'en', path: '/en/' }, { lang: 'x-default', path: '/' }] },
+  { path: '/en/card-payments-haiti', changefreq: 'monthly', priority: '0.8', updated: '2026-10-17', alternates: [{ lang: 'fr', path: '/paiement-par-carte-haiti' }, { lang: 'en', path: '/en/card-payments-haiti' }, { lang: 'x-default', path: '/paiement-par-carte-haiti' }] },
+  { path: '/a-propos', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
+  { path: '/paiement-par-carte-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-26', alternates: [{ lang: 'fr', path: '/paiement-par-carte-haiti' }, { lang: 'en', path: '/en/card-payments-haiti' }, { lang: 'x-default', path: '/paiement-par-carte-haiti' }] },
+  { path: '/cartes-virtuelles-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-26' },
+  { path: '/docs', changefreq: 'weekly', priority: '0.9', updated: '2026-10-26' },
   // `images`: pictures that belong to the page, so Google Images finds every one of them (both team portraits).
   { path: '/notre-equipe', changefreq: 'monthly', priority: '0.6', updated: '2026-10-04', images: ['/team/widemayeur-saint-julien.jpg', '/team/loudjina-tanis.jpg'] },
   { path: '/press-kit', changefreq: 'monthly', priority: '0.5', updated: '2026-10-04' },

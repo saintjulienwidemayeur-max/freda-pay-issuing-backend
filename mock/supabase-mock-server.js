@@ -31,6 +31,7 @@ const tables = {
   admin_users: [],
   verification_submissions: [],
   blog_posts: [],
+  blog_slug_redirects: [],
   merchant_pricing: [],
   admin_wallet_credits: [],
   disputes: [],
@@ -284,6 +285,7 @@ function checkUnique(resource, row, table) {
     team_members: ['email'],
     admin_users: ['email'],
     blog_posts: ['slug'],
+    blog_slug_redirects: ['old_slug'],
     cards: ['maplerad_card_id', 'maplerad_reference'],
   }[resource];
   if (!uniqueCols) return null;
