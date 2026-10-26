@@ -148,6 +148,8 @@ async function processMapleradEvent(event, webhookMode) {
       await cardOrchestrator.applyCardCreationWebhook({
         mapleradReference: event.reference,
         status: 'FAILED',
+        // The partner now says WHY the creation failed; the field name varies, so every plausible spot is read.
+        providerReason: [event.reason, event.failure_reason, event.failureReason, event.message, event.error, event.card && event.card.failure_reason, event.card && event.card.reason].find((v) => typeof v === 'string' && v.trim()) || null,
         webhookMode,
       });
       break;

@@ -6555,3 +6555,21 @@ test('low-balance email warns before the floor (alert at 150 $) and keeps the 50
   const floor = lowBalanceEmail({ businessName: 'X', balance: 50, minimumBalance: 50 });
   assert.match(floor.html, /a atteint le solde minimum/);
 });
+
+test('failed-creation webhook: the partner reason is translated for the merchant and kept raw for the admin', async () => {
+  const reg = await registerAndVerify({ business_name: 'Reason Co', email: 'reasonco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'REASON-1', kind: 'business', business_name: 'Reason Co', brand: 'VISA', amount: 20 } });
+  assert.equal(c.status, 202);
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  row.status = 'pending';
+  const providerErrors = require('../src/services/providerErrors');
+  providerErrors.reset();
+  await sendProviderEvent({ event: 'issuing.created.failed', reference: row.maplerad_reference, reason: 'customer must be tier 2 or above to create a card' }, MOCK_SANDBOX_WHSEC);
+  assert.equal(row.status, 'failed');
+  assert.match(row.failure_reason, /vérification d'identité/);
+  assert.match(row.failure_reason, /remboursés/);
+  const seen = await providerErrors.list(10);
+  assert.ok(seen.some((e) => /tier 2/.test(e.message)));
+});
