@@ -4,7 +4,14 @@ const config = require('../config');
 const LOGO_URL = config.emailLogoUrl;
 
 function lowBalanceEmail({ businessName, balance, minimumBalance }) {
-  const subject = `Solde Master Wallet bas : ${businessName || 'votre compte'} Freda Pay Issuing`;
+  const reached = Number(balance) <= Number(minimumBalance);
+  const subject = reached
+    ? `Solde Master Wallet bas : ${businessName || 'votre compte'} Freda Pay Issuing`
+    : `Votre Master Wallet approche de la réserve minimale : ${businessName || 'votre compte'} Freda Pay Issuing`;
+  const heading = reached ? 'Votre Master Wallet a atteint le solde minimum' : 'Le solde de votre Master Wallet est bas';
+  const intro = reached
+    ? "Le solde de votre Master Wallet est descendu à la réserve minimale requise. Tant que ce seuil n'est pas dépassé par un nouveau dépôt, les opérations qui débitent le Master Wallet (émission de carte, recharge, changement de plan) seront refusées."
+    : `Le solde de votre Master Wallet se rapproche de la réserve minimale. ${formatUsd(minimumBalance)} restent toujours bloqués sur votre Master Wallet et ne peuvent pas être utilisés. Rechargez avant que vos opérations (émission de carte, recharge, changement de plan) ne soient refusées.`;
 
   const html = `<!DOCTYPE html>
 <html lang="fr">
@@ -37,10 +44,10 @@ function lowBalanceEmail({ businessName, balance, minimumBalance }) {
         <tr>
           <td style="padding:40px 32px 32px;">
             <p style="margin:0 0 6px;font-size:13px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#b45309;">Alerte solde</p>
-            <h1 style="margin:0 0 16px;font-size:22px;font-weight:800;color:#111111;line-height:1.3;">Votre Master Wallet a atteint le solde minimum</h1>
+            <h1 style="margin:0 0 16px;font-size:22px;font-weight:800;color:#111111;line-height:1.3;">${escapeHtml(heading)}</h1>
             <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#4b4b4b;">
               Bonjour${businessName ? ' ' + escapeHtml(businessName) : ''},<br>
-              Le solde de votre Master Wallet est descendu à la réserve minimale requise. Tant que ce seuil n'est pas dépassé par un nouveau dépôt, les opérations qui débitent le Master Wallet (émission de carte, recharge, changement de plan) seront refusées.
+              ${escapeHtml(intro)}
             </p>
 
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#fff8eb;border:1px solid #fde68a;border-radius:12px;margin-bottom:24px;">
@@ -86,7 +93,9 @@ function lowBalanceEmail({ businessName, balance, minimumBalance }) {
     `Freda Pay Issuing - Alerte solde Master Wallet`,
     ``,
     `Bonjour${businessName ? ' ' + businessName : ''},`,
-    `Le solde de votre Master Wallet (${formatUsd(balance)}) a atteint la réserve minimale requise (${formatUsd(minimumBalance)}).`,
+    reached
+      ? `Le solde de votre Master Wallet (${formatUsd(balance)}) a atteint la réserve minimale requise (${formatUsd(minimumBalance)}).`
+      : `Le solde de votre Master Wallet (${formatUsd(balance)}) approche de la réserve minimale : ${formatUsd(minimumBalance)} restent toujours bloqués.`,
     `Ajoutez des fonds pour continuer à émettre des cartes et débiter votre wallet.`,
     ``,
     `Besoin d'aide ? issuing@fredapay.com`,
