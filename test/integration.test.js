@@ -6573,3 +6573,43 @@ test('failed-creation webhook: the partner reason is translated for the merchant
   const seen = await providerErrors.list(10);
   assert.ok(seen.some((e) => /tier 2/.test(e.message)));
 });
+
+test('failed-creation webhook in the documented wrapped shape: reason translated, retry link relayed', async () => {
+  const reg = await registerAndVerify({ business_name: 'Wrapped Co', email: 'wrappedco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'WRAP-1', kind: 'business', business_name: 'Wrapped Co', brand: 'VISA', amount: 20 } });
+  assert.equal(c.status, 202);
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  row.status = 'pending';
+  const dispatcher = require('../src/services/webhookDispatcher');
+  const seen = [];
+  const original = dispatcher.dispatch;
+  dispatcher.dispatch = (m, ev, data) => { seen.push({ ev, data }); return original.apply(dispatcher, [m, ev, data]); };
+  try {
+    await sendProviderEvent({ eventId: 'e1', eventType: 'issuing.created.failed', payload: { event: 'issuing.created.failed', reference: row.maplerad_reference, status: 'Rejected', reason: 'Facial verification mismatch: Selfie does not match passport photo', verification_link: 'https://example.com/retry/abc', link_expire_at: '2026-10-30T18:00:00Z' } }, MOCK_SANDBOX_WHSEC);
+  } finally { dispatcher.dispatch = original; }
+  assert.equal(row.status, 'failed');
+  assert.match(row.failure_reason, /vérification faciale/);
+  const ev = seen.find((x) => x.ev === 'card.failed');
+  assert.ok(ev, 'card.failed dispatched');
+  assert.equal(ev.data.verification_link, 'https://example.com/retry/abc');
+});
+
+test('identity back image is optional but validated, and the KYC rejection codes are translated', async () => {
+  const maplerad = require('../src/services/maplerad');
+  assert.match(maplerad.translateKnownMessage('FRONT_SIDE_MISSING'), /recto et le verso/);
+  assert.match(maplerad.translateKnownMessage('LOW_QUALITY'), /lisible/);
+  const reg = await registerAndVerify({ business_name: 'Back Co', email: 'backco@sandbox-test.example.com', password: 'password123' });
+  const bad = await api('POST', '/dashboard/cards/holders', { token: reg.data.session_token, body: { firstName: 'A', lastName: 'B', email: 'a@b.com', country: 'US', dob: '1990-01-01', identificationNumber: '123', phoneNumber: '5551234567', phoneShortCode: '+1', address: { street: 's', city: 'c', state: 'st', postalCode: '1', country: 'US' }, identity: { type: 'NIN', number: '1', imageUrl: 'data:image/jpeg;base64,AAAA', imageBackUrl: 'nope', country: 'US' } } });
+  assert.equal(bad.status, 400);
+  assert.match(bad.data.error.message, /imageBackUrl/);
+});
+
+test('holder creation accepts a body larger than 1 MB (front and back ID images)', async () => {
+  const reg = await registerAndVerify({ business_name: 'Big Body Co', email: 'bigbody@sandbox-test.example.com', password: 'password123' });
+  const big = 'data:image/jpeg;base64,' + 'A'.repeat(1_200_000);
+  const r = await api('POST', '/dashboard/cards/holders', { token: reg.data.session_token, body: { firstName: 'A', identity: { type: 'NIN', number: '1', imageUrl: big, imageBackUrl: big, country: 'US' } } });
+  assert.notEqual(r.status, 413);
+  assert.equal(r.status, 400); // reaches validation (missing fields) instead of being cut at the body limit
+});
