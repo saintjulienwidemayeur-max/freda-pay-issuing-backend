@@ -263,6 +263,9 @@ const config = {
   // balance down to this floor.
   masterWallet: {
     minimumBalanceUsd: parseFloat(process.env.MASTER_WALLET_MINIMUM_USD || '50'),
+    // From this balance down, the merchant receives low-balance reminder emails (at most one per interval).
+    alertBalanceUsd: parseFloat(process.env.MASTER_WALLET_ALERT_USD || '150'),
+    alertIntervalMs: parseInt(process.env.MASTER_WALLET_ALERT_INTERVAL_MS || String(12 * 3600 * 1000), 10),
   },
 
   // Every new account starts in sandbox mode (live_enabled = false). To let
