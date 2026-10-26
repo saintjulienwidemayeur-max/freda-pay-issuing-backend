@@ -9,6 +9,7 @@ process.env.PLOPPLOP_BASE_URL = 'http://localhost:4501';
 process.env.PLOPPLOP_CLIENT_ID = 'pp_test_client';
 process.env.PLOPPLOP_CLIENT_SECRET = 'test_secret_value';
 process.env.PAYOUT_COOLDOWN_MS = '50'; // fast for tests
+process.env.BUSINESS_CARDS_PAUSED = 'false'; // the suite exercises business cards; the pause has its own test
 process.env.ALLOW_PRIVATE_WEBHOOKS = '1'; // the local mock webhook receivers live on localhost (SSRF guard has its own tests)
 
 process.env.MOCK_CLIENT_ID = 'pp_test_client';
@@ -6612,4 +6613,19 @@ test('holder creation accepts a body larger than 1 MB (front and back ID images)
   const r = await api('POST', '/dashboard/cards/holders', { token: reg.data.session_token, body: { firstName: 'A', identity: { type: 'NIN', number: '1', imageUrl: big, imageBackUrl: big, country: 'US' } } });
   assert.notEqual(r.status, 413);
   assert.equal(r.status, 400); // reaches validation (missing fields) instead of being cut at the body limit
+});
+
+test('business cards paused: refused before any debit, individual cards unaffected', async () => {
+  const config = require('../src/config');
+  const reg = await registerAndVerify({ business_name: 'Paused Co', email: 'pausedco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const before = (await f2Balance(token)).master_wallet.available;
+  config.businessCardsPaused = true;
+  try {
+    const r = await api('POST', '/dashboard/cards', { token, body: { reference: 'PAUSED-1', kind: 'business', business_name: 'Paused Co', brand: 'VISA', amount: 20 } });
+    assert.equal(r.status, 503);
+    assert.equal(r.data.error.code, 'BUSINESS_CARDS_PAUSED');
+    assert.match(r.data.error.message, /temporairement suspendue/);
+    assert.equal((await f2Balance(token)).master_wallet.available, before);
+  } finally { config.businessCardsPaused = false; }
 });

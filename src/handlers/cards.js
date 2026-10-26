@@ -1,4 +1,5 @@
 'use strict';
+const config = require('../config');
 const cardOrchestrator = require('../services/cardOrchestrator');
 const maplerad = require('../services/maplerad');
 const identityImage = require('../services/identityImage');
@@ -92,6 +93,10 @@ async function createCard(ctx) {
 
   const existing = await cardOrchestrator.getByOwnReference(ctx.merchantId, reference);
   if (existing) return { status: 200, body: toPublicCard(existing, ctx) };
+
+  if (kind === 'business' && config.businessCardsPaused) {
+    throw httpError(503, 'BUSINESS_CARDS_PAUSED', "La création de cartes entreprise est temporairement suspendue. Aucun montant n'a été débité. Les cartes individuelles restent disponibles. Réessayez plus tard.");
+  }
 
   const id = generateCardId();
   const mode = await resolveMode(ctx);
