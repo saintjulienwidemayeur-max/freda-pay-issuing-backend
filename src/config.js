@@ -261,6 +261,10 @@ const config = {
   // debit (card creation/funding, plan billing, etc.) may bring the balance
   // below it. A low-balance email is sent the first time a debit brings the
   // balance down to this floor.
+  // The card partner told us business-card creation is temporarily suspended on its side. While true, business cards are
+  // refused BEFORE anything is debited. Set BUSINESS_CARDS_PAUSED=false on Render as soon as the partner reopens it.
+  businessCardsPaused: String(process.env.BUSINESS_CARDS_PAUSED || 'true').toLowerCase() !== 'false',
+
   masterWallet: {
     minimumBalanceUsd: parseFloat(process.env.MASTER_WALLET_MINIMUM_USD || '50'),
     // From this balance down, the merchant receives low-balance reminder emails (at most one per interval).
