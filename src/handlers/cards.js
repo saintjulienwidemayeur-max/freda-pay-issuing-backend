@@ -57,6 +57,10 @@ async function createHolder(ctx) {
   if (!/^https:\/\//.test(idImage) && !identityImage.isDataUri(idImage)) {
     throw httpError(400, 'MISSING_FIELDS', "identity.imageUrl est requis : image de la pièce d'identité en Base64 (data:image/jpeg;base64,...) ou lien https vers l'image.");
   }
+  const idBack = idn.imageBackUrl || idn.image_back;
+  if (idBack && !/^https:\/\//.test(String(idBack)) && !identityImage.isDataUri(String(idBack))) {
+    throw httpError(400, 'MISSING_FIELDS', "identity.imageBackUrl doit être le verso de la pièce en Base64 (data:image/jpeg;base64,...) ou un lien https vers l'image.");
+  }
   if (idn.country && !/^[A-Za-z]{2}$/.test(idn.country)) {
     throw httpError(400, 'MISSING_FIELDS', 'identity.country doit être un code pays à 2 lettres.');
   }

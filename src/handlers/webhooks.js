@@ -129,7 +129,9 @@ async function receiveTranzak(ctx) {
   return { status: 200, body: { received: true } };
 }
 
-async function processMapleradEvent(event, webhookMode) {
+async function processMapleradEvent(rawEvent, webhookMode) {
+  // The partner documents some events wrapped as { eventId, eventType, payload: {...} }: the payload is the event itself.
+  const event = (!rawEvent.event && rawEvent.payload && typeof rawEvent.payload === 'object') ? Object.assign({ event: rawEvent.eventType }, rawEvent.payload) : rawEvent;
   switch (event.event) {
     case 'issuing.created.successful': {
       const card = event.card || {};
@@ -145,11 +147,13 @@ async function processMapleradEvent(event, webhookMode) {
       break;
     }
     case 'issuing.created.failed': {
+      const body = event;
       await cardOrchestrator.applyCardCreationWebhook({
-        mapleradReference: event.reference,
+        mapleradReference: body.reference || event.reference,
         status: 'FAILED',
-        // The partner now says WHY the creation failed; the field name varies, so every plausible spot is read.
-        providerReason: [event.reason, event.failure_reason, event.failureReason, event.message, event.error, event.card && event.card.failure_reason, event.card && event.card.reason].find((v) => typeof v === 'string' && v.trim()) || null,
+        providerReason: [body.reason, body.failure_reason, body.failureReason, body.message, body.error].find((v) => typeof v === 'string' && v.trim()) || null,
+        verificationLink: typeof body.verification_link === 'string' && /^https:\/\//.test(body.verification_link) ? body.verification_link : null,
+        linkExpireAt: body.link_expire_at || null,
         webhookMode,
       });
       break;

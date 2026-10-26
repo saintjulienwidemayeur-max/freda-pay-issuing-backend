@@ -127,6 +127,14 @@ function translateKnownMessage(rawMessage) {
   if (!rawMessage || typeof rawMessage !== 'string') return null;
   const m = rawMessage.toLowerCase();
 
+  // Identity-check rejection reasons documented by the partner (https://maplerad.dev/docs/issuing, "User Verification Guide").
+  if (m.includes('facial') || m.includes('selfie') || m.includes('face_match') || m.includes('liveness')) return "La vérification faciale a échoué : le selfie ne correspond pas à la photo de la pièce d'identité. Le titulaire doit refaire la vérification.";
+  if (m.includes('front_side_missing') || m.includes('front side') || m.includes('document_page_missing') || m.includes('page missing') || m.includes('both sides')) return "Une face de la pièce d'identité manque. Envoyez le recto et le verso (identity.imageBackUrl).";
+  if (m.includes('low_quality') || m.includes('unsatisfactory_photos') || m.includes('blurry') || m.includes('unreadable') || m.includes('incomplete_document') || m.includes('document_damaged')) return "L'image de la pièce d'identité n'est pas assez lisible. Envoyez une photo nette, complète et bien éclairée.";
+  if (m.includes('forgery') || m.includes('graphic_editor') || m.includes('document_template') || m.includes('non_authentic') || m.includes('suspicious_document') || m.includes('regulations_violations')) return "La pièce d'identité n'a pas pu être acceptée. Envoyez l'original d'un document valide, non modifié.";
+  if (m.includes('id_invalid') || m.includes('no_suitable_docs') || m.includes('expiration_date') || m.includes('expired')) return "La pièce d'identité est invalide, expirée ou d'un type non accepté. Envoyez une pièce valide du type demandé.";
+  if (m.includes('data_mismatch') || m.includes('problematic_applicant_data') || m.includes('mismatch')) return "Les informations du titulaire (nom, date de naissance, numéro) ne correspondent pas à la pièce d'identité.";
+  if (m.includes('incompatible_language')) return "La pièce d'identité n'est pas en anglais : une traduction peut être exigée.";
   if (m.includes('already') && (m.includes('enrolled') || m.includes('registered') || (m.includes('customer') && m.includes('exist')))) return 'Ce titulaire existe déjà.';
   if (m.includes('insufficient') && m.includes('balance')) return 'Solde insuffisant pour cette opération.';
   if (m.includes('customer') && m.includes('not found')) return 'Titulaire introuvable.';

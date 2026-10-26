@@ -172,6 +172,8 @@ function toProviderIdentity(profile) {
     type: String(id.type || '').toUpperCase(),
     number: id.number,
     image: id.imageUrl || id.image,
+    // Back of the ID card: some countries require both sides (provider field identity.image_back).
+    image_back: id.imageBackUrl || id.image_back || undefined,
     country: String(id.country || profile.country || '').toUpperCase(),
   };
 }
@@ -183,6 +185,8 @@ function toProviderIdentity(profile) {
  */
 async function upgradeToTier2(provider, customerId, identity, photo) {
   const ready = { ...identity, image: await identityImage.toBase64Uri(identity.image) };
+  if (identity.image_back) ready.image_back = await identityImage.toBase64Uri(identity.image_back);
+  else delete ready.image_back;
   const send = () => provider.upgradeCustomerTier2({ customerId, identity: ready, photo: photo || undefined });
   try {
     await send();
@@ -584,7 +588,7 @@ async function adjustCardBalance(cardId, delta, extra) {
 /**
  * Called by the webhook handler when Maplerad confirms (or fails) card creation.
  */
-async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, maskedPan, holderName, status, currency, webhookMode, providerReason }) {
+async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, maskedPan, holderName, status, currency, webhookMode, providerReason, verificationLink, linkExpireAt }) {
   const card = await supabase.selectOne('cards', { maplerad_reference: mapleradReference });
   if (!card) {
     // eslint-disable-next-line no-console
@@ -653,6 +657,8 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
   webhookDispatcher.dispatch(card.merchant_id, 'card.failed', {
     id: card.id, reference: card.own_reference, kind: card.kind, brand: card.brand,
     failure_reason: failureReason,
+    // When the partner offers a retry of the identity check, the merchant can hand this link to the cardholder.
+    ...(verificationLink ? { verification_link: verificationLink, verification_link_expires_at: linkExpireAt || null } : {}),
   });
   if (providerReason) {
     providerErrors.record({ mode: card.mode, merchant_id: card.merchant_id, route: 'webhook issuing.created.failed', method: 'WEBHOOK', path: mapleradReference, message: providerReason, shown_to_merchant: failureReason }).catch(() => {});
