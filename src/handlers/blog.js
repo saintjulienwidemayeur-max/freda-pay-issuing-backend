@@ -2,6 +2,7 @@
 const supabase = require('../lib/supabase');
 const { markdownToHtml, escapeHtml, safeUrl, readingTimeMinutes } = require('../utils/markdown');
 const config = require('../config');
+const seo = require('../utils/seo');
 
 const siteUrl = require('../services/siteUrl');
 /** The website address, VERIFIED (a wrong SITE_URL on the host would send the logo and every link to the wrong place). */
@@ -101,7 +102,7 @@ ${bodyHtml}
 </main>
 <footer>
   <div class="flinks">
-    <a href="${site()}/">Accueil</a><a href="${site()}/blog">Blog</a><a href="${site()}/api-moncash-natcash">API MonCash et Natcash</a><a href="${site()}/cartes-virtuelles-haiti">Cartes virtuelles</a><a href="${site()}/docs">Documentation</a><a href="${site()}/terms">Conditions d'utilisation</a><a href="${site()}/privacy">Confidentialité</a>
+    <a href="${site()}/">Accueil</a><a href="${site()}/blog">Blog</a><a href="${site()}/api-moncash-natcash">API MonCash et Natcash</a><a href="${site()}/paiement-par-carte-haiti">Paiement par carte en Haïti</a><a href="${site()}/cartes-virtuelles-haiti">Cartes virtuelles</a><a href="${site()}/docs">Documentation</a><a href="${site()}/terms">Conditions d'utilisation</a><a href="${site()}/privacy">Confidentialité</a>
   </div>
   <div class="footwrap">© ${new Date().getFullYear()} Freda Pay LLC · <a href="mailto:issuing@fredapay.com">issuing@fredapay.com</a></div>
 </footer>
@@ -131,7 +132,7 @@ async function listPage(ctx) {
       <a class="pcard" href="${escapeHtml(`${site()}/blog/${p.slug}`)}">
         <img src="${escapeHtml(imageUrl(p.cover_image_url, `${site()}/og-image.png`))}" alt="">
         <div>
-          <h2>${escapeHtml(p.title)}</h2>
+          <h2>${escapeHtml(seo.cleanTitle(p.title))}</h2>
           <p>${escapeHtml(p.excerpt || '')}</p>
           <p style="margin-top:6px;font-size:.78rem">${fmtDate(p.published_at)}</p>
         </div>
@@ -147,7 +148,7 @@ async function listPage(ctx) {
     </div>`;
 
   const html = layout({
-    title: 'Blog Freda Pay Issuing : paiements, cartes virtuelles et fintech',
+    title: 'Blog Freda Pay Issuing : paiements et cartes virtuelles',
     description: "Articles de Freda Pay Issuing sur les paiements, les cartes virtuelles Visa et Mastercard, MonCash et Natcash, et l'actualité de la fintech.",
     canonical: `${site()}/blog`,
     ogImage: `${site()}/og-image.png`,
@@ -163,40 +164,75 @@ async function listPage(ctx) {
 /** GET /blog/:slug - one published post, fully server-rendered for SEO. */
 async function postPage(ctx) {
   const post = await supabase.selectOne('blog_posts', { slug: ctx.params.slug, status: 'published' });
-  if (!post) return rawHtml(ctx, notFoundPage(), 404);
+  if (!post) {
+    // An article whose address changed: the old address sends visitors and Google (301) to the new one.
+    const moved = await supabase.selectOne('blog_slug_redirects', { old_slug: ctx.params.slug }).catch(() => null);
+    const target = moved && (await supabase.selectOne('blog_posts', { id: moved.post_id, status: 'published' }));
+    if (target) {
+      ctx.res.writeHead(301, { Location: `${site()}/blog/${target.slug}`, 'Cache-Control': 'public, max-age=3600' });
+      ctx.res.end();
+      return undefined;
+    }
+    return rawHtml(ctx, notFoundPage(), 404);
+  }
 
+  const title = seo.cleanTitle(post.title);
   const cover = imageUrl(post.cover_image_url, null);
   const contentHtml = markdownToHtml(post.content_markdown);
   const minutes = readingTimeMinutes(post.content_markdown);
   const tagsHtml = (post.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+  const related = `
+      <section aria-labelledby="liens-utiles" style="margin-top:34px">
+        <h2 id="liens-utiles" style="font-size:1.2rem">Ressources liées</h2>
+        <ul>
+          <li><a href="${site()}/api-moncash-natcash">API MonCash et Natcash</a></li>
+          <li><a href="${site()}/paiement-par-carte-haiti">Paiement par carte en Haïti</a></li>
+          <li><a href="${site()}/cartes-virtuelles-haiti">Carte virtuelle en Haïti par API</a></li>
+          <li><a href="${site()}/docs">Documentation API Freda Pay Issuing</a></li>
+        </ul>
+      </section>`;
 
   const body = `
     <div class="wrap" style="padding-top:36px">
-      <div class="crumbs" style="padding-top:0"><a href="${site()}/">Accueil</a> / <a href="${site()}/blog">Blog</a></div>
+      <div class="crumbs" style="padding-top:0"><a href="${site()}/">Accueil</a> / <a href="${site()}/blog">Blog</a> / ${escapeHtml(seo.clip(title, 60))}</div>
       <span class="eyebrow">Article</span>
-      <h1>${escapeHtml(post.title)}</h1>
+      <h1>${escapeHtml(title)}</h1>
       <div class="meta">${escapeHtml(post.author_name || 'Freda Pay Issuing')} · ${fmtDate(post.published_at)} · ${minutes} min de lecture</div>
-      ${cover ? `<img class="cover" src="${escapeHtml(cover)}" alt="${escapeHtml(post.title)}">` : ''}
+      ${cover ? `<img class="cover" src="${escapeHtml(cover)}" alt="${escapeHtml(title)}">` : ''}
       <article>${contentHtml}</article>
       ${tagsHtml ? `<div class="tags">${tagsHtml}</div>` : ''}
+      ${related}
     </div>`;
 
   const canonical = `${site()}/blog/${post.slug}`;
-  const description = post.meta_description || post.excerpt || post.title;
+  const description = seo.clip(post.meta_description || post.excerpt || title, 155);
   const html = layout({
-    title: `${post.title} : Blog Freda Pay Issuing`,
+    title: seo.seoTitle(title),
     description,
     canonical,
     ogImage: cover || `${site()}/og-image.png`,
     bodyHtml: body,
     jsonLd: {
-      '@context': 'https://schema.org', '@type': 'BlogPosting',
-      headline: post.title, description, image: imageObject(cover || `${site()}/og-image.png`, new Date(post.published_at || Date.now()).getFullYear()),
-      datePublished: post.published_at, dateModified: post.updated_at || post.published_at,
-      author: { '@type': 'Person', name: post.author_name || 'Freda Pay Issuing' },
-      publisher: { '@type': 'Organization', name: 'Freda Pay LLC', logo: imageObject(LOGO_URL, 2026) },
-      mainEntityOfPage: { '@type': 'WebPage', '@id': canonical },
-      keywords: (post.tags || []).join(', ') || undefined,
+      '@context': 'https://schema.org',
+      '@graph': [
+        {
+          '@type': 'BlogPosting',
+          headline: seo.clip(title, 110), description, image: imageObject(cover || `${site()}/og-image.png`, new Date(post.published_at || Date.now()).getFullYear()),
+          datePublished: post.published_at, dateModified: post.updated_at || post.published_at,
+          author: { '@type': 'Person', name: post.author_name || 'Freda Pay Issuing' },
+          publisher: { '@type': 'Organization', name: 'Freda Pay LLC', logo: imageObject(LOGO_URL, 2026) },
+          mainEntityOfPage: { '@type': 'WebPage', '@id': canonical },
+          keywords: (post.tags || []).join(', ') || undefined,
+        },
+        {
+          '@type': 'BreadcrumbList',
+          itemListElement: [
+            { '@type': 'ListItem', position: 1, name: 'Accueil', item: `${site()}/` },
+            { '@type': 'ListItem', position: 2, name: 'Blog', item: `${site()}/blog` },
+            { '@type': 'ListItem', position: 3, name: seo.clip(title, 110), item: canonical },
+          ],
+        },
+      ],
     },
   });
   return rawHtml(ctx, html);

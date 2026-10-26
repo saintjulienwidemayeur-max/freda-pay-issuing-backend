@@ -1,14 +1,10 @@
 'use strict';
 const supabase = require('../lib/supabase');
 const { randomHex } = require('../utils/ids');
+const seo = require('../utils/seo');
 
 function slugify(title) {
-  return String(title)
-    .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || `post-${randomHex(4)}`;
+  return seo.slugFrom(title, 60) || `post-${randomHex(4)}`;
 }
 
 async function uniqueSlug(base) {
@@ -64,7 +60,7 @@ async function create(ctx) {
   const row = await supabase.insert('blog_posts', {
     id: `blog_${randomHex(8)}`,
     slug,
-    title: b.title,
+    title: seo.cleanTitle(b.title),
     excerpt: b.excerpt || null,
     cover_image_url: cover,
     content_markdown: b.content_markdown,
@@ -82,7 +78,7 @@ async function update(ctx) {
   if (!existing) throw httpError(404, 'NOT_FOUND', 'Article introuvable.');
   const b = ctx.body || {};
   const patch = { updated_at: new Date().toISOString() };
-  if (b.title != null) patch.title = cleanString(b.title, 200, 'title');
+  if (b.title != null) patch.title = seo.cleanTitle(cleanString(b.title, 200, 'title'));
   if (b.excerpt != null) patch.excerpt = cleanString(b.excerpt, 500, 'excerpt');
   if (b.cover_image_url != null) patch.cover_image_url = cleanCover(b.cover_image_url);
   if (b.content_markdown != null) patch.content_markdown = cleanString(b.content_markdown, 200000, 'content_markdown');
@@ -90,6 +86,11 @@ async function update(ctx) {
   if (Array.isArray(b.tags)) patch.tags = b.tags.filter((t) => typeof t === 'string' && t.trim()).slice(0, 10);
   if (b.slug && typeof b.slug === 'string' && b.slug !== existing.slug) patch.slug = await uniqueSlug(slugify(b.slug));
   const [updated] = await supabase.update('blog_posts', { id: existing.id }, patch);
+  if (patch.slug && patch.slug !== existing.slug && existing.status === 'published') {
+    // The old address keeps working: Google and the sites that link to it are sent (301) to the new one.
+    await supabase.insert('blog_slug_redirects', { old_slug: existing.slug, post_id: existing.id }).catch(() => {});
+    await supabase.delete('blog_slug_redirects', { old_slug: patch.slug }).catch(() => {});
+  }
   return { status: 200, body: { post: toAdminPublic(updated) } };
 }
 

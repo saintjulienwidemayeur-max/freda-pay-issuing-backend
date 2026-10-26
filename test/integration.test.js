@@ -3738,7 +3738,7 @@ test('sitemap.xml lists every public page, never a private one, and is valid XML
   const siteUrl = require('../src/services/siteUrl');
   const { PAGES } = require('../src/services/sitemapPages');
   const xml = await sitemapXml();
-  assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9" xmlns:image="http:\/\/www\.google\.com\/schemas\/sitemap-image\/1\.1">/);
+  assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9" xmlns:image="http:\/\/www\.google\.com\/schemas\/sitemap-image\/1\.1" xmlns:xhtml="http:\/\/www\.w3\.org\/1999\/xhtml">/);
   const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
   for (const p of PAGES) assert.ok(locs.includes(`${siteUrl.get()}${p.path}`), `missing ${p.path}`);
   assert.ok(locs.includes(`${siteUrl.get()}/blog`));
@@ -4293,7 +4293,7 @@ test('admin overview counts Live bank withdrawals waiting for the team', async (
 /* ===== Google "Image metadata": every image in the blog's structured data names its creator, credit and copyright ===== */
 
 function jsonLdOf(html) {
-  return [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => JSON.parse(m[1]));
+  return [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => JSON.parse(m[1])).flatMap((d) => d['@graph'] || [d]);
 }
 function imageObjects(node, out = []) {
   if (Array.isArray(node)) node.forEach((n) => imageObjects(n, out));
@@ -6628,4 +6628,35 @@ test('business cards paused: refused before any debit, individual cards unaffect
     assert.match(r.data.error.message, /temporairement suspendue/);
     assert.equal((await f2Balance(token)).master_wallet.available, before);
   } finally { config.businessCardsPaused = false; }
+});
+
+test('seo: slugs end on a whole word, "# " is removed from titles, old blog addresses redirect (301), titles and metas are short', async () => {
+  const seo = require('../src/utils/seo');
+  const longTitle = 'Top 10 des meilleures solutions pour accepter des paiements en ligne en Haïti en 2026 comparatif complet';
+  const slug = seo.slugFrom(longTitle, 60);
+  assert.ok(slug.length <= 60 && slug.endsWith('2026') === false || slug.length <= 60);
+  assert.ok(!/-$/.test(slug) && longTitle.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').startsWith(slug));
+  assert.equal(seo.cleanTitle('# Top 10 des solutions'), 'Top 10 des solutions');
+  assert.ok(seo.seoTitle(longTitle).length <= 60);
+  assert.equal(seo.seoTitle('Court titre'), 'Court titre | Freda Pay Issuing');
+
+  const { token } = await adminLogin('owner');
+  const created = await api('POST', '/admin/blog', { token, body: { title: '# Article à renommer', content_markdown: 'Contenu.', excerpt: 'Résumé' } });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.post.title, 'Article à renommer');
+  const id = created.data.post.id;
+  const oldSlug = created.data.post.slug;
+  await api('POST', `/admin/blog/${id}/publish`, { token });
+  const renamed = await api('PUT', `/admin/blog/${id}`, { token, body: { slug: 'nouveau-slug-court' } });
+  assert.equal(renamed.data.post.slug, 'nouveau-slug-court');
+  const moved = await fetch(`http://localhost:${APP_PORT}/blog/${oldSlug}`, { redirect: 'manual' });
+  assert.equal(moved.status, 301);
+  assert.match(moved.headers.get('location'), /\/blog\/nouveau-slug-court$/);
+  const page = await (await fetch(`http://localhost:${APP_PORT}/blog/nouveau-slug-court`)).text();
+  assert.match(page, /<title>Article à renommer \| Freda Pay Issuing<\/title>/);
+  assert.match(page, /BreadcrumbList/);
+  assert.match(page, /Ressources liées/);
+  const sm = await (await fetch(`http://localhost:${APP_PORT}/sitemap.xml`)).text();
+  assert.match(sm, /xmlns:xhtml/);
+  assert.match(sm, /hreflang="en" href="[^"]*\/en\/card-payments-haiti"/);
 });

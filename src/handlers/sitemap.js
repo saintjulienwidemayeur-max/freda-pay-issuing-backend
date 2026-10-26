@@ -6,9 +6,10 @@ const { PAGES } = require('../services/sitemapPages');
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 const day = (d) => new Date(d).toISOString().slice(0, 10);
 
-function url(loc, { lastmod, changefreq, priority, images }) {
+function url(loc, { lastmod, changefreq, priority, images, alternates }) {
+  const alts = (alternates || []).map((a) => `    <xhtml:link rel="alternate" hreflang="${a.lang}" href="${esc(a.href)}"/>\n`).join('');
   const imgs = (images || []).map((i) => `    <image:image>\n      <image:loc>${esc(i)}</image:loc>\n    </image:image>\n`).join('');
-  return `  <url>\n    <loc>${esc(loc)}</loc>\n${lastmod ? `    <lastmod>${lastmod}</lastmod>\n` : ''}${changefreq ? `    <changefreq>${changefreq}</changefreq>\n` : ''}${priority ? `    <priority>${priority}</priority>\n` : ''}${imgs}  </url>`;
+  return `  <url>\n    <loc>${esc(loc)}</loc>\n${lastmod ? `    <lastmod>${lastmod}</lastmod>\n` : ''}${changefreq ? `    <changefreq>${changefreq}</changefreq>\n` : ''}${priority ? `    <priority>${priority}</priority>\n` : ''}${alts}${imgs}  </url>`;
 }
 
 /**
@@ -22,13 +23,13 @@ async function sitemap(ctx) {
   const newest = posts.reduce((m, p) => Math.max(m, new Date(p.updated_at || p.published_at || 0).getTime()), 0);
 
   const entries = [];
-  for (const p of PAGES) entries.push(url(`${base}${p.path === '/' ? '/' : p.path}`, { lastmod: p.updated, changefreq: p.changefreq, priority: p.priority, images: (p.images || []).map((i) => `${base}${i}`) }));
+  for (const p of PAGES) entries.push(url(`${base}${p.path === '/' ? '/' : p.path}`, { lastmod: p.updated, changefreq: p.changefreq, priority: p.priority, images: (p.images || []).map((i) => `${base}${i}`), alternates: (p.alternates || []).map((a) => ({ lang: a.lang, href: `${base}${a.path}` })) }));
   entries.push(url(`${base}/blog`, { lastmod: newest ? day(newest) : undefined, changefreq: 'daily', priority: '0.7' }));
   for (const post of posts) {
     entries.push(url(`${base}/blog/${post.slug}`, { lastmod: day(post.updated_at || post.published_at || Date.now()), changefreq: 'monthly', priority: '0.6' }));
   }
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n${entries.join('\n')}\n</urlset>\n`;
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${entries.join('\n')}\n</urlset>\n`;
   ctx.res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=600' });
   ctx.res.end(xml);
 }
