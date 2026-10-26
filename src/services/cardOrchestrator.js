@@ -3,6 +3,7 @@ const config = require('../config');
 const supabase = require('../lib/supabase');
 const identityImage = require('./identityImage');
 const maplerad = require('./maplerad');
+const providerErrors = require('./providerErrors');
 const ledger = require('./ledger');
 const pricing = require('./pricing');
 const masterWallet = require('./masterWallet');
@@ -583,7 +584,7 @@ async function adjustCardBalance(cardId, delta, extra) {
 /**
  * Called by the webhook handler when Maplerad confirms (or fails) card creation.
  */
-async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, maskedPan, holderName, status, currency, webhookMode }) {
+async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, maskedPan, holderName, status, currency, webhookMode, providerReason }) {
   const card = await supabase.selectOne('cards', { maplerad_reference: mapleradReference });
   if (!card) {
     // eslint-disable-next-line no-console
@@ -638,7 +639,11 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
   // Creation failed on Maplerad's side: refund whatever Master Wallet amount we debited
   // (the preload amount AND the creation fee, since the card never came into existence).
   // Only the delivery that wins the pending -> failed claim refunds: a re-delivered or duplicated failure event changes nothing.
-  if (!(await markCardFailed(card.id, 'La création de la carte a échoué. Les montants débités ont été remboursés.'))) {
+  // The merchant sees the translated reason when the partner's message is a known one (identity, tier, country...); anything
+  // else stays a generic sentence, and the raw text goes to the admin "Erreurs cartes" page only.
+  const knownReason = providerReason ? maplerad.translateKnownMessage(providerReason) : null;
+  const failureReason = `La création de la carte a échoué${knownReason ? ` : ${knownReason.replace(/\.$/, '')}` : ''}. Les montants débités ont été remboursés.`;
+  if (!(await markCardFailed(card.id, failureReason))) {
     return supabase.selectOne('cards', { id: card.id });
   }
   const refundAmount = fromCents(card.initial_amount || 0) + Number(card.creation_fee || 0);
@@ -647,8 +652,11 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
   }
   webhookDispatcher.dispatch(card.merchant_id, 'card.failed', {
     id: card.id, reference: card.own_reference, kind: card.kind, brand: card.brand,
-    failure_reason: 'La création de la carte a échoué. Les montants débités ont été remboursés.',
+    failure_reason: failureReason,
   });
+  if (providerReason) {
+    providerErrors.record({ mode: card.mode, merchant_id: card.merchant_id, route: 'webhook issuing.created.failed', method: 'WEBHOOK', path: mapleradReference, message: providerReason, shown_to_merchant: failureReason }).catch(() => {});
+  }
   return supabase.selectOne('cards', { id: card.id });
 }
 
