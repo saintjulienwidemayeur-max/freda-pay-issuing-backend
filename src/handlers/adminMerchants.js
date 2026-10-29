@@ -9,11 +9,12 @@ const adminStats = require('../services/adminStats');
 
 /** Both balances of one merchant for one mode (live = real money, sandbox = play money), fetched in parallel. */
 async function balancesFor(merchantId, mode) {
-  const [gateway, masterWallet] = await Promise.all([
+  const [gateway, gatewayUsd, masterWallet] = await Promise.all([
     ledger.getBalance(merchantId, 'gateway', 'HTG', mode),
+    ledger.getBalance(merchantId, 'gateway', 'USD', mode), // card payments credit the Gateway in dollars
     ledger.getBalance(merchantId, 'master_wallet', 'USD', mode),
   ]);
-  return { gateway, master_wallet: masterWallet };
+  return { gateway, gateway_usd: gatewayUsd, master_wallet: masterWallet };
 }
 
 async function list(ctx) {
