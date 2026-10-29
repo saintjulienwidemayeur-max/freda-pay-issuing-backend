@@ -247,7 +247,10 @@ const MOBILE_MAX_AGE_MS = 3 * 24 * 3600 * 1000;
 const lastMobilePoll = new Map(); // payment id -> time of the last background read
 async function reconcilePendingMobile(limit) {
   const now = Date.now();
-  const rows = await supabase.select('payments', { status: 'pending', provider: supabase.isNull(), created_at: supabase.gt(new Date(now - MOBILE_MAX_AGE_MS).toISOString()) }, { order: 'created_at.desc', limit: limit || 40 });
+  // In the real database every MonCash/Natcash row has provider = 'plopplop' (column default); card payments have 'tranzak'.
+  // Filtering here instead of in the query keeps rows with an empty provider (older rows, tests) in too.
+  const all = await supabase.select('payments', { status: 'pending', created_at: supabase.gt(new Date(now - MOBILE_MAX_AGE_MS).toISOString()) }, { order: 'created_at.desc', limit: 300 });
+  const rows = all.filter((p) => p.provider !== 'tranzak').slice(0, limit || 40);
   let settled = 0;
   let checked = 0;
   for (const p of rows) {

@@ -6760,3 +6760,15 @@ test('payment diagnostic: lists pending MonCash/Natcash payments with what the p
   assert.equal(unknown.status, 404);
   assert.match(unknown.data.error.message, /n'a pas été enregistré chez nous/);
 });
+
+test('background reconciliation reads MonCash/Natcash rows that carry provider = plopplop (the real database default) and skips card rows', async () => {
+  const orchestrator = require('../src/services/paymentOrchestrator');
+  const live = await liveWithGateway('provdefault', 0);
+  const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, currency: 'HTG', method: 'natcash', reference: 'PROV-DEF-1' } });
+  const row = mockTables.payments.find((p) => p.id === pay.data.id);
+  row.provider = 'plopplop'; // what the production column default stores
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference }) });
+  const res = await orchestrator.reconcilePendingMobile(100);
+  assert.ok(res.settled >= 1);
+  assert.equal(mockTables.payments.find((p) => p.id === pay.data.id).status, 'succeeded');
+});
