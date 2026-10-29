@@ -6715,3 +6715,20 @@ test('a payment that stays pending with an unexpected partner answer leaves a re
   const seen = await providerErrors.list(10);
   assert.ok(seen.some((e) => /waiting_settlement/.test(e.message) && e.route === 'verify payment'));
 });
+
+test('admin can ask the payment partner about one payment and re-run its confirmation', async () => {
+  const { token } = await adminLogin('owner');
+  const live = await liveWithGateway('admcheck', 0);
+  const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, currency: 'HTG', method: 'natcash', reference: 'ADM-CHECK-1' } });
+  const row = mockTables.payments.find((p) => p.id === pay.data.id);
+  const first = await api('POST', '/admin/payments/check', { token, body: { payment: pay.data.id } });
+  assert.equal(first.status, 200);
+  assert.equal(first.data.payment.status, 'pending');
+  assert.equal(first.data.partner.answer.trans_status, 'no');
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference }) });
+  const settled = await api('POST', '/admin/payments/check', { token, body: { payment: 'ADM-CHECK-1', settle: true } });
+  assert.equal(settled.data.partner.answer.trans_status, 'ok');
+  assert.equal(settled.data.after.status, 'succeeded');
+  assert.equal((await api('POST', '/admin/payments/check', { token: (await adminLogin('editor')).token, body: { payment: 'x' } })).status, 403);
+  assert.equal((await api('POST', '/admin/payments/check', { token, body: { payment: 'nope' } })).status, 404);
+});

@@ -293,6 +293,7 @@ router.post('/admin/api-health/test-webhooks', adminSession.requireAdminSession,
 router.post('/admin/api-health/:merchantId/test-webhook', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.webhookTest));
 router.get('/admin/api-health/:merchantId/message', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.healthDraft));
 router.post('/admin/api-health/:merchantId/send', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.healthSend));
+router.post('/admin/payments/check', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.checkPayment));
 router.get('/admin/provider-errors', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.providerErrors));
 router.get('/admin/api-health', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.health));
 router.get('/admin/api-usage', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.usage));
