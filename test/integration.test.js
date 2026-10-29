@@ -6732,3 +6732,31 @@ test('admin can ask the payment partner about one payment and re-run its confirm
   assert.equal((await api('POST', '/admin/payments/check', { token: (await adminLogin('editor')).token, body: { payment: 'x' } })).status, 403);
   assert.equal((await api('POST', '/admin/payments/check', { token, body: { payment: 'nope' } })).status, 404);
 });
+
+test('payment diagnostic: lists pending MonCash/Natcash payments with what the partner answered, flags the odd ones, and the lookup accepts partner ids', async () => {
+  const orchestrator = require('../src/services/paymentOrchestrator');
+  const plopplop = require('../src/services/plopplop');
+  const { token } = await adminLogin('owner');
+  const live = await liveWithGateway('diagpay', 0);
+  const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 700, currency: 'HTG', method: 'natcash', reference: 'DIAG-PAY-1' } });
+  const row = mockTables.payments.find((p) => p.id === pay.data.id);
+  row.created_at = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+  const original = plopplop.verifyPayment;
+  plopplop.verifyPayment = async () => ({ httpStatus: 404, data: { status: false, message: 'Transaction introuvable.' } });
+  try { await orchestrator.reconcilePendingMobile(50); } finally { plopplop.verifyPayment = original; }
+  const diag = await api('GET', '/admin/payments/diagnostic', { token });
+  assert.equal(diag.status, 200);
+  assert.ok(diag.data.background.runs >= 1);
+  const item = diag.data.items.find((i) => i.id === row.id);
+  assert.ok(item, 'listed');
+  assert.equal(item.kind, 'not_found');
+  assert.equal(item.level, 'bad');
+  assert.match(item.label, /Introuvable chez le partenaire/);
+  // The lookup finds the payment from the partner's transaction id and from part of its reference.
+  if (row.plopplop_transaction_id) assert.equal((await api('POST', '/admin/payments/check', { token, body: { payment: row.plopplop_transaction_id } })).data.payment.id, row.id);
+  assert.equal((await api('POST', '/admin/payments/check', { token, body: { payment: 'DIAG-PAY' } })).data.payment.id, row.id);
+  assert.equal((await api('GET', '/admin/payments/diagnostic', { token: (await adminLogin('editor')).token })).status, 403);
+  const unknown = await api('POST', '/admin/payments/check', { token, body: { payment: 'zzz-not-here-99' } });
+  assert.equal(unknown.status, 404);
+  assert.match(unknown.data.error.message, /n'a pas été enregistré chez nous/);
+});

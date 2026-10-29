@@ -199,8 +199,15 @@ async function checkPayment(ctx) {
   if (!q) throw httpError(400, 'MISSING_FIELDS', 'payment est requis (identifiant pay_..., référence du marchand ou référence du partenaire).');
   let row = await supabase.selectOne('payments', { id: q });
   if (!row) row = await supabase.selectOne('payments', { plopplop_reference: q });
+  if (!row) row = await supabase.selectOne('payments', { plopplop_transaction_id: q });
   if (!row) row = (await supabase.select('payments', { own_reference: q }, { order: 'created_at.desc', limit: 1 }))[0];
-  if (!row) throw httpError(404, 'NOT_FOUND', 'Paiement introuvable.');
+  if (!row) {
+    // Last resort: the text may be only part of an identifier (or the partner's reference with a prefix), so look through the recent payments.
+    const needle = q.toLowerCase();
+    const recent = await supabase.select('payments', {}, { order: 'created_at.desc', limit: 1000 });
+    row = recent.find((p) => [p.id, p.own_reference, p.plopplop_reference, p.plopplop_transaction_id].some((v) => v && (String(v).toLowerCase().includes(needle) || needle.includes(String(v).toLowerCase())))) || null;
+  }
+  if (!row) throw httpError(404, 'NOT_FOUND', "Aucun paiement de la plateforme ne correspond à cet identifiant. S'il apparaît chez le partenaire mais pas ici, le paiement n'a pas été enregistré chez nous (création interrompue) : notez le montant, l'heure et le numéro, et créditez le marchand manuellement après vérification.");
   const out = { payment: { id: row.id, merchant_id: row.merchant_id, own_reference: row.own_reference, method: row.method, amount: Number(row.amount), currency: row.currency, status: row.status, mode: row.mode, provider: row.provider || 'plopplop', partner_reference: row.plopplop_reference, created_at: row.created_at, updated_at: row.updated_at } };
   if (row.provider === 'tranzak') {
     out.partner = { note: 'Paiement par carte : le partenaire de cartes est relu par la réconciliation automatique.' };
@@ -215,8 +222,16 @@ async function checkPayment(ctx) {
   return { status: 200, body: out };
 }
 
+async function paymentDiagnostic() {
+  const snap = await require('../services/paymentHealth').snapshot();
+  const ids = [...new Set(snap.items.map((i) => i.merchant_id).filter(Boolean))];
+  const names = ids.length ? await namesFor(ids) : {};
+  snap.items = snap.items.map((i) => Object.assign({}, i, { merchant_name: names[i.merchant_id] ? (names[i.merchant_id].business_name || names[i.merchant_id].email) : null }));
+  return { status: 200, body: snap };
+}
+
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment, paymentDiagnostic };
