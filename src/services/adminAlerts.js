@@ -53,6 +53,20 @@ function apiAbuse({ merchantId, merchantName, limited, requests, errors, topCode
   });
 }
 
+/** A MonCash / Natcash payment has been pending for a while and the partner's answer is not the normal "waiting for the customer". */
+function paymentStuck({ payment, heard, ageMin, label }) {
+  return alert({
+    key: `payment-stuck:${payment.id}`, throttleMs: 6 * 3600 * 1000, tone: 'warning',
+    subject: `Alerte paiement : ${payment.method} en attente depuis ${ageMin} min`,
+    eyebrow: 'Alerte paiement', heading: 'Un paiement reste en attente',
+    paragraphs: [
+      `Le paiement **${payment.id}** (${payment.method}, ${payment.amount} ${payment.currency}, ${payment.mode === 'live' ? 'Live' : 'Sandbox'}) est en attente depuis **${ageMin} minutes**.`,
+      `Ce que le partenaire répond : **${label}**${heard && heard.message ? ` (« ${String(heard.message).slice(0, 160)} »)` : ''}${heard && heard.trans_status ? `, statut « ${heard.trans_status} »` : ''}.`,
+      'Ouvrez le panneau admin, rubrique « Erreurs cartes », bloc « Diagnostic des paiements » : vous pouvez vérifier ce paiement et relancer sa confirmation.',
+    ],
+  });
+}
+
 /** A merchant wrote in the chat. One alert per merchant per 10 minutes, with the message. */
 function chatMessage({ merchantId, merchantName, body, hasPhoto }) {
   const excerpt = String(body || '').slice(0, 300);
@@ -87,4 +101,4 @@ function start() {
 
 function reset() { lastSent.clear(); }
 
-module.exports = { alert, apiAbuse, chatMessage, watchApi, start, reset };
+module.exports = { alert, apiAbuse, chatMessage, watchApi, start, reset, paymentStuck };

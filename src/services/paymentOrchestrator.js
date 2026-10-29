@@ -7,6 +7,7 @@ const ledger = require('./ledger');
 const pricing = require('./pricing');
 const webhookDispatcher = require('./webhookDispatcher');
 const providerErrors = require('./providerErrors');
+const paymentHealth = require('./paymentHealth');
 const revenue = require('./revenue');
 const { planKeyFor } = require('./plans');
 const { randomHex } = require('../utils/ids');
@@ -210,6 +211,13 @@ async function reconcilePendingCards(limit) {
   return { checked: rows.length, settled };
 }
 
+/** A payment that stays pending for 30 minutes with an odd partner answer: one email to the team (once per payment per 6 hours). */
+function alertIfStuck(payment, heard) {
+  const age = Date.now() - new Date(payment.created_at || Date.now()).getTime();
+  if (age < 30 * 60 * 1000) return;
+  require('./adminAlerts').paymentStuck({ payment, heard, ageMin: Math.round(age / 60000), label: paymentHealth.LABEL[heard.kind] }).catch(() => {});
+}
+
 /**
  * A payment that stays pending although the customer paid usually means the partner answers with something we do not
  * expect. Once per payment per 30 minutes (and only after 10 minutes) the raw answer is saved for the admin
@@ -254,9 +262,11 @@ async function reconcilePendingMobile(limit) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`Mobile payment reconciliation failed for ${p.id}:`, err.message);
+      paymentHealth.recordRun({ checked: 0, settled: 0, error: err.message });
     }
     await new Promise((r) => setTimeout(r, 400)); // stay gentle with the partner
   }
+  paymentHealth.recordRun({ checked, settled });
   return { checked, settled };
 }
 
@@ -269,6 +279,8 @@ async function refreshStatus(merchantId, payment) {
   if (payment.provider === 'tranzak') return refreshCardStatus(payment);
 
   const res = await plopplop.verifyPayment({ refferenceId: payment.plopplop_reference });
+  const heard = paymentHealth.note(payment, res);
+  if (heard.kind === 'not_found' || heard.kind === 'unexpected' || heard.kind === 'error') alertIfStuck(payment, heard);
   if (!res.data || !res.data.status) {
     // provider hiccup - leave as pending, caller can retry. Old pending payments leave a trace for the admin (once in a while).
     noteUnexpectedVerify(payment, res);
