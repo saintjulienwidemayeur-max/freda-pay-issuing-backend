@@ -6695,3 +6695,23 @@ test('admin merchant list and detail show the Gateway balance in dollars too (ca
   const list = await api('GET', '/admin/merchants', { token });
   assert.equal(list.data.merchants.find((m) => m.id === live.merchantId).balances.gateway_usd, 12.5);
 });
+
+test('a payment that stays pending with an unexpected partner answer leaves a readable trace for the admin', async () => {
+  const orchestrator = require('../src/services/paymentOrchestrator');
+  const providerErrors = require('../src/services/providerErrors');
+  const plopplop = require('../src/services/plopplop');
+  const live = await liveWithGateway('verifynote', 0);
+  const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 500, currency: 'HTG', method: 'natcash', reference: 'VERIFY-NOTE-1' } });
+  const row = mockTables.payments.find((p) => p.id === pay.data.id);
+  row.created_at = new Date(Date.now() - 3600 * 1000).toISOString();
+  providerErrors.reset();
+  const original = plopplop.verifyPayment;
+  plopplop.verifyPayment = async () => ({ httpStatus: 200, data: { status: true, trans_status: 'waiting_settlement', message: 'success', montant: 500, method: 'natcash' } });
+  try {
+    const after = await orchestrator.refreshStatus(live.merchantId, row);
+    assert.equal(after.status, 'pending');
+  } finally { plopplop.verifyPayment = original; }
+  await new Promise((r) => setTimeout(r, 150)); // the trace is saved without making the caller wait
+  const seen = await providerErrors.list(10);
+  assert.ok(seen.some((e) => /waiting_settlement/.test(e.message) && e.route === 'verify payment'));
+});

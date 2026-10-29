@@ -6,6 +6,7 @@ const tranzak = require('./tranzak');
 const ledger = require('./ledger');
 const pricing = require('./pricing');
 const webhookDispatcher = require('./webhookDispatcher');
+const providerErrors = require('./providerErrors');
 const revenue = require('./revenue');
 const { planKeyFor } = require('./plans');
 const { randomHex } = require('../utils/ids');
@@ -210,6 +211,24 @@ async function reconcilePendingCards(limit) {
 }
 
 /**
+ * A payment that stays pending although the customer paid usually means the partner answers with something we do not
+ * expect. Once per payment per 30 minutes (and only after 10 minutes) the raw answer is saved for the admin
+ * ("Erreurs cartes" page) and printed in the server log, so the cause can be read instead of guessed.
+ */
+const lastVerifyNote = new Map();
+function noteUnexpectedVerify(payment, res) {
+  const age = Date.now() - new Date(payment.created_at || Date.now()).getTime();
+  if (age < 10 * 60 * 1000) return;
+  if (Date.now() - (lastVerifyNote.get(payment.id) || 0) < 30 * 60 * 1000) return;
+  lastVerifyNote.set(payment.id, Date.now());
+  const d = res && res.data;
+  const shown = JSON.stringify(d == null ? { http_status: res && res.httpStatus, body: null } : { status: d.status, trans_status: d.trans_status, message: d.message, montant: d.montant, method: d.method }).slice(0, 500);
+  // eslint-disable-next-line no-console
+  console.warn(`Pending ${payment.method} payment ${payment.id} (${payment.mode}, ${Math.round(age / 60000)} min old): the partner answers ${shown}`);
+  providerErrors.record({ mode: payment.mode, merchant_id: payment.merchant_id, route: 'verify payment', method: 'POST', path: '/api/paiement-verify', http_status: (res && res.httpStatus) || null, message: shown, request_keys: ['client_id', 'refference_id'], shown_to_merchant: 'pending' }).catch(() => {});
+}
+
+/**
  * Background safety net for MonCash / Natcash payments. Their confirmation was only ever read when somebody asked for the
  * payment (the merchant polling, or the payment page open), so a merchant who waits for the webhook saw "pending" forever.
  * This re-reads every recent pending payment: fresh ones on each pass, older ones every few minutes, and nothing after 3 days.
@@ -250,7 +269,11 @@ async function refreshStatus(merchantId, payment) {
   if (payment.provider === 'tranzak') return refreshCardStatus(payment);
 
   const res = await plopplop.verifyPayment({ refferenceId: payment.plopplop_reference });
-  if (!res.data || !res.data.status) return payment; // provider hiccup - leave as pending, caller can retry
+  if (!res.data || !res.data.status) {
+    // provider hiccup - leave as pending, caller can retry. Old pending payments leave a trace for the admin (once in a while).
+    noteUnexpectedVerify(payment, res);
+    return payment;
+  }
 
   if (res.data.trans_status === 'ok') {
     const merchant = await supabase.selectOne('merchants', { id: merchantId });
@@ -287,6 +310,7 @@ async function refreshStatus(merchantId, payment) {
     return updated;
   }
 
+  if (!['no', 'pending', ''].includes(String(res.data.trans_status == null ? '' : res.data.trans_status).trim().toLowerCase())) noteUnexpectedVerify(payment, res);
   return payment; // still "no" (pending)
 }
 
