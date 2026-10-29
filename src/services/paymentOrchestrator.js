@@ -210,6 +210,38 @@ async function reconcilePendingCards(limit) {
 }
 
 /**
+ * Background safety net for MonCash / Natcash payments. Their confirmation was only ever read when somebody asked for the
+ * payment (the merchant polling, or the payment page open), so a merchant who waits for the webhook saw "pending" forever.
+ * This re-reads every recent pending payment: fresh ones on each pass, older ones every few minutes, and nothing after 3 days.
+ */
+const MOBILE_FRESH_MS = 15 * 60 * 1000;
+const MOBILE_OLD_GAP_MS = 10 * 60 * 1000;
+const MOBILE_MAX_AGE_MS = 3 * 24 * 3600 * 1000;
+const lastMobilePoll = new Map(); // payment id -> time of the last background read
+async function reconcilePendingMobile(limit) {
+  const now = Date.now();
+  const rows = await supabase.select('payments', { status: 'pending', provider: supabase.isNull(), created_at: supabase.gt(new Date(now - MOBILE_MAX_AGE_MS).toISOString()) }, { order: 'created_at.desc', limit: limit || 40 });
+  let settled = 0;
+  let checked = 0;
+  for (const p of rows) {
+    if (!p.plopplop_reference) continue;
+    const age = now - new Date(p.created_at).getTime();
+    if (age > MOBILE_FRESH_MS && now - (lastMobilePoll.get(p.id) || 0) < MOBILE_OLD_GAP_MS) continue;
+    lastMobilePoll.set(p.id, now);
+    checked += 1;
+    try {
+      const after = await refreshStatus(p.merchant_id, p);
+      if (after && after.status !== 'pending') { settled += 1; lastMobilePoll.delete(p.id); }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`Mobile payment reconciliation failed for ${p.id}:`, err.message);
+    }
+    await new Promise((r) => setTimeout(r, 400)); // stay gentle with the partner
+  }
+  return { checked, settled };
+}
+
+/**
  * Poll PlopPlop for the latest status. If the payment just transitioned to
  * confirmed ("ok"), credit the merchant's gateway ledger exactly once.
  */
@@ -277,4 +309,4 @@ async function list(merchantId, limit, offset, mode, extra) {
   );
 }
 
-module.exports = { createPayment, refreshStatus, applyCardResult, reconcilePendingCards, getById, getByOwnReference, list, VALID_METHODS };
+module.exports = { createPayment, refreshStatus, applyCardResult, reconcilePendingCards, reconcilePendingMobile, getById, getByOwnReference, list, VALID_METHODS };

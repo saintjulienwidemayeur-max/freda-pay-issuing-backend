@@ -6660,3 +6660,27 @@ test('seo: slugs end on a whole word, "# " is removed from titles, old blog addr
   assert.match(sm, /xmlns:xhtml/);
   assert.match(sm, /hreflang="en" href="[^"]*\/en\/card-payments-haiti"/);
 });
+
+test('MonCash / Natcash payments and auto top-ups are settled in the background, without anybody polling', async () => {
+  const orchestrator = require('../src/services/paymentOrchestrator');
+  const topups = require('../src/services/walletTopupOrchestrator');
+  const live = await liveWithGateway('mobilerecon', 0);
+  const before = await gw(live.token);
+  const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, currency: 'HTG', method: 'moncash', reference: 'BG-RECON-1' } });
+  assert.equal(pay.status, 201);
+  const row = mockTables.payments.find((p) => p.id === pay.data.id);
+  // Nothing confirmed yet: the pass leaves it pending.
+  await orchestrator.reconcilePendingMobile(50);
+  assert.equal(mockTables.payments.find((p) => p.id === pay.data.id).status, 'pending');
+  // The customer pays on the partner's side; nobody asks for the payment.
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference }) });
+  const res = await orchestrator.reconcilePendingMobile(50);
+  assert.ok(res.settled >= 1);
+  assert.equal(mockTables.payments.find((p) => p.id === pay.data.id).status, 'succeeded');
+  assert.equal((await gw(live.token)) - before, 930);
+  // Once settled it is never credited twice.
+  await orchestrator.reconcilePendingMobile(50);
+  assert.equal((await gw(live.token)) - before, 930);
+  assert.equal(typeof topups.reconcilePendingAutoTopups, 'function');
+  assert.deepEqual(await topups.reconcilePendingAutoTopups(10).then((r) => typeof r.settled), 'number');
+});
