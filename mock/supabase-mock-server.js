@@ -46,6 +46,7 @@ const tables = {
   contract_signers: [],
   chat_messages: [],
   api_usage_daily: [],
+  api_call_log: [],
   api_blocks: [],
   provider_errors: [],
 };

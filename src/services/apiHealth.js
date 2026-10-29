@@ -28,6 +28,13 @@ const EXPLAIN = {
   MIN_BALANCE_FOR_WITHDRAWAL: 'Retrait MonCash/Natcash demandé avec un solde inférieur au minimum requis.',
   BANK_ACCOUNT_CURRENCY: 'Le compte bancaire choisi ne correspond pas à la devise du retrait.',
   INTERNAL_ERROR: 'Erreur interne chez nous : à vérifier dans les logs du serveur.',
+  PAYLOAD_TOO_LARGE: "Le corps de la requête dépasse la taille autorisée (1 Mo en général, 3 Mo pour la création d'un titulaire).",
+  INVALID_IDENTITY_IMAGE: "L'image de la pièce d'identité n'a pas pu être lue (format, lien inaccessible ou trop lourde).",
+  CARD_SERVICE_ERROR: 'Le fournisseur de cartes a refusé l\'opération : le détail exact est dans « Erreurs cartes ».',
+  CARD_PROVIDER_AUTH: 'Le fournisseur de cartes refuse nos propres accès : ce n\'est pas la faute du marchand.',
+  BUSINESS_CARDS_PAUSED: 'La création de cartes entreprise est suspendue par le fournisseur : aucun débit, rien à corriger côté marchand.',
+  BELOW_MINIMUM_BALANCE: 'L\'opération ferait passer le Master Wallet sous la réserve minimale de 50 $.',
+  PROVIDER_ERROR: 'Le service de paiement partenaire a répondu une erreur ou ne répond pas : voir « Diagnostic des paiements ».',
   ERROR: 'Erreur non détaillée.',
 };
 /** How the merchant fixes it. */
@@ -46,6 +53,12 @@ const FIX = {
   NOT_FOUND: "Vérifiez l'adresse appelée et l'identifiant utilisé (documentation, rubrique API).",
   INSUFFICIENT_BALANCE: 'Rechargez votre solde avant de relancer ces opérations.',
   API_BLOCKED: "Écrivez-nous via le chat pour expliquer ce qui s'est passé et demander la levée du blocage.",
+  PAYLOAD_TOO_LARGE: "Réduisez la taille des images envoyées (JPEG, 1600 px de large au maximum, environ 700 Ko) ou envoyez un lien https direct vers l'image.",
+  INVALID_IDENTITY_IMAGE: "Envoyez l'image en Base64 (data:image/jpeg;base64,...) ou un lien https direct vers un fichier PNG, JPEG ou WebP de moins de 4 Mo.",
+  CARD_SERVICE_ERROR: "Relisez le message : si la pièce d'identité ou une information du titulaire est en cause, corrigez-la et recréez le titulaire. Sinon, réessayez plus tard.",
+  BUSINESS_CARDS_PAUSED: 'Utilisez les cartes individuelles en attendant la réouverture des cartes entreprise.',
+  BELOW_MINIMUM_BALANCE: 'Rechargez le Master Wallet : 50 $ restent toujours réservés.',
+  PROVIDER_ERROR: 'Réessayez dans un instant ; si cela continue, écrivez-nous via le chat.',
 };
 const fixFor = (code) => FIX[code] || null;
 const explain = (code) => EXPLAIN[code] || 'Erreur renvoyée par l\'API : voir la documentation.';

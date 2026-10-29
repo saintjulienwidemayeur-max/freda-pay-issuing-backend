@@ -133,6 +133,9 @@ function createHandler(router, options) {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Cache-Control', 'no-store');
+    // A short id the merchant can quote when they write to us (also saved in the admin API journal).
+    res.__requestId = 'req_' + require('crypto').randomBytes(6).toString('hex');
+    res.setHeader('X-Request-Id', res.__requestId);
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -184,6 +187,7 @@ function createHandler(router, options) {
       }
     } catch (err) {
       res.__errorCode = err.code || (err.httpStatus ? 'ERROR' : 'INTERNAL_ERROR'); // for the admin API health view
+      res.__errorMessage = err.httpStatus ? err.message : 'Erreur interne.'; // for the admin API journal (what the merchant was told)
       if (err.providerInfo) require('./services/providerErrors').record(Object.assign({}, err.providerInfo, { merchant_id: ctx.merchantId || null, route: `${req.method} ${pathname}` })).catch(() => {}); // admin "Erreurs cartes" view
       const status = err.httpStatus || 500;
       // Any error without an explicit httpStatus is unexpected (a bug, not a
@@ -207,6 +211,13 @@ function createHandler(router, options) {
       onLog({ method: req.method, path: pathname, status: res.statusCode, ms: Date.now() - started });
       // The public API only: who calls it, and how often (admin "Trafic API" view). Never throws.
       if (pathname.startsWith('/v1/')) {
+        try {
+          // A body refused before authentication (too large, invalid JSON) has no merchant yet: find it from the key so the call is not lost.
+          if (!ctx.merchantId && res.statusCode >= 400 && /^Bearer\s+\S+/i.test(req.headers.authorization || '')) {
+            try { await require('./middleware/apiKey').requireApiKey(ctx); } catch (e) { /* unknown or blocked key: whatever was resolved stays */ }
+          }
+          require('./services/apiCallLog').record({ merchantId: ctx.merchantId || null, method: req.method, route: matched.route.path, path: pathname, status: res.statusCode, code: res.__errorCode || null, message: res.__errorMessage || null, ms: Date.now() - started, mode: ctx.apiKeyMode || null, requestId: res.__requestId });
+        } catch (e) { /* the journal must never break a request */ }
         try {
           apiTraffic.record({ merchantId: ctx.merchantId || null, route: `${req.method} ${matched.route.path}`, status: res.statusCode, code: res.__errorCode || null, ip: rateLimit.clientIp(req), mode: ctx.apiKeyMode || '' });
         } catch (e) { /* statistics must never break a request */ }
