@@ -53,7 +53,7 @@ const LABEL = {
 
 async function snapshot() {
   const since = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
-  const rows = await supabase.select('payments', { status: 'pending', provider: supabase.isNull(), created_at: supabase.gt(since) }, { order: 'created_at.desc', limit: 200 });
+  const rows = (await supabase.select('payments', { status: 'pending', created_at: supabase.gt(since) }, { order: 'created_at.desc', limit: 300 })).filter((p) => p.provider !== 'tranzak');
   const now = Date.now();
   const items = rows.filter((p) => p.plopplop_reference).map((p) => {
     const ageMin = Math.round((now - new Date(p.created_at).getTime()) / 60000);
