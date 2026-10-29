@@ -189,8 +189,34 @@ async function providerErrors() {
   return { status: 200, body: { errors: rows.map((r) => Object.assign({}, r, { merchant_name: r.merchant_id && names[r.merchant_id] ? (names[r.merchant_id].business_name || names[r.merchant_id].email) : null })) } };
 }
 
+/**
+ * Support tool: what does the payment partner say about ONE payment right now? Body: { payment: "pay_... | our reference | partner
+ * reference", settle: true|false }. Shows our row and the partner's raw answer; with settle=true the normal confirmation runs
+ * (credits the merchant once if the partner says the payment is done).
+ */
+async function checkPayment(ctx) {
+  const q = String((ctx.body && ctx.body.payment) || '').trim();
+  if (!q) throw httpError(400, 'MISSING_FIELDS', 'payment est requis (identifiant pay_..., référence du marchand ou référence du partenaire).');
+  let row = await supabase.selectOne('payments', { id: q });
+  if (!row) row = await supabase.selectOne('payments', { plopplop_reference: q });
+  if (!row) row = (await supabase.select('payments', { own_reference: q }, { order: 'created_at.desc', limit: 1 }))[0];
+  if (!row) throw httpError(404, 'NOT_FOUND', 'Paiement introuvable.');
+  const out = { payment: { id: row.id, merchant_id: row.merchant_id, own_reference: row.own_reference, method: row.method, amount: Number(row.amount), currency: row.currency, status: row.status, mode: row.mode, provider: row.provider || 'plopplop', partner_reference: row.plopplop_reference, created_at: row.created_at, updated_at: row.updated_at } };
+  if (row.provider === 'tranzak') {
+    out.partner = { note: 'Paiement par carte : le partenaire de cartes est relu par la réconciliation automatique.' };
+  } else {
+    const res = await require('../services/plopplop').verifyPayment({ refferenceId: row.plopplop_reference });
+    out.partner = { http_status: res.httpStatus || null, answer: res.data == null ? null : res.data };
+  }
+  if (ctx.body && ctx.body.settle === true && row.status === 'pending') {
+    const after = await require('../services/paymentOrchestrator').refreshStatus(row.merchant_id, row);
+    out.after = { status: after && after.status };
+  }
+  return { status: 200, body: out };
+}
+
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment };
