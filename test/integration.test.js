@@ -6772,3 +6772,35 @@ test('background reconciliation reads MonCash/Natcash rows that carry provider =
   assert.ok(res.settled >= 1);
   assert.equal(mockTables.payments.find((p) => p.id === pay.data.id).status, 'succeeded');
 });
+
+test('admin API journal: each /v1 call is listed per merchant, errors carry the message and the fix, an oversized body is still attributed, and bodies are never stored', async () => {
+  const apiCallLog = require('../src/services/apiCallLog');
+  const { token } = await adminLogin('owner');
+  const bad = await api('POST', '/v1/payments', { token: testApiKeySecret, body: { amount: 1000 } });
+  assert.equal(bad.status, 400);
+  assert.ok(await api('GET', '/v1/balance', { token: testApiKeySecret }));
+  const big = await fetch(`http://localhost:${APP_PORT}/v1/cards/holders`, { method: 'POST', headers: { Authorization: `Bearer ${testApiKeySecret}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ firstName: 'x'.repeat(4 * 1024 * 1024) }) });
+  assert.equal(big.status, 413);
+  assert.match(big.headers.get('x-request-id') || '', /^req_[a-f0-9]{12}$/);
+  await apiCallLog.flush();
+  const list = await api('GET', '/admin/api-calls?days=7', { token });
+  assert.equal(list.status, 200);
+  const me = list.data.merchants.find((m) => m.merchant_id === merchantId);
+  assert.ok(me && me.calls >= 3 && me.errors >= 2);
+  const detail = await api('GET', `/admin/api-calls/${merchantId}?errors=1`, { token });
+  assert.equal(detail.status, 200);
+  const missing = detail.data.calls.find((c) => c.code === 'MISSING_FIELDS');
+  assert.ok(missing, 'MISSING_FIELDS listed');
+  assert.match(missing.message, /requis/);
+  assert.ok(missing.fix && missing.explain);
+  assert.equal(missing.route, '/v1/payments');
+  const tooBig = detail.data.calls.find((c) => c.status === 413);
+  assert.ok(tooBig, 'oversized body attributed to the merchant from its key');
+  assert.equal(tooBig.code, 'PAYLOAD_TOO_LARGE');
+  assert.match(tooBig.fix, /Réduisez/);
+  // No body content anywhere in the journal.
+  assert.ok(!JSON.stringify(mockTables.api_call_log).includes('xxxxxxxxxx'));
+  const onlyBalance = await api('GET', `/admin/api-calls/${merchantId}?route=balance`, { token });
+  assert.ok(onlyBalance.data.calls.length >= 1 && onlyBalance.data.calls.every((c) => /balance/.test(c.route)));
+  assert.equal((await api('GET', '/admin/api-calls', { token: (await adminLogin('editor')).token })).status, 403);
+});

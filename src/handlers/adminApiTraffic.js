@@ -230,8 +230,49 @@ async function paymentDiagnostic() {
   return { status: 200, body: snap };
 }
 
+/** Admin "Journal API": the merchants with their calls and errors over the last days. */
+async function callMerchants(ctx) {
+  const days = Math.min(14, Math.max(1, parseInt(ctx.query && ctx.query.days, 10) || 7));
+  const list = await require('../services/apiCallLog').merchants(days);
+  const ids = list.map((m) => m.merchant_id);
+  const names = ids.length ? await namesFor(ids) : {};
+  const health = require('../services/apiHealth');
+  return {
+    status: 200,
+    body: {
+      days, retention_days: require('../services/apiCallLog').RETENTION_DAYS,
+      merchants: list.map((m) => Object.assign({}, m, {
+        business_name: names[m.merchant_id] ? names[m.merchant_id].business_name : null, email: names[m.merchant_id] ? names[m.merchant_id].email : null,
+        last_error: m.last_error ? Object.assign({}, m.last_error, { explain: health.explain(m.last_error.code), fix: health.fixFor(m.last_error.code) }) : null,
+      })),
+    },
+  };
+}
+
+/** The calls of ONE merchant, newest first; errors carry what the code means and how the merchant fixes it. */
+async function callsOfMerchant(ctx) {
+  const merchantId = ctx.params.merchantId;
+  const days = Math.min(14, Math.max(1, parseInt(ctx.query && ctx.query.days, 10) || 7));
+  const errorsOnly = ctx.query && ctx.query.errors === '1';
+  const route = ctx.query && ctx.query.route ? String(ctx.query.route) : '';
+  const health = require('../services/apiHealth');
+  let rows = await require('../services/apiCallLog').recent({ merchantId, sinceIso: new Date(Date.now() - days * 24 * 3600 * 1000).toISOString(), limit: 1500 });
+  if (errorsOnly) rows = rows.filter((r) => r.status >= 400);
+  if (route) rows = rows.filter((r) => String(r.route).includes(route) || String(r.path).includes(route));
+  const merchant = await supabase.selectOne('merchants', { id: merchantId });
+  return {
+    status: 200,
+    body: {
+      merchant: merchant ? { id: merchant.id, business_name: merchant.business_name, email: merchant.email } : { id: merchantId },
+      days,
+      total: rows.length,
+      calls: rows.slice(0, 300).map((r) => Object.assign({}, r, r.status >= 400 ? { explain: health.explain(r.code), fix: health.fixFor(r.code) } : {})),
+    },
+  };
+}
+
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment, paymentDiagnostic };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment, paymentDiagnostic, callMerchants, callsOfMerchant };
