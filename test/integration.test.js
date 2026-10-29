@@ -6684,3 +6684,14 @@ test('MonCash / Natcash payments and auto top-ups are settled in the background,
   assert.equal(typeof topups.reconcilePendingAutoTopups, 'function');
   assert.deepEqual(await topups.reconcilePendingAutoTopups(10).then((r) => typeof r.settled), 'number');
 });
+
+test('admin merchant list and detail show the Gateway balance in dollars too (card payments credit it)', async () => {
+  const { token } = await adminLogin('owner');
+  const live = await liveWithGateway('admgwusd', 0);
+  await require('../src/services/ledger').creditGateway(live.merchantId, 12.5, 'USD', `seed-usd-${Math.random()}`, null, 'live');
+  const detail = await api('GET', `/admin/merchants/${live.merchantId}`, { token });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.data.balances.gateway_usd, 12.5);
+  const list = await api('GET', '/admin/merchants', { token });
+  assert.equal(list.data.merchants.find((m) => m.id === live.merchantId).balances.gateway_usd, 12.5);
+});
