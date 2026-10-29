@@ -92,6 +92,31 @@ async function refreshAutoTopup(merchantId, topup) {
   return topup;
 }
 
+/** Same safety net as for payments: pending MonCash/Natcash top-ups are re-read in the background (see reconcilePendingMobile). */
+const lastTopupPoll = new Map();
+async function reconcilePendingAutoTopups(limit) {
+  const now = Date.now();
+  const rows = await supabase.select('wallet_topups', { status: 'pending', plopplop_reference: supabase.notNull(), created_at: supabase.gt(new Date(now - 3 * 24 * 3600 * 1000).toISOString()) }, { order: 'created_at.desc', limit: limit || 40 });
+  let settled = 0;
+  let checked = 0;
+  for (const t of rows) {
+    if (!AUTO_METHODS.includes(t.method)) continue;
+    const age = now - new Date(t.created_at).getTime();
+    if (age > 15 * 60 * 1000 && now - (lastTopupPoll.get(t.id) || 0) < 10 * 60 * 1000) continue;
+    lastTopupPoll.set(t.id, now);
+    checked += 1;
+    try {
+      const after = await refreshAutoTopup(t.merchant_id, t);
+      if (after && after.status !== 'pending') { settled += 1; lastTopupPoll.delete(t.id); }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`Top-up reconciliation failed for ${t.id}:`, err.message);
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return { checked, settled };
+}
+
 /**
  * Zelle / bank-transfer path: the merchant claims they sent money externally
  * and attaches a receipt. This NEVER auto-credits the wallet - it is
@@ -149,6 +174,7 @@ module.exports = {
   computeAutoConversion,
   createAutoTopup,
   refreshAutoTopup,
+  reconcilePendingAutoTopups,
   createManualTopup,
   getById,
   getByOwnReference,

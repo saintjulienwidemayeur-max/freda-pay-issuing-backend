@@ -419,6 +419,19 @@ if (require.main === module) {
       setInterval(() => {
         require('./services/paymentOrchestrator').reconcilePendingCards(20).catch((e) => console.error('Card reconciliation:', e.message));
       }, 5 * 60 * 1000).unref();
+      // MonCash / Natcash payments: nothing is pushed to us, so pending ones are re-read every minute (this is what makes
+      // the merchant's payment.succeeded webhook and the credited balance arrive without anybody polling).
+      let mobileBusy = false;
+      setInterval(() => {
+        if (mobileBusy) return;
+        mobileBusy = true;
+        Promise.all([
+          require('./services/paymentOrchestrator').reconcilePendingMobile(40),
+          require('./services/walletTopupOrchestrator').reconcilePendingAutoTopups(40),
+        ])
+          .catch((e) => console.error('Mobile payment reconciliation:', e.message))
+          .finally(() => { mobileBusy = false; });
+      }, 60 * 1000).unref();
     }
   });
 }
