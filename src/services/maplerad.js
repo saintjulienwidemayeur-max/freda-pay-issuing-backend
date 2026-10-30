@@ -407,7 +407,9 @@ function assertReadyForIssuance(mode) {
 
 /** Crypto: a stablecoin deposit address for one customer. offramp = true converts every deposit to USD in our business wallet. */
 async function createCryptoAddress(mode, { customerId, coin, chain, offramp }) {
-  const res = await request(mode, 'POST', '/crypto', { customer_id: customerId, coin, chain, offramp: offramp !== false });
+  const body = { customer_id: customerId, coin, chain };
+  if (offramp === true) body.offramp = true; // the partner's default is false (money stays in crypto)
+  const res = await request(mode, 'POST', '/crypto', body);
   logRaw(mode, 'POST /crypto', res);
   return res;
 }
@@ -427,7 +429,9 @@ async function cryptoTransfer(mode, { amount, address, chain, coin, reference, r
 
 /** Crypto: a deposit address owned by the business itself (no customer, nothing to enroll). Deposits arrive in the business wallet. */
 async function createMerchantCryptoAddress(mode, { coin, chain, offramp }) {
-  const res = await request(mode, 'POST', '/merchant/crypto', { coin: String(coin).toLowerCase(), chain, offramp: offramp === true });
+  const body = { coin: String(coin).toLowerCase(), chain };
+  if (offramp === true) body.offramp = true;
+  const res = await request(mode, 'POST', '/merchant/crypto', body);
   logRaw(mode, 'POST /merchant/crypto', res);
   return res;
 }

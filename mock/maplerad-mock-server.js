@@ -24,6 +24,7 @@ const WEBHOOK_TARGET = process.env.MOCK_MAPLERAD_WEBHOOK_TARGET || 'http://local
 const customers = new Map(); // maplerad_customer_id -> record
 const cards = new Map(); // maplerad_card_id -> record
 
+const cryptoAddresses = []; // addresses generated through POST /crypto
 const behavior = {
   failNextCardCreation: false,
   softErrorNextCard: false,
@@ -109,13 +110,14 @@ async function handle(req, res) {
   if (url.pathname === '/__control/reset') {
     customers.clear();
     cards.clear();
+    cryptoAddresses.length = 0;
     calls.length = 0;
     behavior.failNextCardCreation = false;
     behavior.failCryptoCustomer = false;
     return send(res, 200, { ok: true });
   }
   if (url.pathname === '/__control/fail-crypto-customer') {
-    behavior.failCryptoCustomer = true;
+    behavior.failCryptoCustomer = url.searchParams.get('off') !== '1';
     return send(res, 200, { ok: true });
   }
   if (url.pathname === '/__control/fail-next-card') {
@@ -155,7 +157,13 @@ async function handle(req, res) {
     if (!holder || !(holder.tier >= 1)) return send(res, 400, { status: false, message: 'service is only available for Tier 1 customers' });
     if (!body.customer_id || !body.coin || !body.chain) return send(res, 400, { status: false, message: 'customer_id, coin and chain are required' });
     const id = randomId('cry');
-    return send(res, 200, { status: true, message: 'address generated', data: { id, address: `0xMOCK${id.replace(/[^a-z0-9]/gi, '')}${body.chain}`, chain: body.chain, coin: body.coin, offramp: body.offramp === true, active: true } });
+    const rec = { id, address: `0xMOCK${id.replace(/[^a-z0-9]/gi, '')}${body.chain}`, chain: body.chain, coin: String(body.coin).toLowerCase(), offramp: body.offramp === true, active: true, customer_id: body.customer_id };
+    cryptoAddresses.push(rec);
+    return send(res, 200, { status: true, message: 'address generated', data: { id: rec.id, address: rec.address, chain: rec.chain, coin: rec.coin, offramp: rec.offramp, active: true } });
+  }
+  if (url.pathname.startsWith('/crypto/wallets/') && req.method === 'GET') {
+    const cid = decodeURIComponent(url.pathname.split('/').pop());
+    return send(res, 200, { status: true, message: 'successfully fetched blockchain address', data: cryptoAddresses.filter((a) => a.customer_id === cid).map(({ customer_id, ...a }) => a) });
   }
 
   // ---- POST /crypto/transfer (send stablecoin out; the sandbox rejects an address starting with FAIL) ----
