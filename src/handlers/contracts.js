@@ -14,7 +14,7 @@ const { clientIp } = require('../utils/rateLimit');
  * COMPLETED, the PDF can be downloaded and both parties receive it by email.
  */
 const STATUS = { PENDING: 'PENDING_SIGNATURE', DONE: 'COMPLETED', CANCELLED: 'CANCELLED' };
-const FONTS = ['Dancing Script', 'Great Vibes', 'Caveat', 'Allura', 'Sacramento', 'Pacifico'];
+const FONTS = ['Dancing Script', 'Great Vibes', 'Caveat', 'Allura', 'Sacramento', 'Pacifico', 'Alex Brush', 'Parisienne', 'Satisfy', 'Kaushan Script', 'Marck Script', 'Yellowtail', 'Homemade Apple', 'La Belle Aurore', 'Zeyada', 'Mr Dafoe', 'Herr Von Muellerhoff', 'Mrs Saint Delafield'];
 const MAX_BODY = 150 * 1024;
 const LIST_COLUMNS = 'id,title,status,merchant_id,recipient_name,recipient_email,admin_name,created_at,admin_signed_at,signed_at,viewed_at';
 
@@ -32,10 +32,10 @@ function ipOf(ctx) {
 }
 const cleanText = (s, max) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
 
-/** A signature arrives as an 8-bit coverage mask drawn by the browser (typed or hand-drawn): checked, never trusted. */
+/** A signature arrives as an 8-bit coverage mask drawn by the browser (typed, hand-drawn or imported from a picture): checked, never trusted. */
 function cleanSignature(sig) {
   if (!sig || typeof sig !== 'object') throw httpError(400, 'SIGNATURE_REQUIRED', 'La signature est obligatoire.');
-  const type = sig.type === 'typed' ? 'typed' : sig.type === 'drawn' ? 'drawn' : null;
+  const type = ['typed', 'drawn', 'uploaded'].includes(sig.type) ? sig.type : null;
   if (!type) throw httpError(400, 'INVALID_SIGNATURE', 'Type de signature invalide.');
   const img = sig.image || {};
   const w = Number(img.w), h = Number(img.h);
@@ -45,7 +45,7 @@ function cleanSignature(sig) {
   if (alpha.length !== w * h) throw httpError(400, 'INVALID_SIGNATURE', 'Image de signature invalide.');
   let ink = 0;
   for (let i = 0; i < alpha.length; i++) if (alpha[i] > 40) ink++;
-  if (ink < 60 || ink > alpha.length * 0.8) throw httpError(400, 'SIGNATURE_EMPTY', 'La signature est vide : dessinez-la ou tapez votre nom.');
+  if (ink < 60 || ink > alpha.length * 0.8) throw httpError(400, 'SIGNATURE_EMPTY', 'La signature est vide : dessinez-la, tapez votre nom ou importez une image.');
   const out = { type, image: { w, h, alpha: alpha.toString('base64') } };
   if (type === 'typed') {
     out.name = cleanText(sig.name, 80);

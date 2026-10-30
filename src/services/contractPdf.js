@@ -1,4 +1,5 @@
 'use strict';
+const SIG_METHOD = { typed: 'Signature saisie au clavier', drawn: 'Signature dessinée à la main', uploaded: 'Signature importée depuis une image' };
 const crypto = require('crypto');
 const haitiTime = require('../utils/haitiTime');
 const { PDFDocument, StandardFonts, rgb } = require('../vendor/pdf-lib.min.js');
@@ -258,7 +259,7 @@ async function buildPdf(c) {
     page.drawText(fit(name || '', f.b, 10.5, colW), { x, y: ty, size: 10.5, font: f.b, color: INK }); ty -= 13;
     if (email) { page.drawText(fit(email, f.r, 9, colW), { x, y: ty, size: 9, font: f.r, color: MUTED }); ty -= 12; }
     if (signedAt) { page.drawText(`Signé le ${fmtDate(signedAt)}`, { x, y: ty, size: 8.5, font: f.r, color: MUTED }); ty -= 12; }
-    if (sig) { page.drawText(sig.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main', { x, y: ty, size: 8, font: f.i, color: MUTED }); }
+    if (sig) { page.drawText(SIG_METHOD[sig.type] || 'Signature dessinée à la main', { x, y: ty, size: 8, font: f.i, color: MUTED }); }
   };
   const extras = c.signers || [];
   const left = [{ label: 'POUR FREDA PAY ISSUING', name: c.admin_name, email: c.admin_email, at: c.admin_signed_at, sig: c.admin_signature, pending: false }]
@@ -331,7 +332,7 @@ async function buildPdf(c) {
     ['Statut', status],
     ['Empreinte SHA-256', c.content_hash || 'Calculée à la signature', true],
   ]);
-  const method = (sg) => (sg ? (sg.type === 'typed' ? 'Signature saisie au clavier' : 'Signature dessinée à la main') : '-');
+  const method = (sg) => (sg ? (SIG_METHOD[sg.type] || 'Signature dessinée à la main') : '-');
   const fredaList = [{ name: c.admin_name, email: c.admin_email, at: c.admin_signed_at, ip: c.admin_signed_ip, sig: c.admin_signature, main: true }]
     .concat(extras.filter((x) => x.side === 'FREDA').map((x) => ({ name: x.name, email: x.email, at: x.signed_at, ip: x.signed_ip, ua: x.signed_user_agent, sig: x.signature })));
   const clientList = [{ name: c.signer_name || c.recipient_name, email: c.signer_email || c.recipient_email, at: c.signed_at, ip: c.signed_ip, ua: c.signed_user_agent, sig: c.signer_signature }]
