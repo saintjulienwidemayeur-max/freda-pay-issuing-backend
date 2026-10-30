@@ -7132,3 +7132,36 @@ test('issuers: the admin list shows only merchants with live issuing access and 
     assert.equal(typeof w.data.reserved_on_cards_usd, 'number');
   }
 });
+
+test('admin diagnostics: schema check, the partner webhooks really received, and the import of the partner transaction history', async () => {
+  const maplerad = require('../src/services/maplerad');
+  const { token } = await adminLogin('owner');
+  const schema = await api('GET', '/admin/diagnostic/schema', { token });
+  assert.equal(schema.status, 200);
+  assert.ok(schema.data.checked > 20);
+  assert.ok(Array.isArray(schema.data.missing));
+  assert.equal((await api('GET', '/admin/diagnostic/schema', { token: (await adminLogin('editor')).token })).status, 403);
+
+  const live = await liveMerchantWithActivity('importtx'); // live business card
+  const row = mockTables.cards.find((c) => c.id === live.card.id);
+  await sendProviderEvent({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 250, currency: 'USD', card_id: row.maplerad_card_id, reference: 'imp-evt-1', merchant: { name: 'SHOP' } }, MOCK_LIVE_WHSEC);
+  const ev = await api('GET', '/admin/diagnostic/webhook-events', { token });
+  assert.equal(ev.status, 200);
+  assert.ok(ev.data.counts['issuing.transaction'] >= 1);
+  const mine = ev.data.latest.find((e) => e.event === 'issuing.transaction' && e.card_known === true);
+  assert.ok(mine && mine.stored === true);
+
+  const original = maplerad.forMode;
+  maplerad.forMode = () => ({ getCardTransactions: async () => ({ data: [
+    { id: 'p1', reference: 'imp-evt-1', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 250, currency: 'USD', created_at: '2026-10-30T10:00:00Z', merchant: { name: 'SHOP' } },
+    { id: 'p2', reference: 'imp-old-2', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 700, currency: 'USD', created_at: '2026-10-29T10:00:00Z', merchant: { name: 'NETFLIX' } },
+  ] }) });
+  const balanceBefore = Number(mockTables.cards.find((c) => c.id === row.id).balance);
+  let imp;
+  try { imp = await api('POST', '/admin/cards/import-transactions', { token, body: { mode: 'live' } }); } finally { maplerad.forMode = original; }
+  assert.equal(imp.status, 200);
+  assert.ok(imp.data.imported >= 1);
+  assert.ok(mockTables.card_transactions.some((t) => t.card_id === row.id && t.provider_reference === 'imp-old-2' && Number(t.amount_usd) === 7));
+  assert.equal(mockTables.card_transactions.filter((t) => t.card_id === row.id && t.provider_reference === 'imp-evt-1').length, 1); // no duplicate
+  assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), balanceBefore); // history only, no balance change
+});

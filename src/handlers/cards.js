@@ -184,7 +184,14 @@ async function getTransactions(ctx) {
   }
 
   // 1) What the partner told us, stored as it arrived: always available, exact, and fast.
-  const stored = (await supabase.select('card_transactions', { card_id: card.id }, { order: 'occurred_at.desc', limit: 500 })).map(toPublicStored);
+  let stored = [];
+  try {
+    stored = (await supabase.select('card_transactions', { card_id: card.id }, { order: 'occurred_at.desc', limit: 500 })).map(toPublicStored);
+  } catch (err) {
+    // The table is missing or unreachable: the partner's list below still answers (see the admin schema diagnostic).
+    // eslint-disable-next-line no-console
+    console.error('card_transactions could not be read (is the table created? run migrations/2026-10-31-card-transactions.sql):', err.message);
+  }
   const known = new Set(stored.map((t) => String(t.id)));
 
   // 2) The partner's own list adds what a notification may have missed. If the partner is unreachable, the stored list is still shown.
