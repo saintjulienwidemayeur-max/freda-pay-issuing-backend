@@ -294,6 +294,7 @@ router.post('/admin/api-health/:merchantId/test-webhook', adminSession.requireAd
 router.get('/admin/api-health/:merchantId/message', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.healthDraft));
 router.post('/admin/api-health/:merchantId/send', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.healthSend));
 router.get('/admin/cards-balance-check', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.cardBalanceCheck));
+router.post('/admin/cards/:id/send-balance', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.cardBalanceSend));
 router.post('/admin/cards/:id/align-balance', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.cardBalanceAlign));
 router.get('/admin/api-calls', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.callMerchants));
 router.get('/admin/api-calls/:merchantId', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.callsOfMerchant));

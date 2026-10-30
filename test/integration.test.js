@@ -6974,3 +6974,41 @@ test('admin card balance check compares our balance with the partner and can ali
     assert.equal((await api('GET', '/admin/cards-balance-check', { token: (await adminLogin('editor')).token })).status, 403);
   } finally { maplerad.forMode = original; }
 });
+
+test('card.balance_updated: sent when the team aligns a card with the partner, on request, and a purchase webhook carries the new balance', async () => {
+  const maplerad = require('../src/services/maplerad');
+  const receiver = startWebhookReceiver();
+  await new Promise((r) => receiver.server.listen(4511, r));
+  const original = maplerad.forMode;
+  try {
+    const { token: admin } = await adminLogin('owner');
+    const reg = await registerAndVerify({ business_name: 'Bal Hook Co', email: 'balhook@example.com', password: 'password123' });
+    const token = reg.data.session_token;
+    await api('POST', '/dashboard/webhooks', { token, body: { url: 'http://localhost:4511/hook' } });
+    const create = await api('POST', '/dashboard/cards', { token, body: { reference: 'BALHOOK-1', kind: 'business', business_name: 'Bal Hook Co', brand: 'VISA', amount: 20 } });
+    await pollUntil(() => api('GET', `/dashboard/cards/${create.data.id}`, { token }), (r) => r.data.status !== 'pending', 30, 20);
+    const row = mockTables.cards.find((c) => c.id === create.data.id);
+    // a purchase: the webhook carries the new card balance
+    await sendProviderEvent({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 500, currency: 'USD', card_id: row.maplerad_card_id, reference: 'bh-1', merchant: { name: 'SHOP' } }, MOCK_SANDBOX_WHSEC);
+    await sleep(300);
+    const tx = receiver.received.find((d) => d.json.event === 'card.transaction');
+    assert.ok(tx && tx.json.data.card_balance === 15);
+    // alignment with the partner
+    maplerad.forMode = () => ({ getCard: async () => ({ data: { id: row.maplerad_card_id, balance: 1200 } }) });
+    const align = await api('POST', `/admin/cards/${row.id}/align-balance`, { token: admin });
+    assert.equal(align.status, 200);
+    await sleep(300);
+    const upd = receiver.received.find((d) => d.json.event === 'card.balance_updated');
+    assert.ok(upd, 'card.balance_updated delivered');
+    assert.equal(upd.json.data.balance, 12);
+    assert.equal(upd.json.data.previous_balance, 15);
+    assert.equal(upd.json.data.reason, 'aligned');
+    // on request
+    const before = receiver.received.filter((d) => d.json.event === 'card.balance_updated').length;
+    const sent = await api('POST', `/admin/cards/${row.id}/send-balance`, { token: admin });
+    assert.equal(sent.status, 200);
+    assert.equal(sent.data.balance, 12);
+    await sleep(300);
+    assert.equal(receiver.received.filter((d) => d.json.event === 'card.balance_updated').length, before + 1);
+  } finally { maplerad.forMode = original; receiver.server.close(); }
+});
