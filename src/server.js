@@ -135,6 +135,9 @@ router.get('/dashboard/wallet/topups/:id', session.requireSession, walletTopupHa
 router.get('/dashboard/crypto', session.requireSession, cryptoWalletHandlers.overview);
 router.get('/dashboard/crypto/quote', session.requireSession, cryptoWalletHandlers.quote);
 router.post('/dashboard/crypto/addresses', session.requireSession, cryptoWalletHandlers.createAddress);
+router.post('/dashboard/crypto/send', session.requireSession, cryptoWalletHandlers.send);
+router.post('/dashboard/crypto/convert', session.requireSession, cryptoWalletHandlers.convert);
+router.post('/dashboard/crypto/simulate-deposit', session.requireSession, cryptoWalletHandlers.simulateDeposit);
 
 // ---- Account (business info, individual -> business conversion) ----
 router.put('/dashboard/account', session.requireSession, accountHandlers.update);

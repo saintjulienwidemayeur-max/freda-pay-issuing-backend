@@ -87,6 +87,11 @@ function htgToUsd(amountHtg) {
  *   - the payment partner's fee (4 % of the amount it collects), passed through, so a top-up never costs Freda Pay money.
  * `fee` is the total taken from the amount; `fredaFee` is the only part that is Freda Pay's income.
  */
+/** The plan's percentage (as a fraction, 0.045 = 4.5 %) for adding money to the Master Wallet, honouring an admin override. */
+function walletFundingPct(issuingPlanKey, override) {
+  return effectiveIssuingPricing(issuingPlanKey, override).walletFundingPct;
+}
+
 function computeWalletFundingFee(issuingPlanKey, amountHtg, override) {
   const cfg = effectiveIssuingPricing(issuingPlanKey, override);
   const fredaFee = round2(amountHtg * cfg.walletFundingPct);
@@ -174,6 +179,7 @@ module.exports = {
   computeGatewayCardFee,
   cardPartnerCostUsd,
   computeWalletFundingFee,
+  walletFundingPct,
   computePayoutFee,
   htgToUsd,
   cardCreationFee,

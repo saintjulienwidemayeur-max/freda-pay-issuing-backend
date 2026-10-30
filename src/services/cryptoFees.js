@@ -74,4 +74,33 @@ function quoteConversion(sentUsd, fees) {
   return { sent_usd: round2(sentUsd), fee_pct: fees.conversion_pct, fee_usd: feeUsd, credited_usd: Math.max(0, round2(sentUsd - feeUsd)) };
 }
 
-module.exports = { get, set, computeConversion, quoteConversion, DEFAULTS, FIELDS, KEY };
+/** A deposit that stays as crypto: the merchant pays our deposit rate, the partner's share is our cost. */
+function computeDeposit(amount, fees) {
+  const fee = round2(amount * Math.max(fees.deposit_pct, fees.provider_deposit_pct) / 100);
+  return { fee, providerCost: round2(amount * fees.provider_deposit_pct / 100), net: Math.max(0, round2(amount - fee)) };
+}
+
+/** Sending crypto out: the fee is on top of the amount sent (the tier depends on the amount). */
+function computeSend(amount, fees) {
+  const over = amount >= fees.withdrawal_threshold_usd;
+  const pct = over ? fees.withdrawal_over_pct : fees.withdrawal_under_pct;
+  const ppct = over ? fees.provider_withdrawal_over_pct : fees.provider_withdrawal_under_pct;
+  const fee = round2(amount * Math.max(pct, ppct) / 100);
+  return { pct, fee, providerCost: round2(amount * ppct / 100), total: round2(amount + fee) };
+}
+
+/**
+ * Converting crypto to USD for the Master Wallet: our conversion rate, then the plan's fee for adding money to the Master Wallet
+ * (`fundingPct` is a fraction: 0.045 = 4.5 %). What is left is credited in USD (1 coin = 1 USD).
+ */
+function computeConvert(amount, fees, fundingPct) {
+  const conversionFee = round2(amount * Math.max(fees.conversion_pct, fees.provider_conversion_pct) / 100);
+  const fundingFee = round2(amount * Number(fundingPct || 0));
+  return {
+    conversionFee, fundingFee, providerCost: round2(amount * fees.provider_conversion_pct / 100),
+    credited: Math.max(0, round2(amount - conversionFee - fundingFee)),
+  };
+}
+
+module.exports = {
+  computeDeposit, computeSend, computeConvert, get, set, computeConversion, quoteConversion, DEFAULTS, FIELDS, KEY };

@@ -82,7 +82,17 @@ async function adminDebit(merchantId, wallet, amount, currency, reference, mode)
   return record({ merchantId, wallet, type: 'admin_debit', amount: -Math.abs(amount), currency, reference, relatedId: null, mode });
 }
 
+/** The crypto wallet: its own balance per coin (currency = USDT / USDC), never mixed with the Master Wallet. */
+async function creditCrypto(merchantId, amount, coin, reference, relatedId, mode) {
+  return record({ merchantId, wallet: 'crypto', type: 'crypto_credit', amount: Math.abs(amount), currency: coin, reference, relatedId, mode });
+}
+async function debitCrypto(merchantId, amount, coin, reference, relatedId, mode) {
+  return record({ merchantId, wallet: 'crypto', type: 'crypto_debit', amount: -Math.abs(amount), currency: coin, reference, relatedId, mode });
+}
+
 module.exports = {
+  creditCrypto,
+  debitCrypto,
   adminDebit,
   walletKey,
   record,

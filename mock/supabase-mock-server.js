@@ -51,6 +51,7 @@ const tables = {
   provider_errors: [],
   crypto_addresses: [],
   crypto_deposits: [],
+  crypto_transactions: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();

@@ -143,6 +143,13 @@ async function handle(req, res) {
     return send(res, 200, { status: true, message: 'address generated', data: { id, address: `0xMOCK${id.replace(/[^a-z0-9]/gi, '')}${body.chain}`, chain: body.chain, coin: body.coin, offramp: body.offramp === true, active: true } });
   }
 
+  // ---- POST /crypto/transfer (send stablecoin out; the sandbox rejects an address starting with FAIL) ----
+  if (url.pathname === '/crypto/transfer' && req.method === 'POST') {
+    if (!body.address || !body.amount || !body.chain || !body.coin) return send(res, 400, { status: false, message: 'amount, address, chain and coin are required' });
+    if (String(body.address).startsWith('FAIL')) return send(res, 400, { status: false, message: 'invalid destination address' });
+    return send(res, 200, { status: true, message: 'transfer successful', data: { id: randomId('trf'), amount: body.amount, fee: 0, address: body.address, chain: body.chain, hash: `0xmockhash${Date.now()}`, coin: body.coin, currency: 'USD', status: 'SUCCESS' } });
+  }
+
   // ---- POST /customers (Tier 0: first_name, last_name, email, country) ----
   if (url.pathname === '/customers' && req.method === 'POST') {
     if (!body.first_name || !body.last_name || !body.email || !body.country) {

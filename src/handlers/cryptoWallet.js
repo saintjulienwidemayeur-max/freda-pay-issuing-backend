@@ -2,7 +2,8 @@
 const supabase = require('../lib/supabase');
 const cryptoWallet = require('../services/cryptoWallet');
 const cryptoFees = require('../services/cryptoFees');
-const ledger = require('../services/ledger');
+const pricing = require('../services/pricing');
+const { planKeyFor } = require('../services/plans');
 const { resolveMode } = require('../utils/mode');
 
 function httpError(status, code, message) {
@@ -21,26 +22,35 @@ async function loadMerchant(ctx, mode) {
   return merchant;
 }
 
-/** GET /dashboard/crypto : what the page needs in one call (coins, chains, our rate, the merchant's addresses and latest deposits). */
+async function fundingPctFor(merchant, mode) {
+  const override = await supabase.selectOne('merchant_pricing', { merchant_id: merchant.id });
+  return pricing.walletFundingPct(planKeyFor(merchant, 'issuing', mode), override);
+}
+
+/** GET /dashboard/crypto : what the page needs in one call (coins, chains, our rates, the wallet's balances, addresses and history). */
 async function overview(ctx) {
   const mode = await resolveMode(ctx);
   if (mode === 'live' && !cryptoWallet.liveEnabled()) return { status: 200, body: { mode, enabled: false, message: 'Le portefeuille crypto est disponible en mode Sandbox pour le moment. Le mode Live arrive bientôt.' } };
+  const merchant = ctx.merchant || (await supabase.selectOne('merchants', { id: ctx.merchantId }));
   const fees = await cryptoFees.get();
-  const [addresses, deposits, balance] = await Promise.all([
+  const [addresses, balances, history, fundingPct] = await Promise.all([
     supabase.select('crypto_addresses', { merchant_id: ctx.merchantId, mode }, { order: 'created_at.asc', limit: 50 }),
-    supabase.select('crypto_deposits', { merchant_id: ctx.merchantId, mode }, { order: 'created_at.desc', limit: 50 }),
-    ledger.getBalance(ctx.merchantId, 'master_wallet', 'USD', mode),
+    cryptoWallet.balances(ctx.merchantId, mode),
+    cryptoWallet.history(ctx.merchantId, mode, 30),
+    fundingPctFor(merchant, mode),
   ]);
   return {
     status: 200,
     body: {
-      mode,
-      enabled: true,
+      mode, enabled: true, sandbox: mode === 'sandbox',
       ...cryptoWallet.catalog(),
-      fees: { conversion_pct: fees.conversion_pct, min_deposit_usd: fees.min_deposit_usd },
-      master_wallet_usd: balance,
+      fees: {
+        deposit_pct: fees.deposit_pct, conversion_pct: fees.conversion_pct, master_wallet_funding_pct: Math.round(fundingPct * 10000) / 100,
+        withdrawal_under_pct: fees.withdrawal_under_pct, withdrawal_over_pct: fees.withdrawal_over_pct, withdrawal_threshold: fees.withdrawal_threshold_usd, min_deposit: fees.min_deposit_usd,
+      },
+      balances,
       addresses: addresses.map(cryptoWallet.toPublicAddress),
-      deposits: deposits.filter((d) => d.status === 'credited').map(cryptoWallet.toPublicDeposit),
+      transactions: history,
     },
   };
 }
@@ -54,11 +64,47 @@ async function createAddress(ctx) {
   return { status: 201, body: cryptoWallet.toPublicAddress(addr) };
 }
 
-/** GET /dashboard/crypto/quote?amount=1000 : what the Master Wallet receives for an amount sent (our rate only). */
+/** GET /dashboard/crypto/quote?action=send|convert&amount=100 : the exact fee lines, before the merchant confirms. */
 async function quote(ctx) {
   const amount = Number(ctx.query && ctx.query.amount);
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1e7) throw httpError(400, 'INVALID_AMOUNT', 'Montant invalide.');
-  return { status: 200, body: cryptoFees.quoteConversion(amount, await cryptoFees.get()) };
+  const mode = await resolveMode(ctx);
+  const merchant = ctx.merchant || (await supabase.selectOne('merchants', { id: ctx.merchantId }));
+  const fees = await cryptoFees.get();
+  if (ctx.query.action === 'send') {
+    const c = cryptoFees.computeSend(amount, fees);
+    return { status: 200, body: { amount, fee_pct: c.pct, fee: c.fee, total_debited: c.total } };
+  }
+  const fundingPct = await fundingPctFor(merchant, mode);
+  const c = cryptoFees.computeConvert(amount, fees, fundingPct);
+  return { status: 200, body: { amount, conversion_pct: fees.conversion_pct, conversion_fee: c.conversionFee, funding_pct: Math.round(fundingPct * 10000) / 100, funding_fee: c.fundingFee, usd_credited: c.credited } };
+}
+
+const publicTx = (t) => ({ id: t.id, type: t.type, coin: t.coin, chain: t.chain, address: t.address, amount: Number(t.amount), fee: Number(t.fee), usd_credited: t.usd_credited == null ? null : Number(t.usd_credited), tx_hash: t.tx_hash, status: t.status, created_at: t.created_at });
+
+/** POST /dashboard/crypto/send { coin, chain, address, amount, reference } */
+async function send(ctx) {
+  const mode = await resolveMode(ctx);
+  const merchant = await loadMerchant(ctx, mode);
+  const row = await cryptoWallet.send(merchant, mode, ctx.body || {});
+  return { status: 201, body: publicTx(row) };
+}
+
+/** POST /dashboard/crypto/convert { coin, amount, reference } : crypto -> USD, credited to the Master Wallet. */
+async function convert(ctx) {
+  const mode = await resolveMode(ctx);
+  const merchant = await loadMerchant(ctx, mode);
+  const row = await cryptoWallet.convert(merchant, mode, ctx.body || {});
+  return { status: 201, body: publicTx(row) };
+}
+
+/** POST /dashboard/crypto/simulate-deposit { chain, coin, amount } : Sandbox only. */
+async function simulateDeposit(ctx) {
+  const mode = await resolveMode(ctx);
+  const merchant = await loadMerchant(ctx, mode);
+  const { chain, coin, amount } = ctx.body || {};
+  await cryptoWallet.simulateDeposit(merchant, mode, { chain: String(chain || '').toLowerCase(), coin: String(coin || '').toUpperCase(), amount });
+  return { status: 201, body: { balances: await cryptoWallet.balances(ctx.merchantId, mode) } };
 }
 
 /** Admin: GET /admin/settings/crypto-fees */
@@ -79,39 +125,43 @@ async function setFees(ctx) {
   return { status: 200, body: { fees, defaults: cryptoFees.DEFAULTS } };
 }
 
-/** Admin: GET /admin/crypto/deposits : every crypto deposit with what we earned and what the partner kept. */
+/** Admin: GET /admin/crypto/deposits : every crypto movement (deposits, sends, conversions) with what we earned and what the partner kept. */
 async function adminDeposits(ctx) {
   const mode = ctx.query && ctx.query.mode === 'sandbox' ? 'sandbox' : 'live';
-  const rows = await supabase.select('crypto_deposits', { mode }, { order: 'created_at.desc', limit: 500 });
-  const credited = rows.filter((r) => r.status === 'credited');
-  const sum = (f) => Math.round(credited.reduce((t, r) => t + Number(f(r) || 0), 0) * 100) / 100;
+  const [deps, txs] = await Promise.all([
+    supabase.select('crypto_deposits', { mode }, { order: 'created_at.desc', limit: 500 }),
+    supabase.select('crypto_transactions', { mode }, { order: 'created_at.desc', limit: 500 }),
+  ]);
   const names = new Map();
-  for (const id of [...new Set(rows.map((r) => r.merchant_id))]) {
+  for (const id of [...new Set([...deps, ...txs].map((r) => r.merchant_id))]) {
     const m = await supabase.selectOne('merchants', { id }).catch(() => null);
     names.set(id, m ? m.business_name : id);
   }
+  const n = (v) => (v == null ? null : Number(v));
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const rows = [
+    ...deps.map((d) => ({ id: d.id, type: 'deposit', merchant: names.get(d.merchant_id), coin: d.coin, chain: d.chain, amount: n(d.gross_usd), fee: n(d.fee_usd), partner_cost: n(d.provider_cost_usd), margin: d.fee_usd == null ? null : r2(Number(d.fee_usd) - Number(d.provider_cost_usd)), status: d.status === 'credited' ? 'completed' : d.status, note: d.note, tx_hash: d.tx_hash, created_at: d.created_at })),
+    ...txs.map((t) => ({ id: t.id, type: t.type, merchant: names.get(t.merchant_id), coin: t.coin, chain: t.chain, amount: n(t.amount), fee: n(t.fee), partner_cost: n(t.provider_cost), margin: t.status === 'completed' ? r2(Number(t.fee) - Number(t.provider_cost)) : null, usd_credited: n(t.usd_credited), status: t.status, note: t.failure_reason, tx_hash: t.tx_hash, created_at: t.created_at })),
+  ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const done = rows.filter((r) => r.status === 'completed');
+  const sum = (list, f) => r2(list.reduce((t, r) => t + Number(f(r) || 0), 0));
+  const by = (type) => done.filter((r) => r.type === type);
   return {
     status: 200,
     body: {
       mode,
       totals: {
-        deposits: credited.length,
-        sent_usd: sum((r) => r.gross_usd),
-        merchant_fees_usd: sum((r) => r.fee_usd),
-        partner_cost_usd: sum((r) => r.provider_cost_usd),
-        margin_usd: sum((r) => Number(r.fee_usd) - Number(r.provider_cost_usd)),
-        credited_usd: sum((r) => r.credited_usd),
-        to_review: rows.filter((r) => r.status === 'review').length,
+        operations: done.length,
+        merchant_fees: sum(done, (r) => r.fee),
+        partner_cost: sum(done, (r) => r.partner_cost),
+        margin: sum(done, (r) => r.margin),
+        deposits: by('deposit').length, sends: by('send').length, conversions: by('convert').length,
+        converted_to_usd: sum(by('convert'), (r) => r.usd_credited),
+        to_review: rows.filter((r) => r.status === 'review' || r.status === 'pending').length,
       },
-      deposits: rows.map((r) => ({
-        id: r.id, merchant: names.get(r.merchant_id), chain: r.chain, coin: r.coin, tx_hash: r.tx_hash, status: r.status, note: r.note,
-        sent_usd: r.gross_usd == null ? null : Number(r.gross_usd), settled_usd: r.settled_usd == null ? null : Number(r.settled_usd),
-        fee_usd: r.fee_usd == null ? null : Number(r.fee_usd), partner_cost_usd: r.provider_cost_usd == null ? null : Number(r.provider_cost_usd),
-        margin_usd: r.fee_usd == null ? null : Math.round((Number(r.fee_usd) - Number(r.provider_cost_usd)) * 100) / 100,
-        credited_usd: r.credited_usd == null ? null : Number(r.credited_usd), created_at: r.created_at,
-      })),
+      operations: rows,
     },
   };
 }
 
-module.exports = { overview, createAddress, quote, getFees, setFees, adminDeposits };
+module.exports = { overview, createAddress, quote, send, convert, simulateDeposit, getFees, setFees, adminDeposits };
