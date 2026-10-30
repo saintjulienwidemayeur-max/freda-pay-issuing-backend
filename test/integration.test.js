@@ -6863,3 +6863,25 @@ test('one-time correction: purchases stored before this version are taken off th
   assert.equal(second.skipped, true);
   assert.equal(Number(mockTables.cards.find((c) => c.id === card.id).balance), 70);
 });
+
+test('per-card transactions: stored purchases show up with a French label and this-month spend even if the partner list is empty or down', async () => {
+  const reg = await registerAndVerify({ business_name: 'Txn List Co', email: 'txnlistco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'TXL-1', kind: 'business', business_name: 'Txn List Co', brand: 'VISA', amount: 50 } });
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  const ev = (over) => Object.assign({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 1000, currency: 'USD', card_id: row.maplerad_card_id, reference: 'txl-a', merchant: { name: 'AMAZON' }, created_at: new Date().toISOString() }, over);
+  await sendProviderEvent(ev({}), MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(ev({ reference: 'txl-b', type: 'DECLINE', status: 'FAILED', amount: 9000, merchant: { name: 'SHOPX' } }), MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(ev({ reference: 'txl-c', type: 'REFUND', mode: 'CREDIT', amount: 300 }), MOCK_SANDBOX_WHSEC);
+  const maplerad = require('../src/services/maplerad');
+  const original = maplerad.forMode;
+  maplerad.forMode = () => ({ getCardTransactions: async () => { const e = new Error('down'); e.httpStatus = 502; e.code = 'CARD_SERVICE_ERROR'; throw e; } });
+  let r;
+  try { r = await api('GET', `/dashboard/cards/${row.id}/transactions`, { token }); } finally { maplerad.forMode = original; }
+  assert.equal(r.status, 200);
+  assert.equal(r.data.complete, false);
+  const labels = r.data.transactions.map((t) => t.label).sort();
+  assert.deepEqual(labels, ['Achat', 'Refusé', 'Remboursement']);
+  assert.equal(r.data.month_spend, 7); // 10 spent - 3 refunded, the decline does not count
+});
