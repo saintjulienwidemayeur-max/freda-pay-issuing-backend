@@ -6804,3 +6804,18 @@ test('admin API journal: each /v1 call is listed per merchant, errors carry the 
   assert.ok(onlyBalance.data.calls.length >= 1 && onlyBalance.data.calls.every((c) => /balance/.test(c.route)));
   assert.equal((await api('GET', '/admin/api-calls', { token: (await adminLogin('editor')).token })).status, 403);
 });
+
+test('contracts: a signature imported from a picture and the new handwriting fonts are accepted, and the PDF says how each was made', async () => {
+  const m = await makeLiveMerchant('ctrupload');
+  const imported = () => ({ type: 'uploaded', image: sigMask() });
+  const create = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'Contrat signature importée', body_html: CONTRACT_HTML, merchant_id: m.merchantId, admin_signature: { type: 'typed', name: 'Admin Freda', font: 'Alex Brush', image: sigMask(320, 100) } } });
+  assert.equal(create.status, 201);
+  const id = create.data.contract.id;
+  const sign = await api('POST', `/dashboard/contracts/${id}/sign`, { token: m.token, body: { signer_name: 'Marie Jean', fields: { "Nom de l'entreprise": 'Boutik Lakay', 'Représentant': 'Marie Jean' }, signature: imported() } });
+  assert.equal(sign.status, 200);
+  const pdf = await rawGet(`/dashboard/contracts/${id}/pdf`, m.token);
+  assert.equal(pdf.status, 200);
+  assert.ok(pdf.buf.length > 3000);
+  const bad = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'x', body_html: CONTRACT_HTML, merchant_id: m.merchantId, admin_signature: { type: 'scanned', image: sigMask() } } });
+  assert.equal(bad.status, 400);
+});
