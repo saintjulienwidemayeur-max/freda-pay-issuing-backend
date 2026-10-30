@@ -7210,3 +7210,55 @@ test('the partner name never reaches a merchant in card.transaction webhooks or 
   const data = orchestrator.transactionWebhookData({ id: 'c1', own_reference: 'R', balance: 5 }, { id: 't1', type: 'FUNDING', status: 'SUCCESS', direction: 'CREDIT', amount_usd: 5, merchant_name: 'Maplerad', occurred_at: new Date().toISOString() });
   assert.equal(data.merchant_name, null);
 });
+
+test('crypto wallet: a stablecoin deposit is converted to USD, credited to the Master Wallet once, and the margin is logged', async () => {
+  const reg = await registerAndVerify({ business_name: 'Crypto Co', email: 'cryptoco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const overview = await api('GET', '/dashboard/crypto', { token });
+  assert.equal(overview.status, 200);
+  assert.ok(overview.data.chains.some((c) => c.key === 'tron') && overview.data.coins.includes('USDT'));
+  assert.equal(overview.data.fees.conversion_pct, 0.7);
+
+  assert.equal((await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'dogecoin', coin: 'USDT' } })).status, 400);
+  const a1 = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(a1.status, 201);
+  const a2 = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(a2.data.address, a1.data.address); // the same address is returned, not a new one
+
+  const q = await api('GET', '/dashboard/crypto/quote?amount=1000', { token });
+  assert.equal(q.data.credited_usd, 993);
+
+  const before = Number((await api('GET', '/dashboard/crypto', { token })).data.master_wallet_usd);
+  const ev = { event: 'collection.successful', status: 'SUCCESS', address: a1.data.address, amount: 99500, currency: 'USD', reference: 'crypto-dep-1', tx_hash: '0xabc' };
+  await sendProviderEvent(ev, MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(ev, MOCK_SANDBOX_WHSEC); // delivered twice
+  const after = await api('GET', '/dashboard/crypto', { token });
+  assert.equal(Math.round((after.data.master_wallet_usd - before) * 100) / 100, 993); // 995 settled minus our 2 $ margin (1000 sent, 0.7 %)
+  assert.equal(after.data.deposits.length, 1);
+  assert.equal(after.data.deposits[0].sent_usd, 1000);
+  const rev = mockTables.fee_revenue.filter((f) => f.kind === 'crypto_conversion');
+  assert.equal(rev.length, 1);
+  assert.equal(Number(rev[0].amount), 7);
+  assert.equal(Number(rev[0].partner_cost_usd), 5);
+
+  // an event for an unknown address, a failed one, and one without a readable amount credit nothing
+  await sendProviderEvent({ ...ev, reference: 'crypto-dep-2', address: 'unknown-address' }, MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent({ ...ev, reference: 'crypto-dep-3', event: 'collection.failed', status: 'FAILED' }, MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent({ ...ev, reference: 'crypto-dep-4', amount: undefined }, MOCK_SANDBOX_WHSEC);
+  const last = await api('GET', '/dashboard/crypto', { token });
+  assert.equal(last.data.master_wallet_usd, after.data.master_wallet_usd);
+  assert.ok(mockTables.crypto_deposits.some((d) => d.provider_reference === 'crypto-dep-4' && d.status === 'review'));
+
+  // admin: rates are editable, and the deposits page shows the margin
+  const admin = await adminLogin('owner');
+  const fees = await api('GET', '/admin/settings/crypto-fees', { token: admin.token });
+  assert.equal(fees.data.fees.provider_conversion_pct, 0.5);
+  assert.equal((await api('PUT', '/admin/settings/crypto-fees', { token: admin.token, body: { conversion_pct: -1 } })).status, 400);
+  const put = await api('PUT', '/admin/settings/crypto-fees', { token: admin.token, body: { conversion_pct: 0.8 } });
+  assert.equal(put.data.fees.conversion_pct, 0.8);
+  assert.equal((await api('GET', '/dashboard/crypto/quote?amount=1000', { token })).data.credited_usd, 992);
+  const list = await api('GET', '/admin/crypto/deposits?mode=sandbox', { token: admin.token });
+  assert.equal(list.data.totals.deposits, 1);
+  assert.equal(list.data.totals.margin_usd, 2);
+  assert.equal(list.data.totals.to_review, 1);
+});

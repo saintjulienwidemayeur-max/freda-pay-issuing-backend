@@ -166,6 +166,13 @@ async function processMapleradEvent(rawEvent, webhookMode) {
       await cardOrchestrator.applyCardDeclineWebhook(event, webhookMode);
       break;
     }
+    case 'collection.successful':
+    case 'collection.failed':
+    case 'crypto.deposit.successful': {
+      // A stablecoin deposit converted to USD: credited to the merchant's Master Wallet once (see services/cryptoWallet).
+      await require('../services/cryptoWallet').applyDepositEvent(event, webhookMode);
+      break;
+    }
     case 'issuing.terminated': {
       await cardOrchestrator.applyCardTerminationWebhook(event, webhookMode);
       break;
