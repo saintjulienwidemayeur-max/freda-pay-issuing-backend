@@ -74,8 +74,19 @@ async function customerFor(merchant, mode) {
   const email = String(merchant.email || '').trim();
   const at = email.indexOf('@');
   const aliased = at > 0 ? `${email.slice(0, at)}+crypto${email.slice(at)}` : email; // a separate customer from any card holder with the same e-mail
-  const res = await maplerad.forMode(mode).createCustomer({ firstName: String(merchant.business_name || 'Freda').slice(0, 60), lastName: 'Business', email: aliased, country: merchant.country || 'HT' });
-  const id = res && ((res.data && (res.data.id || res.data.customer_id)) || res.id || res.customer_id);
+  const provider = maplerad.forMode(mode);
+  const create = (mail) => provider.createCustomer({ firstName: String(merchant.business_name || 'Freda').slice(0, 60), lastName: 'Business', email: mail, country: merchant.country || 'HT' });
+  const idOf = (res) => res && ((res.data && (res.data.id || res.data.customer_id)) || res.id || res.customer_id);
+  let id;
+  try {
+    id = idOf(await create(aliased));
+  } catch (err) {
+    // A first attempt may have created the partner customer and then failed before saving anything: take that customer back.
+    const cards = require('./cardOrchestrator');
+    if (!cards.isAlreadyEnrolledError(err)) throw err;
+    id = await cards.lookupProviderCustomerId(aliased, mode);
+    if (!id) id = idOf(await create(at > 0 ? `${email.slice(0, at)}+crypto${randomHex(3)}${email.slice(at)}` : email)); // not found: a fresh customer with its own address
+  }
   if (!id) throw httpError(502, 'CRYPTO_UNAVAILABLE', 'Le service crypto est momentanément indisponible. Réessayez dans un instant.');
   return id;
 }
