@@ -7192,3 +7192,13 @@ test('card transactions for a merchant: French labels, a refused purchase says s
   const adm = await api('GET', `/admin/cards/${row.id}/transactions`, { token: admin });
   assert.ok(adm.data.transactions.some((t) => t.label === 'Achat refusé'));
 });
+
+test('the partner name never reaches a merchant in card.transaction webhooks or the overview feed', async () => {
+  const { publicMerchantName } = require('../src/utils/partnerNames');
+  assert.equal(publicMerchantName('Maplerad'), null);
+  assert.equal(publicMerchantName('MAPLERAD INC'), null);
+  assert.equal(publicMerchantName('SHEIN.COM'), 'SHEIN.COM');
+  const orchestrator = require('../src/services/cardOrchestrator');
+  const data = orchestrator.transactionWebhookData({ id: 'c1', own_reference: 'R', balance: 5 }, { id: 't1', type: 'FUNDING', status: 'SUCCESS', direction: 'CREDIT', amount_usd: 5, merchant_name: 'Maplerad', occurred_at: new Date().toISOString() });
+  assert.equal(data.merchant_name, null);
+});
