@@ -7101,3 +7101,34 @@ test('guarantee deposit: 50 $ by default, the team raises or lowers it per merch
   assert.equal((await api('PUT', `/admin/merchants/${live.merchantId}/guarantee`, { token: (await adminLogin('editor')).token, body: { guarantee_usd: 10, reason: 'Test de rôle' } })).status, 403);
   guarantee.clearCache();
 });
+
+test('issuers: the admin list shows only merchants with live issuing access and their real Master Wallet; the API gives an issuer its own wallet', async () => {
+  const { token } = await adminLogin('owner');
+  const guarantee = require('../src/services/guarantee');
+  guarantee.clearCache();
+  const live = await makeLiveMerchant('issuerA', { fundUsd: 120 });
+  const plain = await registerAndVerify({ business_name: 'Not An Issuer', email: 'notissuer@sandbox-test.example.com', password: 'password123' });
+  const list = await api('GET', '/admin/issuers', { token });
+  assert.equal(list.status, 200);
+  const mine = list.data.issuers.find((i) => i.id === live.merchantId);
+  assert.ok(mine, 'live issuer listed');
+  assert.equal(mine.master_wallet_usd, 120);
+  assert.equal(mine.guarantee_usd, 50);
+  assert.equal(mine.spendable_usd, 70);
+  assert.ok(!list.data.issuers.some((i) => i.email === 'notissuer@sandbox-test.example.com'));
+  assert.ok(list.data.totals.issuers >= 1);
+  assert.equal((await api('GET', '/admin/issuers', { token: (await adminLogin('editor')).token })).status, 403);
+  // the issuer reads its own Master Wallet with an API key (live key here)
+  const key = await api('POST', '/dashboard/api-keys', { token: live.token, body: { name: 'wallet-check', mode: 'live' } });
+  const secret = key.data.secret;
+  assert.ok(secret, JSON.stringify(key.data));
+  {
+    const w = await api('GET', '/v1/master-wallet', { token: secret });
+    assert.equal(w.status, 200);
+    assert.equal(w.data.balance, 120);
+    assert.equal(w.data.guarantee_usd, 50);
+    assert.equal(w.data.spendable_usd, 70);
+    assert.equal(w.data.mode, 'live');
+    assert.equal(typeof w.data.reserved_on_cards_usd, 'number');
+  }
+});

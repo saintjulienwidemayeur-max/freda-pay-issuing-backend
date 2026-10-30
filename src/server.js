@@ -224,6 +224,7 @@ router.get('/v1/payouts', apiKey.requireApiKey, payoutHandlers.list);
 router.get('/v1/payouts/:id', apiKey.requireApiKey, payoutHandlers.get);
 
 router.get('/v1/balance', apiKey.requireApiKey, walletHandlers.getBalance);
+router.get('/v1/master-wallet', apiKey.requireApiKey, walletHandlers.getMasterWallet);
 
 const handler = createHandler(router, {
   onLog: ({ method, path, status, ms }) => {
@@ -350,6 +351,7 @@ router.get('/admin/overview', adminSession.requireAdminSession, (ctx) => { admin
 router.get('/admin/visits', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return trackHandlers.adminVisits(ctx); });
 router.get('/admin/merchants', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.list(ctx); });
 router.get('/admin/merchants/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.get(ctx); });
+router.get('/admin/issuers', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.issuers(ctx); });
 router.get('/admin/merchants/:id/guarantee', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.getGuarantee(ctx); });
 router.put('/admin/merchants/:id/guarantee', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.setGuarantee(ctx); });
 router.post('/admin/merchants/:id/debit', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.debit(ctx); });

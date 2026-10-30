@@ -215,6 +215,35 @@ async function setGuarantee(ctx) {
   return { status: 200, body: { changed: true, previous_usd: previous, guarantee_usd: value, master_wallet_balance: balance, spendable_usd: Math.max(0, Math.round((balance - value) * 100) / 100) } };
 }
 
+/**
+ * "Émetteurs de cartes": the merchants who have LIVE access to issue cards, with their real Master Wallet: balance, locked guarantee,
+ * spendable amount, money already on their cards, and whether they are running low. Lowest spendable amount first.
+ */
+async function issuers(ctx) {
+  const rows = (await supabase.select('merchants', { issuing_live_enabled: true }, { order: 'created_at.desc', limit: 200 })).filter((m) => !m.deleted_at);
+  const out = [];
+  for (let i = 0; i < rows.length; i += 10) {
+    const batch = await Promise.all(rows.slice(i, i + 10).map(async (m) => {
+      const [balance, locked, cards] = await Promise.all([
+        ledger.getBalance(m.id, 'master_wallet', 'USD', 'live'),
+        guarantee.get(m.id),
+        supabase.select('cards', { merchant_id: m.id, mode: 'live', deleted_at: supabase.isNull() }, { limit: 2000 }),
+      ]);
+      const active = cards.filter((c) => c.status === 'active' || c.status === 'disabled');
+      return {
+        id: m.id, business_name: m.business_name, email: m.email, issuing_plan: planKeyFor(m, 'issuing', 'live'),
+        master_wallet_usd: Math.round(balance * 100) / 100, guarantee_usd: locked, spendable_usd: Math.max(0, Math.round((balance - locked) * 100) / 100),
+        reserved_on_cards_usd: Math.round(active.reduce((s, c) => s + Number(c.balance || 0), 0) * 100) / 100, active_cards: active.length, total_cards: cards.length,
+        low_balance: balance <= guarantee.alertLevelFor(locked), below_guarantee: balance < locked,
+      };
+    }));
+    out.push(...batch);
+  }
+  out.sort((a, b) => a.spendable_usd - b.spendable_usd);
+  const sum = (k) => Math.round(out.reduce((s, r) => s + r[k], 0) * 100) / 100;
+  return { status: 200, body: { issuers: out, totals: { issuers: out.length, master_wallet_usd: sum('master_wallet_usd'), guarantee_usd: sum('guarantee_usd'), spendable_usd: sum('spendable_usd'), reserved_on_cards_usd: sum('reserved_on_cards_usd'), low_balance: out.filter((r) => r.low_balance).length } } };
+}
+
 const PRICING_FIELDS = ['card_creation_usd', 'card_recharge_usd', 'card_withdrawal_usd', 'card_decline_usd', 'wallet_funding_pct', 'gateway_pct', 'gateway_fixed_htg', 'payout_mobile_pct', 'payout_bank_fee_htg', 'payout_fee_htg', 'gateway_card_pct', 'gateway_card_fixed_usd', 'payout_bank_fee_usd'];
 
 function toPublicPricing(row) {
@@ -344,4 +373,4 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit, getGuarantee, setGuarantee };
+module.exports = { list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit, getGuarantee, setGuarantee, issuers };
