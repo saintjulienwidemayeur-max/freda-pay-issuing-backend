@@ -1069,6 +1069,11 @@ async function reconcilePendingCardCreations(limit) {
   return { checked: rows.length, activated };
 }
 
+/** Tells the merchant's server the card's real balance (after a correction, an alignment with the partner, or a team request). */
+function balanceWebhookData(card, previous, reason) {
+  return { id: card.id, reference: card.own_reference, kind: card.kind, brand: card.brand, status: card.status, balance: Number(card.balance || 0), previous_balance: previous == null ? null : Number(previous), reason };
+}
+
 /** How one stored card transaction moves the card's balance: negative for a purchase, positive for a reversal or refund, 0 otherwise. */
 function balanceDeltaOf(row) {
   const amount = Number(row.amount_usd);
@@ -1119,7 +1124,7 @@ async function backfillCardBalances() {
       const current = Number(fresh.balance || 0);
       const next = Math.max(0, pricing.round2(current + delta));
       const done = await supabase.update('cards', { id: cardId, balance: current }, { balance: next, updated_at: new Date().toISOString() });
-      if (done && done.length) { corrected += 1; break; }
+      if (done && done.length) { corrected += 1; webhookDispatcher.dispatch(done[0].merchant_id, 'card.balance_updated', balanceWebhookData(done[0], current, 'correction')); break; }
     }
   }
   // eslint-disable-next-line no-console
@@ -1144,7 +1149,8 @@ async function syncCardBalanceFromPartner(card) {
   const ours = Number(fresh.balance || 0);
   if (Math.abs(partner - ours) < 0.005) return;
   if (Math.abs(partner - ours) <= 2) {
-    await supabase.update('cards', { id: card.id, balance: ours }, { balance: partner, updated_at: new Date().toISOString() });
+    const [fixed] = await supabase.update('cards', { id: card.id, balance: ours }, { balance: partner, updated_at: new Date().toISOString() });
+    if (fixed) webhookDispatcher.dispatch(fixed.merchant_id, 'card.balance_updated', balanceWebhookData(fixed, ours, 'partner_sync'));
   } else {
     // eslint-disable-next-line no-console
     console.warn(`Card ${card.id}: the partner shows ${partner} $ but our balance is ${ours} $ (gap above 2 $): left unchanged, check this card.`);
@@ -1187,6 +1193,7 @@ module.exports = {
   transactionWebhookData,
   recordCardTransaction,
   backfillCardBalances,
+  balanceWebhookData,
   reconcilePendingCardCreations,
   applyCardTerminationWebhook,
   applyCardDeclineWebhook,

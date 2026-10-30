@@ -305,12 +305,21 @@ async function cardBalanceAlign(ctx) {
   const cents = Number(((res && (res.data || res)) || {}).balance);
   if (!Number.isFinite(cents) || cents < 0) throw httpError(502, 'CARD_SERVICE_ERROR', 'Le fournisseur ne donne pas de solde pour cette carte.');
   const partner = Math.round(cents) / 100;
-  await supabase.update('cards', { id: card.id }, { balance: partner, updated_at: new Date().toISOString() });
+  const [updated] = await supabase.update('cards', { id: card.id }, { balance: partner, updated_at: new Date().toISOString() });
+  require('../services/webhookDispatcher').dispatch(card.merchant_id, 'card.balance_updated', require('../services/cardOrchestrator').balanceWebhookData(updated || Object.assign({}, card, { balance: partner }), card.balance, 'aligned'));
   return { status: 200, body: { id: card.id, previous: Number(card.balance || 0), balance: partner } };
+}
+
+/** Sends the merchant's server the card's CURRENT balance now (for example after an alignment done before this event existed). */
+async function cardBalanceSend(ctx) {
+  const card = await supabase.selectOne('cards', { id: ctx.params.id });
+  if (!card || card.deleted_at) throw httpError(404, 'NOT_FOUND', 'Carte introuvable.');
+  const result = await require('../services/webhookDispatcher').deliverNow(card.merchant_id, 'card.balance_updated', require('../services/cardOrchestrator').balanceWebhookData(card, null, 'requested'));
+  return { status: 200, body: { sent: !!(result && result.sent), balance: Number(card.balance || 0), result } };
 }
 
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment, paymentDiagnostic, callMerchants, callsOfMerchant, cardBalanceCheck, cardBalanceAlign };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment, paymentDiagnostic, callMerchants, callsOfMerchant, cardBalanceCheck, cardBalanceAlign, cardBalanceSend };
