@@ -4,6 +4,7 @@ const supabase = require('../lib/supabase');
 const ledger = require('./ledger');
 const brevo = require('./brevo');
 const { lowBalanceEmail } = require('../templates/lowBalanceEmail');
+const guarantee = require('./guarantee');
 
 function round2(n) {
   return Math.round(n * 100) / 100;
@@ -75,7 +76,7 @@ async function debitChecked(merchantId, amount, reference, relatedId, mode, mini
  * (150 $ by default) down, throttled low-balance emails are sent.
  */
 async function debitWithFloor(merchantId, amount, reference, relatedId, mode) {
-  const minimum = config.masterWallet.minimumBalanceUsd;
+  const minimum = await guarantee.get(merchantId); // the merchant's own guarantee deposit (50 $ unless the team changed it)
   const newBalance = await withLock(`${mode === 'live' ? 'live' : 'sandbox'}:${merchantId}`, async () => {
     if (!atomicMissing) {
       try {
@@ -90,7 +91,7 @@ async function debitWithFloor(merchantId, amount, reference, relatedId, mode) {
     return debitChecked(merchantId, amount, reference, relatedId, mode, minimum);
   });
 
-  if (newBalance <= config.masterWallet.alertBalanceUsd) {
+  if (newBalance <= guarantee.alertLevelFor(minimum)) {
     // Never let a notification failure break the actual financial operation.
     notifyLowBalanceThrottled(merchantId, newBalance, mode).catch((err) => {
       // eslint-disable-next-line no-console
@@ -105,7 +106,7 @@ async function debitWithFloor(merchantId, amount, reference, relatedId, mode) {
 // reached the floor always gets that (more urgent) email once, even if a softer reminder was sent shortly before.
 const lastAlert = new Map();
 async function notifyLowBalanceThrottled(merchantId, balance, mode) {
-  const level = balance <= config.masterWallet.minimumBalanceUsd ? 'floor' : 'warn';
+  const level = balance <= (await guarantee.get(merchantId)) ? 'floor' : 'warn';
   const key = `${mode === 'live' ? 'live' : 'sandbox'}:${merchantId}:${level}`;
   const now = Date.now();
   if (now - (lastAlert.get(key) || 0) < config.masterWallet.alertIntervalMs) return;
@@ -119,7 +120,7 @@ async function notifyLowBalance(merchantId, balance) {
   const { subject, html, text } = lowBalanceEmail({
     businessName: merchant.business_name,
     balance,
-    minimumBalance: config.masterWallet.minimumBalanceUsd,
+    minimumBalance: await guarantee.get(merchantId),
   });
   await brevo.sendEmail({ to: merchant.email, toName: merchant.business_name, subject, html, text });
 }

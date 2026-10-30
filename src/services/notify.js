@@ -154,6 +154,31 @@ function walletDebited(merchant, { amount, currency, walletLabel, newBalance, re
   }), 'wallet-debited');
 }
 
+function guaranteeChanged(merchant, { previous, value, balance, reason }) {
+  const usd = (n) => `${Number(n).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`;
+  const raised = value > previous;
+  const spendable = Math.max(0, Math.round((balance - value) * 100) / 100);
+  const missing = Math.max(0, Math.round((value - balance) * 100) / 100);
+  const paragraphs = [
+    hello(merchant),
+    raised
+      ? `Votre dépôt de garantie passe de **${usd(previous)}** à **${usd(value)}**. Cette somme reste bloquée sur votre Master Wallet : elle ne peut pas servir à créer des cartes, les recharger ou payer un plan.`
+      : `Votre dépôt de garantie passe de **${usd(previous)}** à **${usd(value)}**. Une partie des fonds bloqués est libérée : vous pouvez l'utiliser dès maintenant.`,
+    `Motif : ${reason}`,
+    `Solde actuel du Master Wallet : **${usd(balance)}**. Montant utilisable : **${usd(spendable)}**.`,
+  ];
+  if (missing > 0) paragraphs.push(`Votre solde est inférieur au dépôt de garantie : ajoutez au moins **${usd(missing)}** pour reprendre la création de cartes, les recharges et les paiements de plan.`);
+  paragraphs.push("Pour toute question, répondez-nous depuis le chat de votre tableau de bord ou écrivez à issuing@fredapay.com.");
+  return dispatch(merchant, buildEmail({
+    subject: 'Votre dépôt de garantie a changé : Freda Pay Issuing',
+    eyebrow: 'Dépôt de garantie',
+    tone: raised ? 'warning' : 'info',
+    heading: raised ? 'Votre dépôt de garantie est augmenté' : 'Votre dépôt de garantie est réduit',
+    paragraphs,
+    button: { label: missing > 0 ? 'Ajouter des fonds' : 'Ouvrir mon tableau de bord', url: String(DASHBOARD) },
+  }), 'guarantee-changed');
+}
+
 function depositRejected(merchant, { amount, method, reason }) {
   const label = { zelle: 'Zelle', bank_transfer: 'virement bancaire' }[method] || method;
   return dispatch(merchant, buildEmail({
@@ -315,4 +340,4 @@ function passwordChanged(to, name) {
   }), 'password-changed');
 }
 
-module.exports = { cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited };
+module.exports = { cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited, guaranteeChanged };
