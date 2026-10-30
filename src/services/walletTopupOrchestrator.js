@@ -83,7 +83,7 @@ async function refreshAutoTopup(merchantId, topup) {
     }
     // Income = Freda Pay's own fee only. The payment partner's fee was charged to the payer and handed over, so it is neither
     // income nor cost. The card partner's 2 % on funding is a real cost of the dollars credited.
-    await revenue.log(merchantId, 'wallet_funding', fredaFee, 'HTG', topup.id, topup.mode, pricing.round2(config.issuingProviderCostsUSD.walletFundingPct * creditedUsd));
+    await revenue.log(merchantId, 'wallet_funding', fredaFee, 'HTG', topup.id, topup.mode, pricing.round2(config.issuingProviderCostsUSD.walletFundingPct * creditedUsd)).catch((e) => console.error(`Revenue log failed for top-up ${topup.id}:`, e.message)); // eslint-disable-line no-console
     const newBalance = await ledger.getBalance(merchantId, 'master_wallet', 'USD', topup.mode);
     await notify.walletCredited(merchant, { amount: creditedUsd, currency: 'USD', walletLabel: 'Master Wallet', newBalance, note: 'rechargement confirmé', mode: topup.mode });
     return updated;

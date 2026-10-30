@@ -64,6 +64,15 @@ async function createPayout(args) {
   return payout;
 }
 
+/** Records a ledger movement once per reference: a retry after a partial failure never moves the same money twice. */
+async function once(merchantId, wallet, cur, mode, reference, move) {
+  const rows = await supabase.select('ledger_entries', { merchant_id: merchantId, wallet: mode === 'live' ? `live:${wallet}` : wallet, reference }, { limit: 1 });
+  if (rows && rows.length) return null;
+  return move();
+}
+const holdOnce = (merchantId, amount, cur, mode, ref, id) => once(merchantId, 'gateway', cur, mode, ref, () => ledger.debitGatewayForPayout(merchantId, amount, cur, ref, id, mode));
+const releaseOnce = (merchantId, amount, cur, mode, ref, id) => once(merchantId, 'gateway', cur, mode, ref, () => ledger.refundGatewayPayout(merchantId, amount, cur, ref, id, mode));
+
 async function createPayoutLocked({ merchantId, id, ownReference, plopplopReference, amount, method, recipient, mode, bankDetails, currency }) {
   const cur = currency === 'USD' ? 'USD' : 'HTG';
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId });
@@ -101,13 +110,26 @@ async function createPayoutLocked({ merchantId, id, ownReference, plopplopRefere
     mode: theMode,
   });
 
-  await ledger.debitGatewayForPayout(merchantId, amount, cur, `${plopplopReference}:hold`, id, theMode);
-  if (fee > 0) await ledger.debitGatewayForPayout(merchantId, fee, cur, `${plopplopReference}:hold-fee`, id, theMode);
-  if ((await ledger.getBalance(merchantId, 'gateway', cur, theMode)) < 0) {
+  // A failure while holding the money must not leave a pending payout with no hold (the reconciler would later give back money that was never held):
+  // only what was really held is released, and the payout row is removed.
+  const isHeld = async (ref) => ((await supabase.select('ledger_entries', { merchant_id: merchantId, wallet: theMode === 'live' ? 'live:gateway' : 'gateway', reference: ref }, { limit: 1 }).catch(() => [])) || []).length > 0;
+  const undo = async () => {
+    if (await isHeld(`${plopplopReference}:hold`)) await releaseOnce(merchantId, amount, cur, theMode, `${plopplopReference}:release`, id).catch(() => {});
+    if (fee > 0 && (await isHeld(`${plopplopReference}:hold-fee`))) await releaseOnce(merchantId, fee, cur, theMode, `${plopplopReference}:release-fee`, id).catch(() => {});
+    await supabase.delete('payouts', { id }).catch(() => {});
+  };
+  let negative = false;
+  try {
+    await holdOnce(merchantId, amount, cur, theMode, `${plopplopReference}:hold`, id);
+    if (fee > 0) await holdOnce(merchantId, fee, cur, theMode, `${plopplopReference}:hold-fee`, id);
+    negative = (await ledger.getBalance(merchantId, 'gateway', cur, theMode)) < 0;
+  } catch (err) {
+    await undo();
+    throw err;
+  }
+  if (negative) {
     // Another request took the money between the balance check and the hold: undo this one.
-    await ledger.refundGatewayPayout(merchantId, amount, cur, `${plopplopReference}:release`, id, theMode);
-    if (fee > 0) await ledger.refundGatewayPayout(merchantId, fee, cur, `${plopplopReference}:release-fee`, id, theMode);
-    await supabase.delete('payouts', { id });
+    await undo();
     const err = new Error('Solde disponible insuffisant.');
     err.httpStatus = 400;
     err.code = 'INSUFFICIENT_BALANCE';
@@ -123,6 +145,7 @@ async function createPayoutLocked({ merchantId, id, ownReference, plopplopRefere
 }
 
 async function executePayoutFlow({ merchantId, id, plopplopReference, amount, method, recipient, mode }) {
+  let sending = false; // true from the moment the withdrawal request leaves: after that, an error does not prove the money was NOT sent
   try {
     // The queue can hold a payout for minutes: check the account again at the moment of sending.
     // The money is only on hold, so failing it here gives it all back.
@@ -165,6 +188,7 @@ async function executePayoutFlow({ merchantId, id, plopplopReference, amount, me
     const withdrawalToken = tokenRes.data.withdrawal_token;
 
     // Step 3: execute the withdrawal.
+    sending = true;
     const execRes = await plopplop.executeWithdrawal({
       withdrawalToken,
       amount,
@@ -188,16 +212,26 @@ async function executePayoutFlow({ merchantId, id, plopplopReference, amount, me
       );
       if (!done) return; // already settled elsewhere
       // The merchant already paid amount + Freda Pay's fee (held). What the payment partner charged to SEND it is our cost.
-      await revenue.log(merchantId, 'payout', Number(done.fee || 0), 'HTG', id, mode, partnerFee != null ? pricing.htgToUsd(Number(partnerFee)) : 0);
+      await revenue.log(merchantId, 'payout', Number(done.fee || 0), 'HTG', id, mode, partnerFee != null ? pricing.htgToUsd(Number(partnerFee)) : 0).catch(() => {});
       webhookDispatcher.dispatch(merchantId, 'payout.succeeded', {
         id, amount, currency: 'HTG', method, recipient, fee: Number(done.fee || 0), transaction_id,
       });
       return;
     }
 
+    // No readable answer or a partner-side error: the money may have left. The payout stays pending and reconcilePendingPayouts
+    // asks the partner by reference (it never acts on a timeout).
+    if (!execRes.data || execRes.httpStatus >= 500) {
+      console.error(`Withdrawal ${plopplopReference}: unclear answer (HTTP ${execRes.httpStatus}), left pending for reconciliation.`); // eslint-disable-line no-console
+      return;
+    }
     const reason = (execRes.data && execRes.data.message) || `HTTP_${execRes.httpStatus}`;
     return markFailed(merchantId, id, reason);
   } catch (err) {
+    if (sending) {
+      console.error(`Withdrawal ${plopplopReference}: ${err.message} while sending, left pending for reconciliation.`); // eslint-disable-line no-console
+      return;
+    }
     return markFailed(merchantId, id, `NETWORK_ERROR: ${err.message}`);
   }
 }
@@ -229,10 +263,11 @@ async function reconcilePendingPayouts(limit) {
       if (res.httpStatus === 404 && /aucun|introuvable|not found/i.test(String(data.message || ''))) {
         if (await markFailed(p.merchant_id, p.id, "NOT_SENT: le retrait n'a pas été envoyé (interruption du service). Les fonds ont été rendus à votre solde.")) settled += 1;
       } else if (data.success && status === 'success') {
-        const [done] = await supabase.update('payouts', { id: p.id, status: 'pending' }, { status: 'success', plopplop_transaction_id: (data.data && data.data.transaction_id) || null, updated_at: new Date().toISOString() });
+        const partnerFee = data.data && data.data.fee;
+        const [done] = await supabase.update('payouts', { id: p.id, status: 'pending' }, { status: 'success', partner_fee_htg: partnerFee != null ? partnerFee : null, api_reference: (data.data && data.data.api_reference) || null, plopplop_transaction_id: (data.data && data.data.transaction_id) || null, updated_at: new Date().toISOString() });
         if (done) {
           settled += 1;
-          await revenue.log(p.merchant_id, 'payout', Number(done.fee || 0), 'HTG', p.id, p.mode || 'sandbox', 0);
+          await revenue.log(p.merchant_id, 'payout', Number(done.fee || 0), 'HTG', p.id, p.mode || 'sandbox', partnerFee != null ? pricing.htgToUsd(Number(partnerFee)) : 0).catch(() => {});
           webhookDispatcher.dispatch(p.merchant_id, 'payout.succeeded', { id: p.id, amount: Number(p.amount), currency: 'HTG', method: p.method, recipient: p.recipient, fee: Number(done.fee || 0), transaction_id: (data.data && data.data.transaction_id) || null });
         }
       } else if (data.success && (status === 'failed' || status === 'remboursé' || status === 'rembourse')) {
@@ -249,13 +284,23 @@ async function reconcilePendingPayouts(limit) {
 
 /** Settles a pending withdrawal as failed ONCE, and gives the held money back (amount + fee). */
 async function markFailed(merchantId, id, reason, extra) {
-  const [row] = await supabase.update('payouts', { id, status: 'pending' }, { status: 'failed', failure_reason: reason, updated_at: new Date().toISOString(), ...(extra || {}) });
-  if (!row) return null; // already settled: never refund twice
-  const mode = row.mode || 'sandbox';
-  await ledger.refundGatewayPayout(merchantId, Number(row.amount), row.currency || 'HTG', `${row.plopplop_reference}:release`, id, mode);
-  if (Number(row.fee) > 0) await ledger.refundGatewayPayout(merchantId, Number(row.fee), row.currency || 'HTG', `${row.plopplop_reference}:release-fee`, id, mode);
+  // Claim first (failure_reason set while still pending), give the money back, and only then show "failed": a client that sees "failed"
+  // always finds the money already back, and a refund error leaves the payout pending and retryable.
+  const [claimed] = await supabase.update('payouts', { id, status: 'pending', failure_reason: supabase.isNull() }, { failure_reason: reason, updated_at: new Date().toISOString() });
+  if (!claimed) return null; // already settled or being settled: never refund twice
+  const mode = claimed.mode || 'sandbox';
+  const cur = claimed.currency || 'HTG';
+  try {
+    await releaseOnce(merchantId, Number(claimed.amount), cur, mode, `${claimed.plopplop_reference}:release`, id);
+    if (Number(claimed.fee) > 0) await releaseOnce(merchantId, Number(claimed.fee), cur, mode, `${claimed.plopplop_reference}:release-fee`, id);
+  } catch (err) {
+    // What was already given back is not given twice (releaseOnce); the next attempt finishes the rest.
+    await supabase.update('payouts', { id, status: 'pending' }, { failure_reason: null, updated_at: new Date().toISOString() }).catch(() => {});
+    throw err;
+  }
+  const [row] = await supabase.update('payouts', { id, status: 'pending' }, { status: 'failed', updated_at: new Date().toISOString(), ...(extra || {}) });
   webhookDispatcher.dispatch(merchantId, 'payout.failed', { id, failure_reason: reason });
-  return row;
+  return row || claimed;
 }
 
 /** The team sent the bank transfer: settle it. The held amount + fee stay spent; the fee is Freda Pay's income. */

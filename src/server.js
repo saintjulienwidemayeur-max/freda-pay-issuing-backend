@@ -456,6 +456,15 @@ if (require.main === module) {
           .catch((e) => console.error('Payout reconciliation:', e.message))
           .finally(() => { payoutBusy = false; });
       }, 3 * 60 * 1000).unref();
+      // A card purchase whose webhook never arrived would leave the balance untouched: the partner's transaction list is read in turn.
+      let cardTxBusy = false;
+      setInterval(() => {
+        if (cardTxBusy) return;
+        cardTxBusy = true;
+        require('./services/cardOrchestrator').reconcileCardTransactions(10)
+          .catch((e) => console.error('Card transaction reconciliation:', e.message))
+          .finally(() => { cardTxBusy = false; });
+      }, 2 * 60 * 1000).unref();
       let mobileBusy = false;
       setInterval(() => {
         if (mobileBusy) return;

@@ -46,7 +46,7 @@ async function complete(ctx) {
   const done = await payoutOrchestrator.completeBankPayout({ id: current.id, bankReference: reference, note: String((ctx.body && ctx.body.note) || '').slice(0, 300) || null, adminId: ctx.adminId });
   if (!done) throw httpError(409, 'ALREADY_PROCESSED', 'Ce retrait a déjà été traité.');
   const merchant = await supabase.selectOne('merchants', { id: done.merchant_id });
-  await notify.bankPayoutSent(merchant, { amount: Number(done.amount), fee: Number(done.fee || 0), reference, currency: done.currency || 'HTG' });
+  await notify.bankPayoutSent(merchant, { amount: Number(done.amount), fee: Number(done.fee || 0), reference, currency: done.currency || 'HTG' }).catch(() => {}); // already settled: a mail failure must not turn it into a 500
   return { status: 200, body: { payout: toAdmin(done, merchant) } };
 }
 
@@ -59,7 +59,7 @@ async function reject(ctx) {
   const done = await payoutOrchestrator.rejectBankPayout({ id: current.id, reason, adminId: ctx.adminId });
   if (!done) throw httpError(409, 'ALREADY_PROCESSED', 'Ce retrait a déjà été traité.');
   const merchant = await supabase.selectOne('merchants', { id: done.merchant_id });
-  await notify.bankPayoutRejected(merchant, { amount: Number(done.amount), reason, currency: done.currency || 'HTG' });
+  await notify.bankPayoutRejected(merchant, { amount: Number(done.amount), reason, currency: done.currency || 'HTG' }).catch(() => {});
   return { status: 200, body: { payout: toAdmin(done, merchant) } };
 }
 

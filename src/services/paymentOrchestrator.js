@@ -174,8 +174,15 @@ async function applyCardResult(payment, remote) {
   const [won] = await supabase.update('payments', { id: payment.id, status: 'pending' },
     { status: 'succeeded', fee, net_amount: net, updated_at: new Date().toISOString() });
   if (!won) return supabase.selectOne('payments', { id: payment.id }); // someone else settled it first
-  await ledger.creditGateway(payment.merchant_id, net, 'USD', payment.plopplop_reference, payment.id, payment.mode);
-  await revenue.log(payment.merchant_id, 'gateway_payment', fee, 'USD', payment.id, payment.mode, pricing.cardPartnerCostUsd(payment.amount));
+  try {
+    await ledger.creditGateway(payment.merchant_id, net, 'USD', payment.plopplop_reference, payment.id, payment.mode);
+  } catch (err) {
+    // Not credited: reopen the payment so the next webhook / poll / reconciliation tries again instead of losing the money.
+    await supabase.update('payments', { id: payment.id, status: 'succeeded' }, { status: 'pending', updated_at: new Date().toISOString() }).catch(() => {});
+    throw err;
+  }
+  // Bookkeeping must not undo a settled payment (nor stop the webhook below).
+  await revenue.log(payment.merchant_id, 'gateway_payment', fee, 'USD', payment.id, payment.mode, pricing.cardPartnerCostUsd(payment.amount)).catch((e) => console.error(`Revenue log failed for payment ${payment.id}:`, e.message)); // eslint-disable-line no-console
   webhookDispatcher.dispatch(payment.merchant_id, 'payment.succeeded', {
     id: won.id, reference: won.own_reference, amount: Number(won.amount), currency: 'USD', method: 'carte',
     fee: Number(won.fee), net_amount: Number(won.net_amount),
@@ -250,9 +257,11 @@ async function reconcilePendingMobile(limit) {
   // In the real database every MonCash/Natcash row has provider = 'plopplop' (column default); card payments have 'tranzak'.
   // Filtering here instead of in the query keeps rows with an empty provider (older rows, tests) in too.
   const all = await supabase.select('payments', { status: 'pending', created_at: supabase.gt(new Date(now - MOBILE_MAX_AGE_MS).toISOString()) }, { order: 'created_at.desc', limit: 300 });
-  const rows = all.filter((p) => p.provider !== 'tranzak').slice(0, limit || 40);
+  // Least recently read first, so old stuck payments are not starved by newer ones when there are many.
+  const rows = all.filter((p) => p.provider !== 'tranzak').sort((a, b) => (lastMobilePoll.get(a.id) || 0) - (lastMobilePoll.get(b.id) || 0)).slice(0, limit || 40);
   let settled = 0;
   let checked = 0;
+  let firstError = null;
   for (const p of rows) {
     if (!p.plopplop_reference) continue;
     const age = now - new Date(p.created_at).getTime();
@@ -265,11 +274,11 @@ async function reconcilePendingMobile(limit) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`Mobile payment reconciliation failed for ${p.id}:`, err.message);
-      paymentHealth.recordRun({ checked: 0, settled: 0, error: err.message });
+      firstError = firstError || err.message;
     }
     await new Promise((r) => setTimeout(r, 400)); // stay gentle with the partner
   }
-  paymentHealth.recordRun({ checked, settled });
+  paymentHealth.recordRun(firstError ? { checked, settled, error: firstError } : { checked, settled }); // one run, one record
   return { checked, settled };
 }
 
@@ -312,7 +321,7 @@ async function refreshStatus(merchantId, payment) {
     }
     const gwCost = config.gatewayProviderCost;
     const partnerCostHtg = gwCost.pct / 100 * Number(payment.amount) + gwCost.fixedHTG;
-    await revenue.log(merchantId, 'gateway_payment', fee, payment.currency, payment.id, payment.mode, pricing.htgToUsd(partnerCostHtg));
+    await revenue.log(merchantId, 'gateway_payment', fee, payment.currency, payment.id, payment.mode, pricing.htgToUsd(partnerCostHtg)).catch((e) => console.error(`Revenue log failed for payment ${payment.id}:`, e.message)); // eslint-disable-line no-console
     webhookDispatcher.dispatch(merchantId, 'payment.succeeded', {
       id: updated.id,
       reference: updated.own_reference,

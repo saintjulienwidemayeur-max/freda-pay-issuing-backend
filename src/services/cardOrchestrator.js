@@ -462,7 +462,7 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
   await debitMasterWalletForCard(merchantId, totalDebit, ownReference, id, mode);
 
   const cents = toCents(preload);
-  const row = await supabase.insert('cards', {
+  const row = await insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, {
     id,
     merchant_id: merchantId,
     own_reference: ownReference,
@@ -516,7 +516,7 @@ async function createBusinessCard({ merchantId, id, ownReference, businessName, 
   await debitMasterWalletForCard(merchantId, totalDebit, ownReference, id, mode);
 
   const cents = toCents(amountUsd);
-  const row = await supabase.insert('cards', {
+  const row = await insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, {
     id,
     merchant_id: merchantId,
     own_reference: ownReference,
@@ -546,6 +546,16 @@ async function createBusinessCard({ merchantId, id, ownReference, businessName, 
   }
 
   return row;
+}
+
+/** Saves the new card row; if that fails after the wallet was debited, the debit is given back (no card, no charge). */
+async function insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, fields) {
+  try {
+    return await supabase.insert('cards', fields);
+  } catch (err) {
+    await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
+    throw err;
+  }
 }
 
 async function debitMasterWalletForCard(merchantId, amountUsd, reference, relatedId, mode) {
@@ -619,6 +629,9 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
       return card;
     }
     const firstActivation = card.status !== 'active';
+    // Already activated (re-delivered webhook or reconciliation): nothing to do. Re-applying it would reset the balance to the
+    // initial amount, wiping every recharge, withdrawal and purchase since, and send card.created again.
+    if (!firstActivation && card.maplerad_card_id) return card;
     const [updated] = await supabase.update(
       'cards',
       { id: card.id, status: card.status },
@@ -726,11 +739,12 @@ async function fundCardNow(merchantId, card, amountUsd, key) {
   await debitMasterWalletForCard(merchantId, totalDebit, ref, card.id, card.mode);
   try {
     await maplerad.forMode(card.mode).fundCard(card.maplerad_card_id, toCents(amountUsd));
-    await revenue.log(merchantId, 'card_recharge', rechargeFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardRecharge);
   } catch (err) {
     await refundMasterWalletForFailedCard(merchantId, totalDebit, ref, card.id, card.mode);
     throw err;
   }
+  // Outside the try: the partner already funded the card, so a bookkeeping failure must never refund the wallet.
+  await revenue.log(merchantId, 'card_recharge', rechargeFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardRecharge).catch(() => {});
   const updated = await adjustCardBalance(card.id, Number(amountUsd));
   webhookDispatcher.dispatch(merchantId, 'card.funded', {
     id: updated.id, reference: updated.own_reference, amount: Number(amountUsd), fee: rechargeFee, total_debited: totalDebit,
@@ -776,9 +790,29 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
   }
 
   await maplerad.forMode(card.mode).withdrawFromCard(card.maplerad_card_id, toCents(amountUsd));
-  await ledger.creditMasterWallet(merchantId, netCredited, 'USD', ref, card.id, card.mode);
-  await revenue.log(merchantId, 'card_withdrawal', withdrawalFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardWithdrawal);
-  const updated = await adjustCardBalance(card.id, -Number(amountUsd));
+  // The partner has already taken the money off the card: from here nothing may fail silently. The wallet credit is retried (the ledger
+  // reference is checked first, so a retry never credits twice), and a failure is logged with the reference the team needs.
+  let credited = false;
+  let lastErr = null;
+  for (let i = 0; i < 3 && !credited; i += 1) {
+    try {
+      const already = await supabase.select('ledger_entries', { merchant_id: merchantId, reference: ref }, { limit: 1 });
+      if (!(already && already.length)) await ledger.creditMasterWallet(merchantId, netCredited, 'USD', ref, card.id, card.mode);
+      credited = true;
+    } catch (err) { lastErr = err; await new Promise((r) => setTimeout(r, 200 * (i + 1))); }
+  }
+  if (!credited) {
+    console.error(`CARD WITHDRAWAL NOT CREDITED: card ${card.id}, ${netCredited} $ withdrawn at the partner, wallet credit "${ref}" failed: ${lastErr && lastErr.message}`); // eslint-disable-line no-console
+    throw lastErr;
+  }
+  await revenue.log(merchantId, 'card_withdrawal', withdrawalFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardWithdrawal).catch(() => {});
+  let updated;
+  try { updated = await adjustCardBalance(card.id, -Number(amountUsd)); } catch (err) {
+    // The money is moved: the card balance is aligned with the partner's figure instead of failing the request.
+    console.error(`Card ${card.id}: balance adjustment after withdrawal failed (${err.message}), aligning with the partner.`); // eslint-disable-line no-console
+    await syncCardBalanceFromPartner(card).catch(() => {});
+    updated = (await supabase.selectOne('cards', { id: card.id })) || card;
+  }
   webhookDispatcher.dispatch(merchantId, 'card.withdrawn', {
     id: updated.id, reference: updated.own_reference, amount: Number(amountUsd), fee: withdrawalFee, net_credited: netCredited,
     balance: Number(updated.balance), currency: 'USD',
@@ -998,6 +1032,7 @@ async function recordCardTransaction(event, webhookMode) {
   const ref = event.reference ? String(event.reference) : `${event.card_id}:${type}:${event.amount}:${event.created_at || ''}`;
   if (await supabase.selectOne('card_transactions', { card_id: card.id, provider_reference: ref })) return null;
   const cents = Number(event.amount);
+  // The unique index (card_id, provider_reference) settles a race between two copies of the same event: the loser stops here.
   const row = await supabase.insert('card_transactions', {
     id: `ctx_${randomHex(10)}`,
     merchant_id: card.merchant_id,
@@ -1012,7 +1047,11 @@ async function recordCardTransaction(event, webhookMode) {
     description: event.description ? String(event.description).slice(0, 200) : null,
     merchant_name: event.merchant && event.merchant.name ? String(event.merchant.name).slice(0, 120) : null,
     occurred_at: event.created_at || new Date().toISOString(),
+  }).catch(async (err) => {
+    if (await supabase.selectOne('card_transactions', { card_id: card.id, provider_reference: ref }).catch(() => null)) return null;
+    throw err;
   });
+  if (!row) return null;
   // The money the customer just spent (or got back) changes the card's balance: before this, the balance only ever moved on our own
   // recharge / withdrawal, so a purchase left it untouched.
   const updated = await applyCardSpendToBalance(card, row).catch((err) => { console.error(`Card balance update failed for ${card.id}: ${err.message}`); return card; }); // eslint-disable-line no-console
@@ -1095,9 +1134,11 @@ async function applyCardSpendToBalance(card, row) {
     if (!fresh) return card;
     const current = Number(fresh.balance || 0);
     const next = Math.max(0, pricing.round2(current + delta));
+    if (current + delta < 0) console.warn(`Card ${card.id}: ${row.provider_reference} (${delta} $) would take the balance below zero (${current} $): set to 0, ${Math.abs(current + delta).toFixed(2)} $ not covered.`); // eslint-disable-line no-console
     const rows = await supabase.update('cards', { id: card.id, balance: current }, { balance: next, updated_at: new Date().toISOString() });
     if (rows && rows.length) return rows[0];
   }
+  console.error(`Card ${card.id}: balance NOT updated for transaction ${row.provider_reference} (${delta} $) after 8 attempts; the partner alignment will correct it.`); // eslint-disable-line no-console
   return card;
 }
 
@@ -1161,6 +1202,54 @@ async function syncCardBalanceFromPartner(card) {
 }
 
 /**
+ * Stores the partner transactions we never received by webhook for one card and takes them off (or gives them back to) its balance,
+ * then aligns the balance with the partner's. A stored transaction is one already applied, so an unstored one is exactly a movement
+ * the balance missed. No fee and no webhook to the merchant here: those belong to the live notification.
+ * `sinceMs` limits how far back it looks (the partner lists the newest first).
+ */
+async function syncCardTransactionsFromPartner(card, opts) {
+  if (!card || !card.maplerad_card_id) return { imported: 0 };
+  const since = opts && opts.sinceMs ? Date.now() - opts.sinceMs : 0;
+  const res = await maplerad.forMode(card.mode).getCardTransactions(card.maplerad_card_id, { page: 1, page_size: 100 });
+  const raw = (res && (res.data || res.transactions || res.result)) || [];
+  let imported = 0;
+  let current = card;
+  for (const t of Array.isArray(raw) ? raw : []) {
+    const ref = String(t.reference || t.id || '');
+    if (!ref) continue;
+    if (since && t.created_at && new Date(t.created_at).getTime() < since) continue;
+    if (await supabase.selectOne('card_transactions', { card_id: card.id, provider_reference: ref })) continue;
+    const cents = Number(t.amount);
+    const row = await supabase.insert('card_transactions', {
+      id: `ctx_${randomHex(10)}`, merchant_id: card.merchant_id, card_id: card.id, mode: card.mode === 'live' ? 'live' : 'sandbox', provider_reference: ref,
+      type: String(t.type || '').toUpperCase() || 'UNKNOWN', status: t.status ? String(t.status).toUpperCase() : null, direction: t.mode ? String(t.mode).toUpperCase() : null,
+      amount_usd: Number.isFinite(cents) ? Math.round(cents) / 100 : null, currency: t.currency || 'USD', description: t.description ? String(t.description).slice(0, 200) : null,
+      merchant_name: t.merchant && t.merchant.name ? String(t.merchant.name).slice(0, 120) : null, occurred_at: t.created_at || new Date().toISOString(),
+    }).catch(() => null);
+    if (!row) continue; // inserted meanwhile by the webhook
+    current = await applyCardSpendToBalance(current, row).catch(() => current);
+    imported += 1;
+  }
+  if (imported) await syncCardBalanceFromPartner(current).catch(() => {});
+  return { imported };
+}
+
+/** Background safety net: webhooks can be lost, so a few cards per run (rotating through all of them) are read against the partner. */
+let cardSyncCursor = 0;
+async function reconcileCardTransactions(limit) {
+  const all = await supabase.select('cards', { status: supabase.inList(['active', 'disabled']), mode: 'live', deleted_at: supabase.isNull() }, { order: 'created_at.asc', limit: 500 });
+  const n = limit || 10;
+  if (cardSyncCursor >= all.length) cardSyncCursor = 0;
+  const cards = all.slice(cardSyncCursor, cardSyncCursor + n);
+  cardSyncCursor += n;
+  let imported = 0;
+  for (const c of cards) {
+    try { imported += (await syncCardTransactionsFromPartner(c, { sinceMs: 7 * 24 * 3600 * 1000 })).imported; } catch (err) { console.error(`Card transaction sync ${c.id}: ${err.message}`); } // eslint-disable-line no-console
+  }
+  return { cards: cards.length, imported };
+}
+
+/**
  * Plans that bill each card purchase (Startup: 0.10 $) take that fee from the Master Wallet, once per purchase
  * (the partner's reference is the key, so a re-delivered event never charges twice). Only a successful purchase
  * authorization counts; refusals have their own fee. Never takes more than the wallet holds.
@@ -1195,6 +1284,8 @@ function transactionWebhookData(card, t) {
 module.exports = {
   transactionWebhookData,
   recordCardTransaction,
+  syncCardTransactionsFromPartner,
+  reconcileCardTransactions,
   backfillCardBalances,
   balanceWebhookData,
   reconcilePendingCardCreations,
