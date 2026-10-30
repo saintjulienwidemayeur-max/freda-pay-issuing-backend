@@ -1282,6 +1282,8 @@ function transactionWebhookData(card, t) {
 }
 
 module.exports = {
+  lookupProviderCustomerId,
+  isAlreadyEnrolledError,
   transactionWebhookData,
   recordCardTransaction,
   syncCardTransactionsFromPartner,

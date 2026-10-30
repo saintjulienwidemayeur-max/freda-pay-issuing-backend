@@ -7300,3 +7300,13 @@ test('crypto wallet: its own balance (separate from the Master Wallet), receive,
   assert.equal(blocked.status, 403);
   assert.equal(blocked.data.error.code, 'CRYPTO_SANDBOX_ONLY');
 });
+
+test('crypto wallet: a partner customer left by an earlier failed attempt is taken back, not refused as "already exists"', async () => {
+  const reg = await registerAndVerify({ business_name: 'Retry Crypto Co', email: 'retrycrypto@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  // the partner already holds the customer from an attempt that never saved an address
+  await require('../src/services/maplerad').createCustomer({ firstName: 'Retry Crypto Co', lastName: 'Business', email: 'retrycrypto+crypto@sandbox-test.example.com', country: 'HT' });
+  const a = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(a.status, 201);
+  assert.ok(a.data.address);
+});
