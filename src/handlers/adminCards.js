@@ -114,7 +114,7 @@ function publicTransaction(t) {
   return {
     id: t.id, type: t.type, status: t.status, direction: t.direction,
     amount: t.amount_usd == null ? null : Number(t.amount_usd), currency: t.currency || 'USD',
-    description: t.description, merchant_name: t.merchant_name, occurred_at: t.occurred_at,
+    description: t.description, merchant_name: require('../utils/partnerNames').publicMerchantName(t.merchant_name), occurred_at: t.occurred_at,
     label: txLabelFr(t.type, t.status),
   };
 }
