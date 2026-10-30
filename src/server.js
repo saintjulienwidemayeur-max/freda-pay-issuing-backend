@@ -399,6 +399,7 @@ if (require.main === module) {
     // API usage counters are saved every 30 s; blocks are re-read every 30 s. A redeploy flushes the counters first.
     require('./services/apiUsage').start();
     require('./services/apiCallLog').start();
+    if (process.env.NODE_ENV !== 'test') require('./services/cardOrchestrator').backfillCardBalances().catch((e) => console.error('Card balance correction failed:', e.message));
     require('./services/apiBlocks').start();
     require('./services/adminAlerts').start();
     process.on('SIGTERM', () => { Promise.all([require('./services/apiUsage').flush(), require('./services/apiCallLog').flush()]).finally(() => process.exit(0)); });

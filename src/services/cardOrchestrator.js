@@ -832,11 +832,8 @@ async function terminateCard(merchantId, cardId) {
   }
 
   await maplerad.forMode(card.mode).terminateCard(card.maplerad_card_id); // must succeed: the card is really closed
-  // The local balance only moves on fund / withdraw, never on purchases: what the card spent online (the partner's
-  // notifications, stored as card_transactions) is no longer on the card and must not be refunded to the Master Wallet.
-  const { summarizeCardSpend } = require('./adminStats');
-  const spent = summarizeCardSpend(await supabase.select('card_transactions', { card_id: card.id }, { limit: 5000 })).total_usd;
-  const refundable = Math.max(0, pricing.round2(Number(card.balance || 0) - Math.max(0, spent)));
+  // The balance follows purchases and refunds (applyCardSpendToBalance), so what is left on the card is what goes back to the Master Wallet.
+  const refundable = Math.max(0, pricing.round2(Number(card.balance || 0)));
   const [claimed] = await supabase.update('cards', { id: card.id, status: card.status }, { status: 'terminated', balance: 0, updated_at: now });
   if (claimed && refundable > 0) {
     await ledger.creditMasterWallet(merchantId, refundable, 'USD', `card-terminate-refund:${card.own_reference}`, card.id, card.mode);
@@ -1013,9 +1010,100 @@ async function recordCardTransaction(event, webhookMode) {
     merchant_name: event.merchant && event.merchant.name ? String(event.merchant.name).slice(0, 120) : null,
     occurred_at: event.created_at || new Date().toISOString(),
   });
-  webhookDispatcher.dispatch(card.merchant_id, 'card.transaction', transactionWebhookData(card, row)); // the merchant's server learns of every card movement
+  // The money the customer just spent (or got back) changes the card's balance: before this, the balance only ever moved on our own
+  // recharge / withdrawal, so a purchase left it untouched.
+  const updated = await applyCardSpendToBalance(card, row).catch((err) => { console.error(`Card balance update failed for ${card.id}: ${err.message}`); return card; }); // eslint-disable-line no-console
+  syncCardBalanceFromPartner(updated).catch(() => {});
+  webhookDispatcher.dispatch(card.merchant_id, 'card.transaction', transactionWebhookData(updated, row)); // the merchant's server learns of every card movement
   await chargeCardSpendFee(card, row).catch((err) => console.error(`Card spend fee failed for ${card.id}: ${err.message}`)); // eslint-disable-line no-console
   return row;
+}
+
+/**
+ * A successful purchase (AUTHORIZATION, DEBIT) lowers the card's balance; a REVERSAL or REFUND (credit) gives money back. Funding and
+ * withdrawals are applied by our own endpoints, and a SETTLEMENT repeats a purchase already taken at authorization, so those do not
+ * move it. Runs once per partner event (recordCardTransaction stores each event once), never below zero.
+ */
+/** How one stored card transaction moves the card's balance: negative for a purchase, positive for a reversal or refund, 0 otherwise. */
+function balanceDeltaOf(row) {
+  const amount = Number(row.amount_usd);
+  if (!(amount > 0)) return 0;
+  if (/DECLIN|FAIL|REJECT/.test(String(row.status || ''))) return 0;
+  if (row.type === 'AUTHORIZATION' && row.direction === 'DEBIT') return -amount;
+  if ((row.type === 'REVERSAL' || row.type === 'REFUND') && row.direction !== 'DEBIT') return amount;
+  return 0;
+}
+
+async function applyCardSpendToBalance(card, row) {
+  const delta = balanceDeltaOf(row);
+  if (!delta) return card;
+  for (let i = 0; i < 8; i += 1) {
+    const fresh = await supabase.selectOne('cards', { id: card.id });
+    if (!fresh) return card;
+    const current = Number(fresh.balance || 0);
+    const next = Math.max(0, pricing.round2(current + delta));
+    const rows = await supabase.update('cards', { id: card.id, balance: current }, { balance: next, updated_at: new Date().toISOString() });
+    if (rows && rows.length) return rows[0];
+  }
+  return card;
+}
+
+/**
+ * One-time correction, run when this version first starts: purchases recorded BEFORE the balance followed them were never taken off
+ * the cards, so every active card still shows what was loaded. The moment of the first start is saved (platform_settings) and every
+ * transaction stored before it is applied once; the ones after it were applied live. Safe to call again: it does nothing the second time.
+ */
+async function backfillCardBalances() {
+  const key = 'card_balance_cutover';
+  if (await supabase.selectOne('platform_settings', { key })) return { skipped: true };
+  const cutover = new Date().toISOString();
+  try {
+    await supabase.insert('platform_settings', { key, value: cutover, updated_by: 'system', updated_at: cutover });
+  } catch (err) { return { skipped: true }; } // another instance (or a table problem): never run twice
+  const rows = await supabase.select('card_transactions', { created_at: supabase.lt(cutover) }, { limit: 100000 });
+  const perCard = new Map();
+  for (const r of rows) {
+    const d = balanceDeltaOf(r);
+    if (d) perCard.set(r.card_id, (perCard.get(r.card_id) || 0) + d);
+  }
+  let corrected = 0;
+  for (const [cardId, delta] of perCard) {
+    for (let i = 0; i < 8; i += 1) {
+      const fresh = await supabase.selectOne('cards', { id: cardId });
+      if (!fresh || fresh.status === 'terminated') break;
+      const current = Number(fresh.balance || 0);
+      const next = Math.max(0, pricing.round2(current + delta));
+      const done = await supabase.update('cards', { id: cardId, balance: current }, { balance: next, updated_at: new Date().toISOString() });
+      if (done && done.length) { corrected += 1; break; }
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.log(`Card balances corrected for past purchases: ${corrected} card(s) from ${rows.length} stored transaction(s).`);
+  return { corrected, transactions: rows.length };
+}
+
+/**
+ * The partner holds the real balance (fees such as cross-border charges move it too). After each transaction its figure is read and
+ * kept ONLY when it is close to ours (within 2 $): that corrects small drifts, while a figure in another unit or from a stale answer can
+ * never rewrite the balance by a large amount. A bigger gap is only reported in the server log.
+ */
+async function syncCardBalanceFromPartner(card) {
+  if (!card || !card.maplerad_card_id) return;
+  const res = await maplerad.forMode(card.mode).getCard(card.maplerad_card_id);
+  const data = (res && (res.data || res)) || {};
+  const cents = Number(data.balance);
+  if (!Number.isFinite(cents) || cents < 0) return;
+  const partner = pricing.round2(cents / 100);
+  const fresh = await supabase.selectOne('cards', { id: card.id });
+  if (!fresh) return;
+  const ours = Number(fresh.balance || 0);
+  if (Math.abs(partner - ours) < 0.005) return;
+  if (Math.abs(partner - ours) <= 2) {
+    await supabase.update('cards', { id: card.id, balance: ours }, { balance: partner, updated_at: new Date().toISOString() });
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(`Card ${card.id}: the partner shows ${partner} $ but our balance is ${ours} $ (gap above 2 $): left unchanged, check this card.`);
+  }
 }
 
 /**
@@ -1046,12 +1134,14 @@ function transactionWebhookData(card, t) {
     id: t.id, card_id: card.id, card_reference: card.own_reference, type: t.type, status: t.status, direction: t.direction,
     amount: t.amount_usd == null ? null : Number(t.amount_usd), currency: t.currency || 'USD',
     description: t.description, merchant_name: t.merchant_name, occurred_at: t.occurred_at,
+    card_balance: card.balance == null ? null : Number(card.balance),
   };
 }
 
 module.exports = {
   transactionWebhookData,
   recordCardTransaction,
+  backfillCardBalances,
   applyCardDeclineWebhook,
   _test: { parseExpiry, formatAddress, extractCustomerIdFromList },
   getHolderProfile,
