@@ -1187,7 +1187,7 @@ function transactionWebhookData(card, t) {
   return {
     id: t.id, card_id: card.id, card_reference: card.own_reference, type: t.type, status: t.status, direction: t.direction,
     amount: t.amount_usd == null ? null : Number(t.amount_usd), currency: t.currency || 'USD',
-    description: t.description, merchant_name: t.merchant_name, occurred_at: t.occurred_at,
+    description: t.description, merchant_name: require('../utils/partnerNames').publicMerchantName(t.merchant_name), occurred_at: t.occurred_at,
     card_balance: card.balance == null ? null : Number(card.balance),
   };
 }

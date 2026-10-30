@@ -171,10 +171,7 @@ function txLabel(type, status) {
   return TX_LABEL[t] || 'Transaction';
 }
 /** Our own movements (recharge, retrait, fermeture) carry the partner as "merchant": that name is not shown. */
-function txMerchant(name) {
-  const n = String(name || '').trim();
-  return !n || /maplerad|tranzak|plopplop/i.test(n) ? null : n;
-}
+const txMerchant = require('../utils/partnerNames').publicMerchantName;
 
 /** One transaction stored from the partner's notifications (card_transactions), in the public shape. */
 function toPublicStored(t) {
@@ -254,7 +251,7 @@ async function getAllTransactions(ctx) {
     .slice(0, 20)
     .map((t) => ({
       id: t.id, type: t.type, status: t.status, mode: t.direction, amount: t.amount_usd, currency: t.currency || 'USD',
-      description: t.description, merchant_name: t.merchant_name, date: t.occurred_at,
+      description: t.description, merchant_name: txMerchant(t.merchant_name), date: t.occurred_at,
       card_id: t.card_id, card_reference: byId.get(t.card_id).own_reference,
     }));
   return { status: 200, body: { transactions: all, mode } };
@@ -268,7 +265,7 @@ function toPublicTransaction(t) {
     status: t.status || null,
     amount: typeof t.amount === 'number' ? t.amount / 100 : Number(t.amount || 0),
     currency: t.currency || 'USD',
-    merchant_name: t.merchant && t.merchant.name,
+    merchant_name: txMerchant(t.merchant && t.merchant.name),
     merchant_city: t.merchant && t.merchant.city,
     date: t.created_at || t.updated_at || null,
   };
