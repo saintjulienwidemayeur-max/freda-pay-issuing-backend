@@ -72,6 +72,7 @@ async function receiveMaplerad(ctx) {
     // record and answer 500 so the partner delivers it again. Processing is idempotent (every money step is a claim).
     // eslint-disable-next-line no-console
     console.error('Error processing Maplerad webhook:', event.event, err);
+    require('../services/providerErrors').record({ mode: webhookMode, route: `webhook ${event.event || event.eventType || '?'}`, method: 'WEBHOOK', path: String(event.reference || event.card_id || ''), message: `Le webhook n'a pas pu être traité : ${err.message}`, shown_to_merchant: null }).catch(() => {}); // visible in admin "Erreurs cartes"
     await supabase.delete('webhook_events', { id: svixId }).catch(() => {});
     throw httpError(500, 'PROCESSING_ERROR', 'Traitement impossible pour le moment.');
   }

@@ -41,6 +41,7 @@ const adminMessageHandlers = require('./handlers/adminMessages');
 const adminInboxHandlers = require('./handlers/adminInbox');
 const adminCardHandlers = require('./handlers/adminCards');
 const keyCheckHandlers = require('./handlers/keyCheck');
+const adminSchemaHandlers = require('./handlers/adminSchema');
 const adminProviderHandlers = require('./handlers/adminProvider');
 const passwordResetHandlers = require('./handlers/passwordReset');
 const assetHandlers = require('./handlers/assets');
@@ -299,6 +300,9 @@ router.post('/admin/cards/:id/send-balance', adminSession.requireAdminSession, a
 router.post('/admin/cards/:id/align-balance', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.cardBalanceAlign));
 router.get('/admin/api-calls', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.callMerchants));
 router.get('/admin/api-calls/:merchantId', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.callsOfMerchant));
+router.get('/admin/diagnostic/schema', adminSession.requireAdminSession, apiTrafficAdmin(() => adminSchemaHandlers.schemaCheck()));
+router.get('/admin/diagnostic/webhook-events', adminSession.requireAdminSession, apiTrafficAdmin(() => adminSchemaHandlers.webhookEvents()));
+router.post('/admin/cards/import-transactions', adminSession.requireAdminSession, apiTrafficAdmin(adminSchemaHandlers.importTransactions));
 router.get('/admin/payments/diagnostic', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.paymentDiagnostic));
 router.post('/admin/payments/check', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.checkPayment));
 router.get('/admin/provider-errors', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.providerErrors));
