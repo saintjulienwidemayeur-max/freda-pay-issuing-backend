@@ -136,6 +136,13 @@ async function handle(req, res) {
     return send(res, 200, { status: true, message: 'success', id, first_name: body.first_name, last_name: body.last_name, email: body.email });
   }
 
+  // ---- POST /crypto (stablecoin deposit address for a customer) ----
+  if (url.pathname === '/crypto' && req.method === 'POST') {
+    if (!body.customer_id || !body.coin || !body.chain) return send(res, 400, { status: false, message: 'customer_id, coin and chain are required' });
+    const id = randomId('cry');
+    return send(res, 200, { status: true, message: 'address generated', data: { id, address: `0xMOCK${id.replace(/[^a-z0-9]/gi, '')}${body.chain}`, chain: body.chain, coin: body.coin, offramp: body.offramp === true, active: true } });
+  }
+
   // ---- POST /customers (Tier 0: first_name, last_name, email, country) ----
   if (url.pathname === '/customers' && req.method === 'POST') {
     if (!body.first_name || !body.last_name || !body.email || !body.country) {

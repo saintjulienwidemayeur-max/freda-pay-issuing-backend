@@ -13,6 +13,7 @@ const paymentHandlers = require('./handlers/payments');
 const payoutHandlers = require('./handlers/payouts');
 const walletHandlers = require('./handlers/wallet');
 const walletTopupHandlers = require('./handlers/walletTopup');
+const cryptoWalletHandlers = require('./handlers/cryptoWallet');
 const accountHandlers = require('./handlers/account');
 const billingHandlers = require('./handlers/billing');
 const paymentLinkHandlers = require('./handlers/paymentLinks');
@@ -131,6 +132,9 @@ router.get('/dashboard/wallet/topups/quote', session.requireSession, walletTopup
 router.get('/dashboard/wallet/topups', session.requireSession, walletTopupHandlers.list);
 router.post('/dashboard/wallet/topups', session.requireSession, walletTopupHandlers.create);
 router.get('/dashboard/wallet/topups/:id', session.requireSession, walletTopupHandlers.get);
+router.get('/dashboard/crypto', session.requireSession, cryptoWalletHandlers.overview);
+router.get('/dashboard/crypto/quote', session.requireSession, cryptoWalletHandlers.quote);
+router.post('/dashboard/crypto/addresses', session.requireSession, cryptoWalletHandlers.createAddress);
 
 // ---- Account (business info, individual -> business conversion) ----
 router.put('/dashboard/account', session.requireSession, accountHandlers.update);
@@ -262,6 +266,9 @@ router.get('/admin/diagnostic/maplerad', adminSession.requireAdminSession, (ctx)
 router.get('/admin/diagnostic/links', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminLinkHandlers.links(ctx); });
 router.post('/admin/diagnostic/email-test', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminLinkHandlers.emailTest(ctx); });
 router.get('/admin/settings/exchange-rate', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminSettingsHandlers.getExchangeRate(ctx); });
+router.get('/admin/settings/crypto-fees', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return cryptoWalletHandlers.getFees(ctx); });
+router.put('/admin/settings/crypto-fees', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return cryptoWalletHandlers.setFees(ctx); });
+router.get('/admin/crypto/deposits', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return cryptoWalletHandlers.adminDeposits(ctx); });
 router.put('/admin/settings/exchange-rate', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminSettingsHandlers.setExchangeRate(ctx); });
 router.get('/admin/bank-payouts', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminBankPayoutHandlers.list(ctx); });
 router.post('/admin/bank-payouts/:id/complete', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminBankPayoutHandlers.complete(ctx); });

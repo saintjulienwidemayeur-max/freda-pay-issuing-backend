@@ -405,7 +405,21 @@ function assertReadyForIssuance(mode) {
   }
 }
 
+/** Crypto: a stablecoin deposit address for one customer. offramp = true converts every deposit to USD in our business wallet. */
+async function createCryptoAddress(mode, { customerId, coin, chain, offramp }) {
+  const res = await request(mode, 'POST', '/crypto', { customer_id: customerId, coin, chain, offramp: offramp !== false });
+  logRaw(mode, 'POST /crypto', res);
+  return res;
+}
+async function getCryptoAddresses(mode, customerId) {
+  return request(mode, 'GET', `/crypto/wallets/${encodeURIComponent(customerId)}`);
+}
+async function updateCryptoOfframp(mode, addressId, offramp) {
+  return request(mode, 'PATCH', `/crypto/${encodeURIComponent(addressId)}`, { offramp: !!offramp });
+}
+
 const IMPL = {
+  createCryptoAddress, getCryptoAddresses, updateCryptoOfframp,
   enrollCustomer, createCustomer, findCustomersByEmail, listCustomers, upgradeCustomerTier1, upgradeCustomerTier2, updateCustomer,
   createCard, createBusinessCard, fundCard, withdrawFromCard, getCard, listCards,
   getCardTransactions, mockCardTransaction, freezeCard, unfreezeCard, terminateCard,
