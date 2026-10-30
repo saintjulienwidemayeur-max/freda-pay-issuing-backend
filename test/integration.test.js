@@ -7261,4 +7261,11 @@ test('crypto wallet: a stablecoin deposit is converted to USD, credited to the M
   assert.equal(list.data.totals.deposits, 1);
   assert.equal(list.data.totals.margin_usd, 2);
   assert.equal(list.data.totals.to_review, 1);
+
+  // Live is closed for now: no address, no credit
+  const live = await liveWithGateway('cryptolive', 0);
+  assert.equal((await api('GET', '/dashboard/crypto', { token: live.token })).data.enabled, false);
+  const blocked = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.data.error.code, 'CRYPTO_SANDBOX_ONLY');
 });

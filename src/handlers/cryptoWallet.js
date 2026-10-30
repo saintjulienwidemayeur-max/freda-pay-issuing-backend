@@ -14,6 +14,7 @@ function httpError(status, code, message) {
 
 async function loadMerchant(ctx, mode) {
   const merchant = ctx.merchant || (await supabase.selectOne('merchants', { id: ctx.merchantId }));
+  if (mode === 'live' && !cryptoWallet.liveEnabled()) throw httpError(403, 'CRYPTO_SANDBOX_ONLY', "Le portefeuille crypto est disponible en mode Sandbox pour le moment. Le mode Live arrive bientôt.");
   if (mode === 'live' && !(merchant && merchant.issuing_live_enabled)) {
     throw httpError(403, 'LIVE_NOT_ENABLED', "Le portefeuille crypto en mode Live s'active avec l'accès Live de Freda Pay Issuing.");
   }
@@ -23,6 +24,7 @@ async function loadMerchant(ctx, mode) {
 /** GET /dashboard/crypto : what the page needs in one call (coins, chains, our rate, the merchant's addresses and latest deposits). */
 async function overview(ctx) {
   const mode = await resolveMode(ctx);
+  if (mode === 'live' && !cryptoWallet.liveEnabled()) return { status: 200, body: { mode, enabled: false, message: 'Le portefeuille crypto est disponible en mode Sandbox pour le moment. Le mode Live arrive bientôt.' } };
   const fees = await cryptoFees.get();
   const [addresses, deposits, balance] = await Promise.all([
     supabase.select('crypto_addresses', { merchant_id: ctx.merchantId, mode }, { order: 'created_at.asc', limit: 50 }),
@@ -33,6 +35,7 @@ async function overview(ctx) {
     status: 200,
     body: {
       mode,
+      enabled: true,
       ...cryptoWallet.catalog(),
       fees: { conversion_pct: fees.conversion_pct, min_deposit_usd: fees.min_deposit_usd },
       master_wallet_usd: balance,

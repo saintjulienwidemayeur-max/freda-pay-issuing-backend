@@ -16,6 +16,8 @@ const CHAINS = {
   bsc: { label: 'BSC', provider: 'bsc', coins: ['USDT', 'USDC'] },
   tron: { label: 'Tron', provider: 'tron', coins: ['USDT', 'USDC'] },
 };
+// The crypto wallet is Sandbox-only for now: Live opens by setting CRYPTO_LIVE_ENABLED=true.
+const liveEnabled = () => process.env.CRYPTO_LIVE_ENABLED === 'true';
 const AUTO_CREDIT_MAX_USD = 25000; // above this, a deposit waits for the team instead of crediting by itself
 
 function httpError(status, code, message) {
@@ -111,6 +113,7 @@ async function applyDepositEvent(event, webhookMode) {
     ? await supabase.selectOne('crypto_addresses', { address: dep.address })
     : await supabase.selectOne('crypto_addresses', { maplerad_address_id: dep.addressId });
   if (!addr) return null;
+  if (addr.mode === 'live' && !liveEnabled()) return null; // Sandbox only for now
   if (webhookMode && addr.mode !== webhookMode) return null; // an event of the other environment never touches this address
   if (await supabase.selectOne('crypto_deposits', { provider_reference: dep.reference })) return null;
 
@@ -145,4 +148,4 @@ async function applyDepositEvent(event, webhookMode) {
   return row;
 }
 
-module.exports = { catalog, getOrCreateAddress, applyDepositEvent, parseDepositEvent, toPublicAddress, toPublicDeposit, CHAINS, COINS, AUTO_CREDIT_MAX_USD };
+module.exports = { liveEnabled, catalog, getOrCreateAddress, applyDepositEvent, parseDepositEvent, toPublicAddress, toPublicDeposit, CHAINS, COINS, AUTO_CREDIT_MAX_USD };
