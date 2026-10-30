@@ -271,8 +271,46 @@ async function callsOfMerchant(ctx) {
   };
 }
 
+/**
+ * Support tool: for the active cards (newest first, at most 60 per call) compare OUR balance with the one the card partner reports.
+ * Nothing is changed. The partner's figure is read in cents, like every amount it sends; a gap tells the team a card is out of line.
+ */
+async function cardBalanceCheck(ctx) {
+  const mode = ctx.query && ctx.query.mode === 'sandbox' ? 'sandbox' : 'live';
+  const cards = await supabase.select('cards', { status: 'active', mode, deleted_at: supabase.isNull() }, { order: 'created_at.desc', limit: 60 });
+  const maplerad = require('../services/maplerad');
+  const names = cards.length ? await namesFor([...new Set(cards.map((c) => c.merchant_id))]) : {};
+  const out = [];
+  for (const c of cards) {
+    const row = { id: c.id, merchant_id: c.merchant_id, merchant_name: names[c.merchant_id] ? (names[c.merchant_id].business_name || names[c.merchant_id].email) : null, reference: c.own_reference, kind: c.kind, our_balance: Number(c.balance || 0), partner_balance: null, gap: null, error: null };
+    if (!c.maplerad_card_id) { row.error = 'pas de carte chez le fournisseur'; out.push(row); continue; }
+    try {
+      const res = await maplerad.forMode(c.mode).getCard(c.maplerad_card_id);
+      const d = (res && (res.data || res)) || {};
+      const cents = Number(d.balance);
+      if (Number.isFinite(cents)) { row.partner_balance = Math.round(cents) / 100; row.gap = Math.round((row.partner_balance - row.our_balance) * 100) / 100; } else row.error = 'le fournisseur ne donne pas de solde';
+    } catch (err) { row.error = err.message; }
+    out.push(row);
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  out.sort((a, b) => Math.abs(b.gap || 0) - Math.abs(a.gap || 0));
+  return { status: 200, body: { mode, checked: out.length, out_of_line: out.filter((r) => r.gap != null && Math.abs(r.gap) >= 0.01).length, cards: out } };
+}
+
+/** Sets OUR balance of one card to what the partner reports (an admin decision, after looking at the check above). */
+async function cardBalanceAlign(ctx) {
+  const card = await supabase.selectOne('cards', { id: ctx.params.id });
+  if (!card || !card.maplerad_card_id) throw httpError(404, 'NOT_FOUND', 'Carte introuvable.');
+  const res = await require('../services/maplerad').forMode(card.mode).getCard(card.maplerad_card_id);
+  const cents = Number(((res && (res.data || res)) || {}).balance);
+  if (!Number.isFinite(cents) || cents < 0) throw httpError(502, 'CARD_SERVICE_ERROR', 'Le fournisseur ne donne pas de solde pour cette carte.');
+  const partner = Math.round(cents) / 100;
+  await supabase.update('cards', { id: card.id }, { balance: partner, updated_at: new Date().toISOString() });
+  return { status: 200, body: { id: card.id, previous: Number(card.balance || 0), balance: partner } };
+}
+
 async function health() {
   return { status: 200, body: await require('../services/apiHealth').all() };
 }
 
-module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment, paymentDiagnostic, callMerchants, callsOfMerchant };
+module.exports = { snapshot, usage, usageDetail, block, unblock, revokeKey, health, healthDraft, healthSend, webhookTest, webhookTestAll, providerErrors, checkPayment, paymentDiagnostic, callMerchants, callsOfMerchant, cardBalanceCheck, cardBalanceAlign };

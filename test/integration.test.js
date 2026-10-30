@@ -6950,3 +6950,27 @@ test('card safety nets: a creation whose notification never came is activated fr
   assert.equal(after.status, 'terminated');
   assert.match(after.failure_reason, /Insufficient Funds/);
 });
+
+test('admin card balance check compares our balance with the partner and can align one card; editors are refused', async () => {
+  const maplerad = require('../src/services/maplerad');
+  const { token } = await adminLogin('owner');
+  const live = await liveMerchantWithActivity('balcheck'); // business card, active, live
+  const row = mockTables.cards.find((c) => c.id === live.card.id);
+  row.balance = 100;
+  const original = maplerad.forMode;
+  maplerad.forMode = () => ({ getCard: async () => ({ data: { id: row.maplerad_card_id, balance: 7000 } }) }); // the partner says 70 $
+  try {
+    const check = await api('GET', '/admin/cards-balance-check?mode=live', { token });
+    assert.equal(check.status, 200);
+    const mine = check.data.cards.find((c) => c.id === row.id);
+    assert.equal(mine.our_balance, 100);
+    assert.equal(mine.partner_balance, 70);
+    assert.equal(mine.gap, -30);
+    assert.ok(check.data.out_of_line >= 1);
+    const align = await api('POST', `/admin/cards/${row.id}/align-balance`, { token });
+    assert.equal(align.status, 200);
+    assert.equal(align.data.balance, 70);
+    assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), 70);
+    assert.equal((await api('GET', '/admin/cards-balance-check', { token: (await adminLogin('editor')).token })).status, 403);
+  } finally { maplerad.forMode = original; }
+});
