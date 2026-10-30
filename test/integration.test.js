@@ -6819,3 +6819,47 @@ test('contracts: a signature imported from a picture and the new handwriting fon
   const bad = await api('POST', '/admin/contracts', { token: m.adminToken, body: { title: 'x', body_html: CONTRACT_HTML, merchant_id: m.merchantId, admin_signature: { type: 'scanned', image: sigMask() } } });
   assert.equal(bad.status, 400);
 });
+
+test('card purchases lower the card balance (once per event), refunds give it back, declines and funding events do not move it', async () => {
+  const reg = await registerAndVerify({ business_name: 'Spend Co', email: 'spendco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'SPEND-1', kind: 'business', business_name: 'Spend Co', brand: 'VISA', amount: 20 } });
+  assert.equal(c.status, 202);
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  assert.equal(Number(row.balance), 20);
+  const ev = (over) => Object.assign({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 500, currency: 'USD', card_id: row.maplerad_card_id, reference: 'spend-a', merchant: { name: 'SHOP' } }, over);
+  await sendProviderEvent(ev({}), MOCK_SANDBOX_WHSEC);
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 15);
+  await sendProviderEvent(ev({}), MOCK_SANDBOX_WHSEC); // the same purchase delivered again
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 15);
+  await sendProviderEvent(ev({ reference: 'spend-settle', type: 'SETTLEMENT' }), MOCK_SANDBOX_WHSEC);
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 15);
+  await sendProviderEvent(ev({ reference: 'spend-decline', type: 'DECLINE', status: 'FAILED', amount: 9999 }), MOCK_SANDBOX_WHSEC);
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 15);
+  await sendProviderEvent(ev({ reference: 'spend-funding', type: 'FUNDING', mode: 'CREDIT', amount: 3000 }), MOCK_SANDBOX_WHSEC);
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 15);
+  await sendProviderEvent(ev({ reference: 'spend-refund', type: 'REFUND', mode: 'CREDIT', amount: 200 }), MOCK_SANDBOX_WHSEC);
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 17);
+  await sendProviderEvent(ev({ reference: 'spend-big', amount: 90000 }), MOCK_SANDBOX_WHSEC); // more than the card holds: never below zero
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 0);
+  const shown = await api('GET', `/dashboard/cards/${row.id}`, { token });
+  assert.equal(Number(shown.data.balance), 0);
+});
+
+test('one-time correction: purchases stored before this version are taken off the card once, never twice', async () => {
+  const orchestrator = require('../src/services/cardOrchestrator');
+  const live = await liveMerchantWithActivity('backfill'); // business card pre-funded with 100 $
+  const card = mockTables.cards.find((c) => c.id === live.card.id);
+  card.balance = 100;
+  const old = new Date(Date.now() - 3600 * 1000).toISOString();
+  mockTables.card_transactions.push({ id: 'ctx_bf1', merchant_id: live.merchantId, card_id: card.id, mode: 'live', provider_reference: 'bf-1', type: 'AUTHORIZATION', status: 'SUCCESS', direction: 'DEBIT', amount_usd: 30, currency: 'USD', occurred_at: old, created_at: old });
+  mockTables.card_transactions.push({ id: 'ctx_bf2', merchant_id: live.merchantId, card_id: card.id, mode: 'live', provider_reference: 'bf-2', type: 'DECLINE', status: 'FAILED', direction: 'DEBIT', amount_usd: 500, currency: 'USD', occurred_at: old, created_at: old });
+  mockTables.platform_settings = mockTables.platform_settings.filter((r) => r.key !== 'card_balance_cutover');
+  const first = await orchestrator.backfillCardBalances();
+  assert.ok(first.corrected >= 1);
+  assert.equal(Number(mockTables.cards.find((c) => c.id === card.id).balance), 70);
+  const second = await orchestrator.backfillCardBalances();
+  assert.equal(second.skipped, true);
+  assert.equal(Number(mockTables.cards.find((c) => c.id === card.id).balance), 70);
+});
