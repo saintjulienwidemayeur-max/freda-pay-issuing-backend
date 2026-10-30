@@ -418,7 +418,15 @@ async function updateCryptoOfframp(mode, addressId, offramp) {
   return request(mode, 'PATCH', `/crypto/${encodeURIComponent(addressId)}`, { offramp: !!offramp });
 }
 
+/** Sends stablecoin out of the business crypto wallet. amount is in minor units (cents of the coin). */
+async function cryptoTransfer(mode, { amount, address, chain, coin, reference, reason }) {
+  const res = await request(mode, 'POST', '/crypto/transfer', { amount, address, chain, coin, reference, reason });
+  logRaw(mode, 'POST /crypto/transfer', res);
+  return res;
+}
+
 const IMPL = {
+  cryptoTransfer,
   createCryptoAddress, getCryptoAddresses, updateCryptoOfframp,
   enrollCustomer, createCustomer, findCustomersByEmail, listCustomers, upgradeCustomerTier1, upgradeCustomerTier2, updateCustomer,
   createCard, createBusinessCard, fundCard, withdrawFromCard, getCard, listCards,

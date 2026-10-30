@@ -7211,61 +7211,92 @@ test('the partner name never reaches a merchant in card.transaction webhooks or 
   assert.equal(data.merchant_name, null);
 });
 
-test('crypto wallet: a stablecoin deposit is converted to USD, credited to the Master Wallet once, and the margin is logged', async () => {
+test('crypto wallet: its own balance (separate from the Master Wallet), receive, send, convert to USD with fees, sandbox only', async () => {
   const reg = await registerAndVerify({ business_name: 'Crypto Co', email: 'cryptoco@sandbox-test.example.com', password: 'password123' });
   const token = reg.data.session_token;
   const overview = await api('GET', '/dashboard/crypto', { token });
   assert.equal(overview.status, 200);
+  assert.equal(overview.data.enabled, true);
   assert.ok(overview.data.chains.some((c) => c.key === 'tron') && overview.data.coins.includes('USDT'));
+  assert.equal(overview.data.balances.USDT, 0);
   assert.equal(overview.data.fees.conversion_pct, 0.7);
+  assert.equal(overview.data.fees.master_wallet_funding_pct, 4.5); // Startup plan
 
   assert.equal((await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'dogecoin', coin: 'USDT' } })).status, 400);
   const a1 = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } });
   assert.equal(a1.status, 201);
-  const a2 = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } });
-  assert.equal(a2.data.address, a1.data.address); // the same address is returned, not a new one
+  assert.equal((await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } })).data.address, a1.data.address);
+  assert.equal(mockTables.crypto_addresses[0].offramp, false); // money stays in crypto
 
-  const q = await api('GET', '/dashboard/crypto/quote?amount=1000', { token });
-  assert.equal(q.data.credited_usd, 993);
+  const masterBefore = Number((await api('GET', '/dashboard/balance', { token })).data.master_wallet.available);
 
-  const before = Number((await api('GET', '/dashboard/crypto', { token })).data.master_wallet_usd);
-  const ev = { event: 'collection.successful', status: 'SUCCESS', address: a1.data.address, amount: 99500, currency: 'USD', reference: 'crypto-dep-1', tx_hash: '0xabc' };
+  // receiving: a real notification (1000 USDT, 0.5 % deposit fee), delivered twice
+  const ev = { event: 'collection.successful', status: 'SUCCESS', address: a1.data.address, amount: 100000, currency: 'USDT', reference: 'crypto-dep-1', tx_hash: '0xabc' };
   await sendProviderEvent(ev, MOCK_SANDBOX_WHSEC);
-  await sendProviderEvent(ev, MOCK_SANDBOX_WHSEC); // delivered twice
-  const after = await api('GET', '/dashboard/crypto', { token });
-  assert.equal(Math.round((after.data.master_wallet_usd - before) * 100) / 100, 993); // 995 settled minus our 2 $ margin (1000 sent, 0.7 %)
-  assert.equal(after.data.deposits.length, 1);
-  assert.equal(after.data.deposits[0].sent_usd, 1000);
-  const rev = mockTables.fee_revenue.filter((f) => f.kind === 'crypto_conversion');
-  assert.equal(rev.length, 1);
-  assert.equal(Number(rev[0].amount), 7);
-  assert.equal(Number(rev[0].partner_cost_usd), 5);
-
-  // an event for an unknown address, a failed one, and one without a readable amount credit nothing
+  await sendProviderEvent(ev, MOCK_SANDBOX_WHSEC);
+  let o = await api('GET', '/dashboard/crypto', { token });
+  assert.equal(o.data.balances.USDT, 995);
+  assert.equal(Number((await api('GET', '/dashboard/balance', { token })).data.master_wallet.available), masterBefore); // the Master Wallet is untouched
+  assert.equal(mockTables.fee_revenue.filter((f) => f.kind === 'crypto_deposit').length, 1);
   await sendProviderEvent({ ...ev, reference: 'crypto-dep-2', address: 'unknown-address' }, MOCK_SANDBOX_WHSEC);
   await sendProviderEvent({ ...ev, reference: 'crypto-dep-3', event: 'collection.failed', status: 'FAILED' }, MOCK_SANDBOX_WHSEC);
   await sendProviderEvent({ ...ev, reference: 'crypto-dep-4', amount: undefined }, MOCK_SANDBOX_WHSEC);
-  const last = await api('GET', '/dashboard/crypto', { token });
-  assert.equal(last.data.master_wallet_usd, after.data.master_wallet_usd);
-  assert.ok(mockTables.crypto_deposits.some((d) => d.provider_reference === 'crypto-dep-4' && d.status === 'review'));
+  assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 995);
 
-  // admin: rates are editable, and the deposits page shows the margin
+  // a second deposit (the partner's sandbox sends the notifications itself)
+  await sendProviderEvent({ ...ev, reference: 'crypto-dep-5', amount: 500 }, MOCK_SANDBOX_WHSEC); // 5.00 USDT
+  assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 999.97); // 995 + 5 - 0.5 % (0.03 rounded up)
+
+  // sending: fee on top, only on Solana, refused addresses are refunded
+  const dest = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+  const q = await api('GET', '/dashboard/crypto/quote?action=send&amount=100', { token });
+  assert.equal(q.data.fee, 2);
+  assert.equal(q.data.total_debited, 102);
+  assert.equal((await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'tron', address: 'T' + 'a'.repeat(33), amount: 10, reference: 'S0' } })).data.error.code, 'SEND_NOT_AVAILABLE');
+  assert.equal((await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: 'bad', amount: 10, reference: 'S0' } })).data.error.code, 'INVALID_ADDRESS');
+  const s1 = await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: dest, amount: 100, reference: 'S1' } });
+  assert.equal(s1.status, 201);
+  assert.equal(s1.data.status, 'completed');
+  await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: dest, amount: 100, reference: 'S1' } }); // replay
+  assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 897.97); // 999.97 - 100 - 2
+  assert.equal((await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: 'FAIL' + 'x'.repeat(30), amount: 50, reference: 'S2' } })).data.error.code, 'SEND_REFUSED');
+  assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 897.97); // refunded
+  assert.equal((await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: dest, amount: 5000, reference: 'S3' } })).data.error.code, 'INSUFFICIENT_CRYPTO_BALANCE');
+
+  // converting to USD: 0.7 % conversion + 4.5 % Startup plan fee for adding money to the Master Wallet
+  const cq = await api('GET', '/dashboard/crypto/quote?action=convert&amount=100', { token });
+  assert.equal(cq.data.conversion_fee, 0.7);
+  assert.equal(cq.data.funding_fee, 4.5);
+  assert.equal(cq.data.usd_credited, 94.8);
+  const cv = await api('POST', '/dashboard/crypto/convert', { token, body: { coin: 'USDT', amount: 100, reference: 'C1' } });
+  assert.equal(cv.status, 201);
+  assert.equal(cv.data.usd_credited, 94.8);
+  await api('POST', '/dashboard/crypto/convert', { token, body: { coin: 'USDT', amount: 100, reference: 'C1' } }); // replay: once only
+  assert.equal(Math.round((Number((await api('GET', '/dashboard/balance', { token })).data.master_wallet.available) - masterBefore) * 100) / 100, 94.8);
+  o = await api('GET', '/dashboard/crypto', { token });
+  assert.equal(o.data.balances.USDT, 797.97);
+  assert.equal(o.data.transactions.length, 6); // 2 deposits, 1 send, 1 conversion and the 2 refused sends (shown as failed)
+  assert.equal(mockTables.fee_revenue.filter((f) => f.kind === 'crypto_conversion').length, 1);
+  assert.equal(mockTables.fee_revenue.filter((f) => f.kind === 'wallet_funding' && Number(f.amount) === 4.5).length, 1);
+  assert.equal((await api('POST', '/dashboard/crypto/convert', { token, body: { coin: 'USDT', amount: 100000, reference: 'C2' } })).data.error.code, 'INSUFFICIENT_CRYPTO_BALANCE');
+
+  // admin: rates editable, margin visible
   const admin = await adminLogin('owner');
   const fees = await api('GET', '/admin/settings/crypto-fees', { token: admin.token });
   assert.equal(fees.data.fees.provider_conversion_pct, 0.5);
   assert.equal((await api('PUT', '/admin/settings/crypto-fees', { token: admin.token, body: { conversion_pct: -1 } })).status, 400);
-  const put = await api('PUT', '/admin/settings/crypto-fees', { token: admin.token, body: { conversion_pct: 0.8 } });
-  assert.equal(put.data.fees.conversion_pct, 0.8);
-  assert.equal((await api('GET', '/dashboard/crypto/quote?amount=1000', { token })).data.credited_usd, 992);
+  assert.equal((await api('PUT', '/admin/settings/crypto-fees', { token: admin.token, body: { conversion_pct: 0.8 } })).data.fees.conversion_pct, 0.8);
+  assert.equal((await api('GET', '/dashboard/crypto/quote?action=convert&amount=100', { token })).data.usd_credited, 94.7);
   const list = await api('GET', '/admin/crypto/deposits?mode=sandbox', { token: admin.token });
-  assert.equal(list.data.totals.deposits, 1);
-  assert.equal(list.data.totals.margin_usd, 2);
+  assert.equal(list.data.totals.conversions, 1);
+  assert.equal(list.data.totals.sends, 1);
+  assert.ok(list.data.totals.margin > 0);
   assert.equal(list.data.totals.to_review, 1);
 
-  // Live is closed for now: no address, no credit
+  // Live is closed for now
   const live = await liveWithGateway('cryptolive', 0);
   assert.equal((await api('GET', '/dashboard/crypto', { token: live.token })).data.enabled, false);
-  const blocked = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT' } });
+  const blocked = await api('POST', '/dashboard/crypto/convert', { token: live.token, body: { coin: 'USDT', amount: 10, reference: 'L1' } });
   assert.equal(blocked.status, 403);
   assert.equal(blocked.data.error.code, 'CRYPTO_SANDBOX_ONLY');
 });

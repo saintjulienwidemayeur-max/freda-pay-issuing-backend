@@ -30,6 +30,7 @@ function labelFor(e) {
       if (ref === 'sandbox-welcome-bonus') return 'Bonus de bienvenue (Sandbox)';
       if (ref.startsWith('manual-topup:')) return 'Dépôt confirmé';
       if (ref.startsWith('admin-credit:')) return "Crédit par l'équipe Freda Pay Issuing";
+      if (ref.startsWith('crypto-convert:')) return 'Conversion crypto → USD';
       if (ref.startsWith('card-withdraw:')) return 'Retrait depuis une carte';
       if (ref.startsWith('card-terminate-refund:')) return 'Carte clôturée : solde restitué';
       if (/^(refund|fund-refund):/.test(ref)) return 'Remboursement';
