@@ -11,6 +11,7 @@ const pricing = require('./pricing');
 // ---- Single-lane queue: PlopPlop enforces a 120s cooldown PER IP, and all
 // Freda merchants share one outbound IP, so payouts must run one at a time
 // with at least `config.payoutCooldownMs` between each attempt. ----
+const inFlight = new Set(); // payout ids waiting in (or running through) the queue of THIS instance
 let queue = Promise.resolve();
 let lastAttemptAt = 0;
 
@@ -52,13 +53,14 @@ async function createPayout(args) {
   const payout = await withMerchantLock(args.merchantId, () => createPayoutLocked(args));
   if (payout.method === 'bank') return payout;
   const { merchantId, id, plopplopReference, amount, method, recipient } = args; // moncash / natcash only (HTG)
+  inFlight.add(id);
   enqueue(() => executePayoutFlow({ merchantId, id, plopplopReference, amount, method, recipient, mode: args.mode || 'sandbox' })).catch(
     async (err) => {
       try {
         await markFailed(merchantId, id, `INTERNAL_ERROR: ${err.message}`);
       } catch (_) {}
     }
-  );
+  ).finally(() => inFlight.delete(id));
   return payout;
 }
 
@@ -200,6 +202,51 @@ async function executePayoutFlow({ merchantId, id, plopplopReference, amount, me
   }
 }
 
+/**
+ * Safety net for MonCash / Natcash withdrawals. The queue lives in memory: when the server restarts (or the partner answers too slowly)
+ * a withdrawal can stay "pending" for ever with its money on hold. A pending withdrawal that is no longer in this instance's queue is
+ * looked up at the partner BY REFERENCE: "success" settles it, "failed" or "remboursé" gives the held money back, and "no withdrawal found"
+ * (HTTP 404) means it was never sent, so the money is given back too. "pending" is left alone. Never acts on a partner error or a timeout.
+ */
+async function reconcilePendingPayouts(limit) {
+  const now = Date.now();
+  const rows = (await supabase.select('payouts', { status: 'pending', created_at: supabase.gt(new Date(now - 7 * 24 * 3600 * 1000).toISOString()) }, { order: 'created_at.asc', limit: 200 }))
+    .filter((p) => p.method !== 'bank' && !inFlight.has(p.id) && p.plopplop_reference && now - new Date(p.created_at).getTime() > 10 * 60 * 1000)
+    .slice(0, limit || 10);
+  if (!rows.length) return { checked: 0, settled: 0 };
+  const auth = await plopplop.authMerchant();
+  const d = auth.data || {};
+  const token = d.token || d.access_token || (d.data && (d.data.token || d.data.access_token));
+  if (!token) return { checked: 0, settled: 0, error: 'auth' };
+  let settled = 0;
+  let checked = 0;
+  for (const p of rows) {
+    checked += 1;
+    try {
+      const res = await plopplop.verifyWithdrawal({ authToken: token, reference: p.plopplop_reference });
+      const data = res.data || {};
+      const status = String((data.data && data.data.status) || '').toLowerCase();
+      if (res.httpStatus === 404 && /aucun|introuvable|not found/i.test(String(data.message || ''))) {
+        if (await markFailed(p.merchant_id, p.id, "NOT_SENT: le retrait n'a pas été envoyé (interruption du service). Les fonds ont été rendus à votre solde.")) settled += 1;
+      } else if (data.success && status === 'success') {
+        const [done] = await supabase.update('payouts', { id: p.id, status: 'pending' }, { status: 'success', plopplop_transaction_id: (data.data && data.data.transaction_id) || null, updated_at: new Date().toISOString() });
+        if (done) {
+          settled += 1;
+          await revenue.log(p.merchant_id, 'payout', Number(done.fee || 0), 'HTG', p.id, p.mode || 'sandbox', 0);
+          webhookDispatcher.dispatch(p.merchant_id, 'payout.succeeded', { id: p.id, amount: Number(p.amount), currency: 'HTG', method: p.method, recipient: p.recipient, fee: Number(done.fee || 0), transaction_id: (data.data && data.data.transaction_id) || null });
+        }
+      } else if (data.success && (status === 'failed' || status === 'remboursé' || status === 'rembourse')) {
+        if (await markFailed(p.merchant_id, p.id, `PARTNER_${status.toUpperCase()}: le service de paiement n'a pas pu envoyer ce retrait.`)) settled += 1;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`Payout reconciliation failed for ${p.id}:`, err.message);
+    }
+    await sleep(1500);
+  }
+  return { checked, settled };
+}
+
 /** Settles a pending withdrawal as failed ONCE, and gives the held money back (amount + fee). */
 async function markFailed(merchantId, id, reason, extra) {
   const [row] = await supabase.update('payouts', { id, status: 'pending' }, { status: 'failed', failure_reason: reason, updated_at: new Date().toISOString(), ...(extra || {}) });
@@ -248,4 +295,4 @@ async function list(merchantId, limit, offset, mode) {
   );
 }
 
-module.exports = { createPayout, completeBankPayout, rejectBankPayout, getById, getByOwnReference, list };
+module.exports = { createPayout, completeBankPayout, rejectBankPayout, getById, getByOwnReference, list, reconcilePendingPayouts };

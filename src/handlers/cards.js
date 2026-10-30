@@ -162,7 +162,7 @@ async function get(ctx) {
 
 const TX_LABEL = {
   AUTHORIZATION: 'Achat', 'AUTHORIZATION-SETTLEMENT': 'Règlement', SETTLEMENT: 'Règlement', REFUND: 'Remboursement', REVERSAL: 'Annulation',
-  DECLINE: 'Refusé', FUNDING: 'Recharge', WITHDRAWAL: 'Retrait', TERMINATION: 'Fermeture', 'CROSS-BORDER': 'Frais de change',
+  DECLINE: 'Refusé', CHARGE: 'Frais de carte', FUNDING: 'Recharge', WITHDRAWAL: 'Retrait', TERMINATION: 'Fermeture', 'CROSS-BORDER': 'Frais de change',
 };
 /** One transaction stored from the partner's notifications (card_transactions), in the public shape. */
 function toPublicStored(t) {

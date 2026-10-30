@@ -165,7 +165,16 @@ async function processMapleradEvent(rawEvent, webhookMode) {
       await cardOrchestrator.applyCardDeclineWebhook(event, webhookMode);
       break;
     }
-    // issuing.terminated, issuing.charge, issuing.activation: recorded in webhook_events only.
+    case 'issuing.terminated': {
+      await cardOrchestrator.applyCardTerminationWebhook(event, webhookMode);
+      break;
+    }
+    case 'issuing.charge': {
+      // A fee the partner takes from the card: stored as a transaction so the balance follows it (the event has no type or direction).
+      await cardOrchestrator.recordCardTransaction({ event: 'issuing.transaction', type: 'CHARGE', mode: 'DEBIT', status: 'SUCCESS', amount: event.amount, currency: 'USD', card_id: event.card_id, created_at: event.transaction_date, description: 'Frais de carte', reference: event.reference }, webhookMode);
+      break;
+    }
+    // issuing.activation: recorded in webhook_events only.
     default:
       break;
   }

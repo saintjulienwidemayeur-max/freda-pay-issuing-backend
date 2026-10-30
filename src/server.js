@@ -427,6 +427,23 @@ if (require.main === module) {
       }, 5 * 60 * 1000).unref();
       // MonCash / Natcash payments: nothing is pushed to us, so pending ones are re-read every minute (this is what makes
       // the merchant's payment.succeeded webhook and the credited balance arrive without anybody polling).
+      // MonCash / Natcash withdrawals lost by a restart: looked up at the partner by reference (see reconcilePendingPayouts).
+      let cardBusy = false;
+      setInterval(() => {
+        if (cardBusy) return;
+        cardBusy = true;
+        require('./services/cardOrchestrator').reconcilePendingCardCreations(10)
+          .catch((e) => console.error('Card creation reconciliation:', e.message))
+          .finally(() => { cardBusy = false; });
+      }, 5 * 60 * 1000).unref();
+      let payoutBusy = false;
+      setInterval(() => {
+        if (payoutBusy) return;
+        payoutBusy = true;
+        require('./services/payoutOrchestrator').reconcilePendingPayouts(10)
+          .catch((e) => console.error('Payout reconciliation:', e.message))
+          .finally(() => { payoutBusy = false; });
+      }, 3 * 60 * 1000).unref();
       let mobileBusy = false;
       setInterval(() => {
         if (mobileBusy) return;
