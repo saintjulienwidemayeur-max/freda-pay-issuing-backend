@@ -150,6 +150,38 @@ async function credit(ctx) {
   return { status: 200, body: { credited: true, mode, new_balance: newBalance } };
 }
 
+/**
+ * Admin takes money back from a merchant's wallet (for example after a payment warning or a dispute). A reason is required and
+ * is shown to the merchant by e-mail. By default the amount cannot exceed what the wallet holds; the owner can force a debit that
+ * leaves the balance negative (money already spent). Every debit is kept in the ledger and in the admin credit history.
+ */
+async function debit(ctx) {
+  const merchant = await supabase.selectOne('merchants', { id: ctx.params.id });
+  if (!merchant) throw httpError(404, 'NOT_FOUND', 'Marchand introuvable.');
+  const { wallet, amount, reason, force } = ctx.body || {};
+  if (!['master_wallet', 'gateway', 'gateway_usd'].includes(wallet)) throw httpError(400, 'INVALID_WALLET', "wallet doit être 'master_wallet', 'gateway' (HTG) ou 'gateway_usd'.");
+  const amountNum = Number(amount);
+  if (!(amountNum > 0) || !Number.isFinite(amountNum) || Math.round(amountNum * 100) !== amountNum * 100 && Math.abs(Math.round(amountNum * 100) - amountNum * 100) > 1e-6) throw httpError(400, 'INVALID_AMOUNT', 'amount doit être un nombre positif avec 2 décimales au maximum.');
+  if (amountNum > 100000) throw httpError(400, 'AMOUNT_TOO_HIGH', 'Un débit manuel est limité à 100 000 par opération.');
+  const why = String(reason == null ? '' : reason).replace(/[\u0000-\u001f]/g, ' ').trim();
+  if (why.length < 5) throw httpError(400, 'REASON_REQUIRED', 'Un motif d\'au moins 5 caractères est obligatoire : le marchand le reçoit par e-mail.');
+  const requested = ctx.body && ctx.body.mode;
+  if (requested != null && requested !== 'live' && requested !== 'sandbox') throw httpError(400, 'INVALID_MODE', "mode doit être 'live' ou 'sandbox'.");
+  const mode = requested || (merchant.gateway_live_enabled ? 'live' : 'sandbox');
+  const currency = wallet === 'master_wallet' || wallet === 'gateway_usd' ? 'USD' : 'HTG';
+  const ledgerWallet = wallet === 'gateway_usd' ? 'gateway' : wallet;
+  const available = await ledger.getBalance(merchant.id, ledgerWallet, currency, mode);
+  if (amountNum > available + 1e-9) {
+    if (force !== true) throw httpError(400, 'INSUFFICIENT_BALANCE', `Ce portefeuille ne contient que ${available} ${currency}. Débitez au plus ce montant, ou demandez au propriétaire de forcer le débit.`);
+    if (ctx.adminRole !== 'owner') throw httpError(403, 'INSUFFICIENT_ROLE', 'Seul le propriétaire peut forcer un débit qui rend le solde négatif.');
+  }
+  await ledger.adminDebit(merchant.id, ledgerWallet, amountNum, currency, `admin-debit:${ctx.adminId}:${why.slice(0, 120)}`, mode);
+  await supabase.insert('admin_wallet_credits', { id: `awc_${randomHex(8)}`, merchant_id: merchant.id, admin_id: ctx.adminId, wallet, amount: -amountNum, currency, note: `DÉBIT : ${why}`.slice(0, 300), mode });
+  const newBalance = await ledger.getBalance(merchant.id, ledgerWallet, currency, mode);
+  await notify.walletDebited(merchant, { amount: amountNum, currency, walletLabel: wallet === 'master_wallet' ? 'Master Wallet' : (wallet === 'gateway_usd' ? 'solde Gateway USD' : 'solde Gateway'), newBalance, reason: why, mode });
+  return { status: 200, body: { debited: true, mode, new_balance: newBalance } };
+}
+
 const PRICING_FIELDS = ['card_creation_usd', 'card_recharge_usd', 'card_withdrawal_usd', 'card_decline_usd', 'wallet_funding_pct', 'gateway_pct', 'gateway_fixed_htg', 'payout_mobile_pct', 'payout_bank_fee_htg', 'payout_fee_htg', 'gateway_card_pct', 'gateway_card_fixed_usd', 'payout_bank_fee_usd'];
 
 function toPublicPricing(row) {
@@ -279,4 +311,4 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore };
+module.exports = { list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit };

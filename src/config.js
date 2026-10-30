@@ -265,6 +265,9 @@ const config = {
   // refused BEFORE anything is debited. Set BUSINESS_CARDS_PAUSED=false on Render as soon as the partner reopens it.
   businessCardsPaused: String(process.env.BUSINESS_CARDS_PAUSED || 'true').toLowerCase() !== 'false',
 
+  // Taken from the money given back when a card is closed (it never exceeds what is left on the card).
+  cardClosureFeeUsd: parseFloat(process.env.CARD_CLOSURE_FEE_USD || '0.5'),
+
   masterWallet: {
     minimumBalanceUsd: parseFloat(process.env.MASTER_WALLET_MINIMUM_USD || '50'),
     // From this balance down, the merchant receives low-balance reminder emails (at most one per interval).

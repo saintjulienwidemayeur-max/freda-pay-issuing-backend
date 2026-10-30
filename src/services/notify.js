@@ -136,6 +136,24 @@ function walletCredited(merchant, { amount, currency, walletLabel, newBalance, n
   }), 'wallet-credited');
 }
 
+function walletDebited(merchant, { amount, currency, walletLabel, newBalance, reason, mode }) {
+  const money = (n) => `${Number(n).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency === 'USD' ? '$' : 'HTG'}`;
+  return dispatch(merchant, buildEmail({
+    subject: 'Débit sur votre compte : Freda Pay Issuing',
+    eyebrow: 'Débit sur votre compte',
+    tone: 'warning',
+    heading: 'Un montant a été débité de votre compte',
+    paragraphs: [
+      hello(merchant),
+      `Notre équipe a débité **${money(amount)}** de votre **${walletLabel}**${mode === 'live' ? '' : ' (Sandbox, argent de test)'}.`,
+      `Motif : ${reason}`,
+      `Nouveau solde : **${money(newBalance)}**.`,
+      "Si vous pensez qu'il s'agit d'une erreur, répondez-nous depuis le chat de votre tableau de bord ou écrivez à issuing@fredapay.com.",
+    ],
+    button: { label: 'Ouvrir mon tableau de bord', url: String(DASHBOARD) },
+  }), 'wallet-debited');
+}
+
 function depositRejected(merchant, { amount, method, reason }) {
   const label = { zelle: 'Zelle', bank_transfer: 'virement bancaire' }[method] || method;
   return dispatch(merchant, buildEmail({
@@ -297,4 +315,4 @@ function passwordChanged(to, name) {
   }), 'password-changed');
 }
 
-module.exports = { cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected };
+module.exports = { cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited };

@@ -833,14 +833,17 @@ async function terminateCard(merchantId, cardId) {
 
   await maplerad.forMode(card.mode).terminateCard(card.maplerad_card_id); // must succeed: the card is really closed
   // The balance follows purchases and refunds (applyCardSpendToBalance), so what is left on the card is what goes back to the Master Wallet.
-  const refundable = Math.max(0, pricing.round2(Number(card.balance || 0)));
+  const remaining = Math.max(0, pricing.round2(Number(card.balance || 0)));
+  const closureFee = Math.min(remaining, Math.max(0, pricing.round2(config.cardClosureFeeUsd || 0)));
+  const refundable = pricing.round2(remaining - closureFee);
   const [claimed] = await supabase.update('cards', { id: card.id, status: card.status }, { status: 'terminated', balance: 0, updated_at: now });
   if (claimed && refundable > 0) {
     await ledger.creditMasterWallet(merchantId, refundable, 'USD', `card-terminate-refund:${card.own_reference}`, card.id, card.mode);
   }
+  if (claimed && closureFee > 0) await revenue.log(merchantId, 'card_closure', closureFee, 'USD', card.id, card.mode, 0);
   const [updated] = await supabase.update('cards', { id: card.id }, { deleted_at: now });
-  webhookDispatcher.dispatch(merchantId, 'card.terminated', { id: card.id, reference: card.own_reference });
-  return updated || card;
+  webhookDispatcher.dispatch(merchantId, 'card.terminated', { id: card.id, reference: card.own_reference, refunded_usd: refundable, closure_fee_usd: closureFee });
+  return Object.assign({}, updated || card, { refunded_usd: refundable, closure_fee_usd: closureFee });
 }
 
 /**

@@ -77,7 +77,13 @@ async function debitMasterWallet(merchantId, amount, currency, reference, relate
   });
 }
 
+/** A manual debit decided by the team (for example after a payment warning or dispute): any wallet, with the reason in the reference. */
+async function adminDebit(merchantId, wallet, amount, currency, reference, mode) {
+  return record({ merchantId, wallet, type: 'admin_debit', amount: -Math.abs(amount), currency, reference, relatedId: null, mode });
+}
+
 module.exports = {
+  adminDebit,
   walletKey,
   record,
   getBalance,

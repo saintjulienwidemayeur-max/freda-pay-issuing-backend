@@ -348,7 +348,7 @@ async function unfreeze(ctx) {
 async function terminate(ctx) {
   try {
     const card = await cardOrchestrator.terminateCard(ctx.merchantId, ctx.params.id);
-    return { status: 200, body: { ...toPublicCard(card, ctx), deleted: true } };
+    return { status: 200, body: { ...toPublicCard(card, ctx), deleted: true, refunded_usd: card.refunded_usd == null ? null : Number(card.refunded_usd), closure_fee_usd: card.closure_fee_usd == null ? null : Number(card.closure_fee_usd) } };
   } catch (err) {
     throw httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
   }
