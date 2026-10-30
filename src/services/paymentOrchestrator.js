@@ -257,9 +257,11 @@ async function reconcilePendingMobile(limit) {
   // In the real database every MonCash/Natcash row has provider = 'plopplop' (column default); card payments have 'tranzak'.
   // Filtering here instead of in the query keeps rows with an empty provider (older rows, tests) in too.
   const all = await supabase.select('payments', { status: 'pending', created_at: supabase.gt(new Date(now - MOBILE_MAX_AGE_MS).toISOString()) }, { order: 'created_at.desc', limit: 300 });
-  const rows = all.filter((p) => p.provider !== 'tranzak').slice(0, limit || 40);
+  // Least recently read first, so old stuck payments are not starved by newer ones when there are many.
+  const rows = all.filter((p) => p.provider !== 'tranzak').sort((a, b) => (lastMobilePoll.get(a.id) || 0) - (lastMobilePoll.get(b.id) || 0)).slice(0, limit || 40);
   let settled = 0;
   let checked = 0;
+  let firstError = null;
   for (const p of rows) {
     if (!p.plopplop_reference) continue;
     const age = now - new Date(p.created_at).getTime();
@@ -272,11 +274,11 @@ async function reconcilePendingMobile(limit) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`Mobile payment reconciliation failed for ${p.id}:`, err.message);
-      paymentHealth.recordRun({ checked: 0, settled: 0, error: err.message });
+      firstError = firstError || err.message;
     }
     await new Promise((r) => setTimeout(r, 400)); // stay gentle with the partner
   }
-  paymentHealth.recordRun({ checked, settled });
+  paymentHealth.recordRun(firstError ? { checked, settled, error: firstError } : { checked, settled }); // one run, one record
   return { checked, settled };
 }
 

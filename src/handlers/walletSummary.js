@@ -3,6 +3,17 @@ const supabase = require('../lib/supabase');
 const ledger = require('../services/ledger');
 const { resolveMode } = require('../utils/mode');
 
+/** Every row, not just the first page: totals for a busy merchant must not stop at a fixed limit (pages of 1000, up to 100 000 rows). */
+async function selectAll(table, filters, order) {
+  const all = [];
+  for (let page = 0; page < 100; page += 1) {
+    const rows = await supabase.select(table, filters, { order, limit: 1000, offset: page * 1000 });
+    all.push(...rows);
+    if (rows.length < 1000) break;
+  }
+  return all;
+}
+
 const sum = (rows, f) => rows.reduce((t, r) => t + Number(f(r) || 0), 0);
 const round2 = (n) => Math.round(n * 100) / 100;
 
@@ -44,10 +55,10 @@ async function summary(ctx) {
   const walletKey = ledger.walletKey('master_wallet', mode);
 
   const [payments, cards, walletEntries, gatewayEntries] = await Promise.all([
-    supabase.select('payments', { merchant_id: ctx.merchantId, mode }, { limit: 2000 }),
-    supabase.select('cards', { merchant_id: ctx.merchantId, mode, status: 'active' }, { limit: 500 }),
-    supabase.select('ledger_entries', { merchant_id: ctx.merchantId, wallet: walletKey }, { order: 'created_at.desc', limit: 1000 }),
-    supabase.select('ledger_entries', { merchant_id: ctx.merchantId, wallet: gatewayKey }, { order: 'created_at.desc', limit: 1000 }),
+    selectAll('payments', { merchant_id: ctx.merchantId, mode }, 'created_at.desc,id.desc'),
+    selectAll('cards', { merchant_id: ctx.merchantId, mode, status: 'active' }, 'created_at.desc,id.desc'),
+    selectAll('ledger_entries', { merchant_id: ctx.merchantId, wallet: walletKey }, 'created_at.desc,id.desc'),
+    selectAll('ledger_entries', { merchant_id: ctx.merchantId, wallet: gatewayKey }, 'created_at.desc,id.desc'),
   ]);
 
   const deposits = walletEntries.filter((e) => e.type === 'wallet_topup' && !NOT_A_DEPOSIT.test(e.reference || '') && Number(e.amount) > 0);
