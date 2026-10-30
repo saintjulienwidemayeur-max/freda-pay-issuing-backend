@@ -7165,3 +7165,30 @@ test('admin diagnostics: schema check, the partner webhooks really received, and
   assert.equal(mockTables.card_transactions.filter((t) => t.card_id === row.id && t.provider_reference === 'imp-evt-1').length, 1); // no duplicate
   assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), balanceBefore); // history only, no balance change
 });
+
+test('card transactions for a merchant: French labels, a refused purchase says so, and the partner name never shows', async () => {
+  const reg = await registerAndVerify({ business_name: 'Label Co', email: 'labelco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'LBL-1', kind: 'business', business_name: 'Label Co', brand: 'VISA', amount: 20 } });
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  const ev = (over) => Object.assign({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 500, currency: 'USD', card_id: row.maplerad_card_id, reference: 'lbl-a', merchant: { name: 'SHEIN.COM' }, created_at: new Date().toISOString() }, over);
+  await sendProviderEvent(ev({}), MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(ev({ reference: 'lbl-b', status: 'FAILED', amount: 453 }), MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(ev({ reference: 'lbl-c', type: 'FUNDING', mode: 'CREDIT', amount: 5400, merchant: { name: 'Maplerad' } }), MOCK_SANDBOX_WHSEC);
+  const maplerad = require('../src/services/maplerad');
+  const original = maplerad.forMode;
+  maplerad.forMode = () => ({ getCardTransactions: async () => ({ data: [] }) });
+  let r;
+  try { r = await api('GET', `/dashboard/cards/${row.id}/transactions`, { token }); } finally { maplerad.forMode = original; }
+  const by = (id) => r.data.transactions.find((t) => t.id === id);
+  assert.equal(by('lbl-a').label, 'Achat');
+  assert.equal(by('lbl-a').merchant_name, 'SHEIN.COM');
+  assert.equal(by('lbl-b').label, 'Achat refusé');
+  assert.equal(by('lbl-c').label, 'Recharge');
+  assert.equal(by('lbl-c').merchant_name, null);
+  assert.ok(!JSON.stringify(r.data).match(/maplerad/i));
+  const { token: admin } = await adminLogin('owner');
+  const adm = await api('GET', `/admin/cards/${row.id}/transactions`, { token: admin });
+  assert.ok(adm.data.transactions.some((t) => t.label === 'Achat refusé'));
+});
