@@ -18,7 +18,7 @@ async function get(merchantId) {
   let value = config.masterWallet.minimumBalanceUsd;
   try {
     const row = await supabase.selectOne('platform_settings', { key: keyOf(merchantId) });
-    const v = row ? Number(row.value) : NaN;
+    const v = row && row.value != null && String(row.value).trim() !== '' ? Number(row.value) : NaN; // an empty value is not a 0 $ guarantee
     if (Number.isFinite(v) && v >= 0 && v <= MAX_USD) value = v;
   } catch (err) { /* the table is unreachable: the default applies */ }
   cache.set(merchantId, { value, at: Date.now() });

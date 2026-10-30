@@ -462,7 +462,7 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
   await debitMasterWalletForCard(merchantId, totalDebit, ownReference, id, mode);
 
   const cents = toCents(preload);
-  const row = await supabase.insert('cards', {
+  const row = await insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, {
     id,
     merchant_id: merchantId,
     own_reference: ownReference,
@@ -516,7 +516,7 @@ async function createBusinessCard({ merchantId, id, ownReference, businessName, 
   await debitMasterWalletForCard(merchantId, totalDebit, ownReference, id, mode);
 
   const cents = toCents(amountUsd);
-  const row = await supabase.insert('cards', {
+  const row = await insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, {
     id,
     merchant_id: merchantId,
     own_reference: ownReference,
@@ -546,6 +546,16 @@ async function createBusinessCard({ merchantId, id, ownReference, businessName, 
   }
 
   return row;
+}
+
+/** Saves the new card row; if that fails after the wallet was debited, the debit is given back (no card, no charge). */
+async function insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, fields) {
+  try {
+    return await supabase.insert('cards', fields);
+  } catch (err) {
+    await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
+    throw err;
+  }
 }
 
 async function debitMasterWalletForCard(merchantId, amountUsd, reference, relatedId, mode) {
@@ -619,6 +629,9 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
       return card;
     }
     const firstActivation = card.status !== 'active';
+    // Already activated (re-delivered webhook or reconciliation): nothing to do. Re-applying it would reset the balance to the
+    // initial amount, wiping every recharge, withdrawal and purchase since, and send card.created again.
+    if (!firstActivation && card.maplerad_card_id) return card;
     const [updated] = await supabase.update(
       'cards',
       { id: card.id, status: card.status },
@@ -726,11 +739,12 @@ async function fundCardNow(merchantId, card, amountUsd, key) {
   await debitMasterWalletForCard(merchantId, totalDebit, ref, card.id, card.mode);
   try {
     await maplerad.forMode(card.mode).fundCard(card.maplerad_card_id, toCents(amountUsd));
-    await revenue.log(merchantId, 'card_recharge', rechargeFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardRecharge);
   } catch (err) {
     await refundMasterWalletForFailedCard(merchantId, totalDebit, ref, card.id, card.mode);
     throw err;
   }
+  // Outside the try: the partner already funded the card, so a bookkeeping failure must never refund the wallet.
+  await revenue.log(merchantId, 'card_recharge', rechargeFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardRecharge).catch(() => {});
   const updated = await adjustCardBalance(card.id, Number(amountUsd));
   webhookDispatcher.dispatch(merchantId, 'card.funded', {
     id: updated.id, reference: updated.own_reference, amount: Number(amountUsd), fee: rechargeFee, total_debited: totalDebit,

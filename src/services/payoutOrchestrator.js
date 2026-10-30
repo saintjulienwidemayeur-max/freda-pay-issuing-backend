@@ -188,7 +188,7 @@ async function executePayoutFlow({ merchantId, id, plopplopReference, amount, me
       );
       if (!done) return; // already settled elsewhere
       // The merchant already paid amount + Freda Pay's fee (held). What the payment partner charged to SEND it is our cost.
-      await revenue.log(merchantId, 'payout', Number(done.fee || 0), 'HTG', id, mode, partnerFee != null ? pricing.htgToUsd(Number(partnerFee)) : 0);
+      await revenue.log(merchantId, 'payout', Number(done.fee || 0), 'HTG', id, mode, partnerFee != null ? pricing.htgToUsd(Number(partnerFee)) : 0).catch(() => {});
       webhookDispatcher.dispatch(merchantId, 'payout.succeeded', {
         id, amount, currency: 'HTG', method, recipient, fee: Number(done.fee || 0), transaction_id,
       });
@@ -229,10 +229,11 @@ async function reconcilePendingPayouts(limit) {
       if (res.httpStatus === 404 && /aucun|introuvable|not found/i.test(String(data.message || ''))) {
         if (await markFailed(p.merchant_id, p.id, "NOT_SENT: le retrait n'a pas été envoyé (interruption du service). Les fonds ont été rendus à votre solde.")) settled += 1;
       } else if (data.success && status === 'success') {
-        const [done] = await supabase.update('payouts', { id: p.id, status: 'pending' }, { status: 'success', plopplop_transaction_id: (data.data && data.data.transaction_id) || null, updated_at: new Date().toISOString() });
+        const partnerFee = data.data && data.data.fee;
+        const [done] = await supabase.update('payouts', { id: p.id, status: 'pending' }, { status: 'success', partner_fee_htg: partnerFee != null ? partnerFee : null, api_reference: (data.data && data.data.api_reference) || null, plopplop_transaction_id: (data.data && data.data.transaction_id) || null, updated_at: new Date().toISOString() });
         if (done) {
           settled += 1;
-          await revenue.log(p.merchant_id, 'payout', Number(done.fee || 0), 'HTG', p.id, p.mode || 'sandbox', 0);
+          await revenue.log(p.merchant_id, 'payout', Number(done.fee || 0), 'HTG', p.id, p.mode || 'sandbox', partnerFee != null ? pricing.htgToUsd(Number(partnerFee)) : 0).catch(() => {});
           webhookDispatcher.dispatch(p.merchant_id, 'payout.succeeded', { id: p.id, amount: Number(p.amount), currency: 'HTG', method: p.method, recipient: p.recipient, fee: Number(done.fee || 0), transaction_id: (data.data && data.data.transaction_id) || null });
         }
       } else if (data.success && (status === 'failed' || status === 'remboursé' || status === 'rembourse')) {
