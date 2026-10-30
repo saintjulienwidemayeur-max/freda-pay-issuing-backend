@@ -111,6 +111,11 @@ async function handle(req, res) {
     cards.clear();
     calls.length = 0;
     behavior.failNextCardCreation = false;
+    behavior.failCryptoCustomer = false;
+    return send(res, 200, { ok: true });
+  }
+  if (url.pathname === '/__control/fail-crypto-customer') {
+    behavior.failCryptoCustomer = true;
     return send(res, 200, { ok: true });
   }
   if (url.pathname === '/__control/fail-next-card') {
@@ -136,8 +141,16 @@ async function handle(req, res) {
     return send(res, 200, { status: true, message: 'success', id, first_name: body.first_name, last_name: body.last_name, email: body.email });
   }
 
+  // ---- POST /merchant/crypto (stablecoin deposit address owned by the business) ----
+  if (url.pathname === '/merchant/crypto' && req.method === 'POST') {
+    if (!body.coin) return send(res, 400, { status: false, message: 'coin is required' });
+    const id = randomId('mcr');
+    return send(res, 201, { status: true, message: 'address created', data: { id, address: `0xMERCH${id.replace(/[^a-z0-9]/gi, '')}`, chain: body.chain || 'solana', coin: body.coin, offramp: body.offramp === true, active: true, fund_destination: 'TREASURY' } });
+  }
+
   // ---- POST /crypto (stablecoin deposit address for a customer) ----
   if (url.pathname === '/crypto' && req.method === 'POST') {
+    if (behavior.failCryptoCustomer) return send(res, 400, { status: false, message: 'The operation could not be completed' });
     if (!body.customer_id || !body.coin || !body.chain) return send(res, 400, { status: false, message: 'customer_id, coin and chain are required' });
     const id = randomId('cry');
     return send(res, 200, { status: true, message: 'address generated', data: { id, address: `0xMOCK${id.replace(/[^a-z0-9]/gi, '')}${body.chain}`, chain: body.chain, coin: body.coin, offramp: body.offramp === true, active: true } });

@@ -425,7 +425,15 @@ async function cryptoTransfer(mode, { amount, address, chain, coin, reference, r
   return res;
 }
 
+/** Crypto: a deposit address owned by the business itself (no customer, nothing to enroll). Deposits arrive in the business wallet. */
+async function createMerchantCryptoAddress(mode, { coin, chain, offramp }) {
+  const res = await request(mode, 'POST', '/merchant/crypto', { coin: String(coin).toLowerCase(), chain, offramp: offramp === true });
+  logRaw(mode, 'POST /merchant/crypto', res);
+  return res;
+}
+
 const IMPL = {
+  createMerchantCryptoAddress,
   cryptoTransfer,
   createCryptoAddress, getCryptoAddresses, updateCryptoOfframp,
   enrollCustomer, createCustomer, findCustomersByEmail, listCustomers, upgradeCustomerTier1, upgradeCustomerTier2, updateCustomer,

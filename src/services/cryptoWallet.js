@@ -105,9 +105,26 @@ async function getOrCreateAddress(merchant, mode, chain, coin) {
     }
     return existing;
   }
-  const customerId = await customerFor(merchant, mode);
-  const res = await maplerad.forMode(mode).createCryptoAddress({ customerId, coin, chain: c.provider, offramp: false });
-  const d = (res && (res.data || res)) || {};
+  // 1) an address owned by a partner customer for this merchant (unique by design);
+  // 2) if the partner refuses that, an address of our own business wallet. Every deposit address is stored per merchant, so a deposit is
+  //    credited to the merchant whose address received it; an address already given to another merchant is never reused.
+  let customerId = null;
+  let d = null;
+  try {
+    customerId = await customerFor(merchant, mode);
+    const res = await maplerad.forMode(mode).createCryptoAddress({ customerId, coin, chain: c.provider, offramp: false });
+    d = (res && (res.data || res)) || {};
+    if (!d.address) d = null;
+  } catch (err) {
+    console.error(`Crypto address for customer path failed (${err.message}); trying the business wallet.`); // eslint-disable-line no-console
+    customerId = null;
+  }
+  if (!d) {
+    const res = await maplerad.forMode(mode).createMerchantCryptoAddress({ coin, chain: c.provider, offramp: false });
+    d = (res && (res.data || res)) || {};
+    if (d.address && await supabase.selectOne('crypto_addresses', { address: d.address })) throw httpError(502, 'CRYPTO_UNAVAILABLE', "Le service crypto n'a pas pu créer une adresse personnelle. Réessayez dans un instant.");
+    customerId = 'business';
+  }
   if (!d.address) throw httpError(502, 'CRYPTO_UNAVAILABLE', "Le service crypto n'a pas renvoyé d'adresse. Réessayez dans un instant.");
   try {
     return await supabase.insert('crypto_addresses', {

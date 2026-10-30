@@ -7310,3 +7310,16 @@ test('crypto wallet: a partner customer left by an earlier failed attempt is tak
   assert.equal(a.status, 201);
   assert.ok(a.data.address);
 });
+
+test('crypto wallet: when the partner refuses a customer address, the merchant gets an address of the business wallet, a different one each', async () => {
+  await fetch('http://localhost:4504/__control/fail-crypto-customer', { method: 'POST' });
+  const one = await registerAndVerify({ business_name: 'Fallback One', email: 'fallbackone@sandbox-test.example.com', password: 'password123' });
+  const two = await registerAndVerify({ business_name: 'Fallback Two', email: 'fallbacktwo@sandbox-test.example.com', password: 'password123' });
+  const a1 = await api('POST', '/dashboard/crypto/addresses', { token: one.data.session_token, body: { chain: 'solana', coin: 'USDT' } });
+  const a2 = await api('POST', '/dashboard/crypto/addresses', { token: two.data.session_token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(a1.status, 201);
+  assert.equal(a2.status, 201);
+  assert.ok(a1.data.address.startsWith('0xMERCH'));
+  assert.notEqual(a1.data.address, a2.data.address);
+  assert.equal((await api('POST', '/dashboard/crypto/addresses', { token: one.data.session_token, body: { chain: 'solana', coin: 'USDT' } })).data.address, a1.data.address);
+});
