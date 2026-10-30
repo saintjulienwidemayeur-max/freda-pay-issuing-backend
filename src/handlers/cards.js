@@ -160,6 +160,19 @@ async function get(ctx) {
   return { status: 200, body: toPublicCard(card, ctx) };
 }
 
+const TX_LABEL = {
+  AUTHORIZATION: 'Achat', 'AUTHORIZATION-SETTLEMENT': 'Règlement', SETTLEMENT: 'Règlement', REFUND: 'Remboursement', REVERSAL: 'Annulation',
+  DECLINE: 'Refusé', FUNDING: 'Recharge', WITHDRAWAL: 'Retrait', TERMINATION: 'Fermeture', 'CROSS-BORDER': 'Frais de change',
+};
+/** One transaction stored from the partner's notifications (card_transactions), in the public shape. */
+function toPublicStored(t) {
+  const type = String(t.type || '').toUpperCase();
+  return {
+    id: t.provider_reference, type, mode: t.direction || null, status: t.status || null, amount: t.amount_usd == null ? 0 : Number(t.amount_usd), currency: t.currency || 'USD',
+    merchant_name: t.merchant_name || null, merchant_city: null, date: t.occurred_at || t.created_at || null, label: TX_LABEL[type] || 'Transaction',
+  };
+}
+
 async function getTransactions(ctx) {
   const card = await cardOrchestrator.getById(ctx.merchantId, ctx.params.id);
   if (!card) throw httpError(404, 'NOT_FOUND', 'Carte introuvable.');
@@ -170,33 +183,41 @@ async function getTransactions(ctx) {
     return { status: 200, body: { transactions: [], month_spend: 0, currency: 'USD' } };
   }
 
-  let res;
+  // 1) What the partner told us, stored as it arrived: always available, exact, and fast.
+  const stored = (await supabase.select('card_transactions', { card_id: card.id }, { order: 'occurred_at.desc', limit: 500 })).map(toPublicStored);
+  const known = new Set(stored.map((t) => String(t.id)));
+
+  // 2) The partner's own list adds what a notification may have missed. If the partner is unreachable, the stored list is still shown.
+  let partnerOk = true;
+  let extra = [];
   try {
-    res = await maplerad.forMode(card.mode).getCardTransactions(card.maplerad_card_id, {
+    const res = await maplerad.forMode(card.mode).getCardTransactions(card.maplerad_card_id, {
       start_date: ctx.query.start_date,
       end_date: ctx.query.end_date,
       page: ctx.query.page,
       page_size: ctx.query.page_size,
     });
+    const raw = (res && (res.data || res.transactions || res.result)) || [];
+    extra = (Array.isArray(raw) ? raw : []).map(toPublicTransaction).filter((t) => t.id == null || !known.has(String(t.id)));
+    extra.forEach((t) => { t.label = TX_LABEL[String(t.type || '').toUpperCase()] || 'Transaction'; });
   } catch (err) {
-    const out = httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
-    if (err.providerInfo) out.providerInfo = err.providerInfo;
-    throw out;
+    partnerOk = false;
+    if (!stored.length) {
+      const out = httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
+      if (err.providerInfo) out.providerInfo = err.providerInfo;
+      throw out;
+    }
   }
 
-  const raw = (res && (res.data || res.transactions || res.result)) || [];
-  const list = Array.isArray(raw) ? raw : [];
-  const transactions = list.map(toPublicTransaction);
-
+  const transactions = stored.concat(extra).sort((a, b) => (String(a.date) === String(b.date) ? 0 : String(a.date) < String(b.date) ? 1 : -1));
   const now = new Date();
-  const monthSpend = transactions
-    .filter((t) => {
-      const d = new Date(t.date);
-      return t.mode === 'DEBIT' && d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-    })
-    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  const thisMonth = (t) => { const d = new Date(t.date); return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth(); };
+  const ok = (t) => !/DECLIN|FAIL|REJECT/.test(String(t.status || '').toUpperCase());
+  const spent = transactions.filter((t) => t.type === 'AUTHORIZATION' && t.mode === 'DEBIT' && ok(t) && thisMonth(t)).reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  const back = transactions.filter((t) => (t.type === 'REFUND' || t.type === 'REVERSAL') && ok(t) && thisMonth(t)).reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  const monthSpend = Math.max(0, spent - back);
 
-  return { status: 200, body: { transactions, month_spend: Math.round(monthSpend * 100) / 100, currency: 'USD' } };
+  return { status: 200, body: { transactions, month_spend: Math.round(monthSpend * 100) / 100, currency: 'USD', complete: partnerOk } };
 }
 
 /** Overview page: recent transactions across ALL of this merchant's cards (current mode only), newest first. */
