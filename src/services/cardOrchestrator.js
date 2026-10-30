@@ -1161,6 +1161,53 @@ async function syncCardBalanceFromPartner(card) {
 }
 
 /**
+ * Stores the partner transactions we never received by webhook for one card and takes them off (or gives them back to) its balance,
+ * then aligns the balance with the partner's. A stored transaction is one already applied, so an unstored one is exactly a movement
+ * the balance missed. No fee and no webhook to the merchant here: those belong to the live notification.
+ * `sinceMs` limits how far back it looks (the partner lists the newest first).
+ */
+async function syncCardTransactionsFromPartner(card, opts) {
+  if (!card || !card.maplerad_card_id) return { imported: 0 };
+  const since = opts && opts.sinceMs ? Date.now() - opts.sinceMs : 0;
+  const res = await maplerad.forMode(card.mode).getCardTransactions(card.maplerad_card_id, { page: 1, page_size: 100 });
+  const raw = (res && (res.data || res.transactions || res.result)) || [];
+  let imported = 0;
+  let current = card;
+  for (const t of Array.isArray(raw) ? raw : []) {
+    const ref = String(t.reference || t.id || '');
+    if (!ref) continue;
+    if (since && t.created_at && new Date(t.created_at).getTime() < since) continue;
+    if (await supabase.selectOne('card_transactions', { card_id: card.id, provider_reference: ref })) continue;
+    const cents = Number(t.amount);
+    const row = await supabase.insert('card_transactions', {
+      id: `ctx_${randomHex(10)}`, merchant_id: card.merchant_id, card_id: card.id, mode: card.mode === 'live' ? 'live' : 'sandbox', provider_reference: ref,
+      type: String(t.type || '').toUpperCase() || 'UNKNOWN', status: t.status ? String(t.status).toUpperCase() : null, direction: t.mode ? String(t.mode).toUpperCase() : null,
+      amount_usd: Number.isFinite(cents) ? Math.round(cents) / 100 : null, currency: t.currency || 'USD', description: t.description ? String(t.description).slice(0, 200) : null,
+      merchant_name: t.merchant && t.merchant.name ? String(t.merchant.name).slice(0, 120) : null, occurred_at: t.created_at || new Date().toISOString(),
+    });
+    current = await applyCardSpendToBalance(current, row).catch(() => current);
+    imported += 1;
+  }
+  if (imported) await syncCardBalanceFromPartner(current).catch(() => {});
+  return { imported };
+}
+
+/** Background safety net: webhooks can be lost, so a few cards per run (rotating through all of them) are read against the partner. */
+let cardSyncCursor = 0;
+async function reconcileCardTransactions(limit) {
+  const all = await supabase.select('cards', { status: supabase.inList(['active', 'disabled']), mode: 'live', deleted_at: supabase.isNull() }, { order: 'created_at.asc', limit: 500 });
+  const n = limit || 10;
+  if (cardSyncCursor >= all.length) cardSyncCursor = 0;
+  const cards = all.slice(cardSyncCursor, cardSyncCursor + n);
+  cardSyncCursor += n;
+  let imported = 0;
+  for (const c of cards) {
+    try { imported += (await syncCardTransactionsFromPartner(c, { sinceMs: 7 * 24 * 3600 * 1000 })).imported; } catch (err) { console.error(`Card transaction sync ${c.id}: ${err.message}`); } // eslint-disable-line no-console
+  }
+  return { cards: cards.length, imported };
+}
+
+/**
  * Plans that bill each card purchase (Startup: 0.10 $) take that fee from the Master Wallet, once per purchase
  * (the partner's reference is the key, so a re-delivered event never charges twice). Only a successful purchase
  * authorization counts; refusals have their own fee. Never takes more than the wallet holds.
@@ -1195,6 +1242,8 @@ function transactionWebhookData(card, t) {
 module.exports = {
   transactionWebhookData,
   recordCardTransaction,
+  syncCardTransactionsFromPartner,
+  reconcileCardTransactions,
   backfillCardBalances,
   balanceWebhookData,
   reconcilePendingCardCreations,

@@ -61,8 +61,8 @@ async function webhookEvents() {
 }
 
 /**
- * Brings in the transactions the partner holds for the active live cards (60 newest) and stores the ones we do not have. It does NOT touch
- * any balance: it only fills the history the admin and the merchants see (balances are aligned with the partner separately).
+ * Brings in the transactions the partner holds for the active live cards (60 newest) and stores the ones we do not have. A transaction we never
+ * stored was never applied, so the card balance follows it too (then it is aligned with the partner's figure).
  */
 async function importTransactions(ctx) {
   const mode = ctx.body && ctx.body.mode === 'sandbox' ? 'sandbox' : 'live';
@@ -72,21 +72,7 @@ async function importTransactions(ctx) {
     if (!c.maplerad_card_id) continue;
     checked += 1;
     try {
-      const res = await maplerad.forMode(c.mode).getCardTransactions(c.maplerad_card_id, { page: 1, page_size: 100 });
-      const raw = (res && (res.data || res.transactions || res.result)) || [];
-      for (const t of Array.isArray(raw) ? raw : []) {
-        const ref = String(t.reference || t.id || '');
-        if (!ref) continue;
-        if (await supabase.selectOne('card_transactions', { card_id: c.id, provider_reference: ref })) continue;
-        const cents = Number(t.amount);
-        await supabase.insert('card_transactions', {
-          id: `ctx_${randomHex(10)}`, merchant_id: c.merchant_id, card_id: c.id, mode: c.mode === 'live' ? 'live' : 'sandbox', provider_reference: ref,
-          type: String(t.type || '').toUpperCase() || 'UNKNOWN', status: t.status ? String(t.status).toUpperCase() : null, direction: t.mode ? String(t.mode).toUpperCase() : null,
-          amount_usd: Number.isFinite(cents) ? Math.round(cents) / 100 : null, currency: t.currency || 'USD', description: t.description ? String(t.description).slice(0, 200) : null,
-          merchant_name: t.merchant && t.merchant.name ? String(t.merchant.name).slice(0, 120) : null, occurred_at: t.created_at || new Date().toISOString(),
-        });
-        imported += 1;
-      }
+      imported += (await require('../services/cardOrchestrator').syncCardTransactionsFromPartner(c)).imported;
     } catch (err) { errors.push(`${c.own_reference}: ${err.message}`); }
     await new Promise((r) => setTimeout(r, 250));
   }

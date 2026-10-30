@@ -7163,7 +7163,15 @@ test('admin diagnostics: schema check, the partner webhooks really received, and
   assert.ok(imp.data.imported >= 1);
   assert.ok(mockTables.card_transactions.some((t) => t.card_id === row.id && t.provider_reference === 'imp-old-2' && Number(t.amount_usd) === 7));
   assert.equal(mockTables.card_transactions.filter((t) => t.card_id === row.id && t.provider_reference === 'imp-evt-1').length, 1); // no duplicate
-  assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), balanceBefore); // history only, no balance change
+  assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), Math.max(0, Math.round((balanceBefore - 7) * 100) / 100)); // a purchase we never received follows the balance, once
+  maplerad.forMode = () => ({ getCardTransactions: async () => ({ data: [{ id: 'p2', reference: 'imp-old-2', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 700, currency: 'USD', created_at: '2026-10-29T10:00:00Z' }] }) });
+  const afterFirst = Number(mockTables.cards.find((c) => c.id === row.id).balance);
+  try { await api('POST', '/admin/cards/import-transactions', { token, body: { mode: 'live' } }); } finally { maplerad.forMode = original; }
+  assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), afterFirst); // importing again never debits twice
+  const orchestrator = require('../src/services/cardOrchestrator');
+  maplerad.forMode = () => ({ getCardTransactions: async () => ({ data: [{ id: 'p3', reference: 'bg-missed-3', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 100, currency: 'USD', created_at: new Date().toISOString() }] }) });
+  try { await orchestrator.reconcileCardTransactions(500); } finally { maplerad.forMode = original; }
+  assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), Math.max(0, Math.round((afterFirst - 1) * 100) / 100)); // background read catches a lost webhook
 });
 
 test('card transactions for a merchant: French labels, a refused purchase says so, and the partner name never shows', async () => {
