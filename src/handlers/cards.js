@@ -164,12 +164,24 @@ const TX_LABEL = {
   AUTHORIZATION: 'Achat', 'AUTHORIZATION-SETTLEMENT': 'Règlement', SETTLEMENT: 'Règlement', REFUND: 'Remboursement', REVERSAL: 'Annulation',
   DECLINE: 'Refusé', CHARGE: 'Frais de carte', FUNDING: 'Recharge', WITHDRAWAL: 'Retrait', TERMINATION: 'Fermeture', 'CROSS-BORDER': 'Frais de change',
 };
+/** French label of a transaction; a refused purchase says so. The partner's own name never reaches a merchant. */
+function txLabel(type, status) {
+  const t = String(type || '').toUpperCase();
+  if (t === 'AUTHORIZATION' && /DECLIN|FAIL|REJECT/i.test(String(status || ''))) return 'Achat refusé';
+  return TX_LABEL[t] || 'Transaction';
+}
+/** Our own movements (recharge, retrait, fermeture) carry the partner as "merchant": that name is not shown. */
+function txMerchant(name) {
+  const n = String(name || '').trim();
+  return !n || /maplerad|tranzak|plopplop/i.test(n) ? null : n;
+}
+
 /** One transaction stored from the partner's notifications (card_transactions), in the public shape. */
 function toPublicStored(t) {
   const type = String(t.type || '').toUpperCase();
   return {
     id: t.provider_reference, type, mode: t.direction || null, status: t.status || null, amount: t.amount_usd == null ? 0 : Number(t.amount_usd), currency: t.currency || 'USD',
-    merchant_name: t.merchant_name || null, merchant_city: null, date: t.occurred_at || t.created_at || null, label: TX_LABEL[type] || 'Transaction',
+    merchant_name: txMerchant(t.merchant_name), merchant_city: null, date: t.occurred_at || t.created_at || null, label: txLabel(type, t.status),
   };
 }
 
@@ -206,7 +218,7 @@ async function getTransactions(ctx) {
     });
     const raw = (res && (res.data || res.transactions || res.result)) || [];
     extra = (Array.isArray(raw) ? raw : []).map(toPublicTransaction).filter((t) => t.id == null || !known.has(String(t.id)));
-    extra.forEach((t) => { t.label = TX_LABEL[String(t.type || '').toUpperCase()] || 'Transaction'; });
+    extra.forEach((t) => { t.label = txLabel(t.type, t.status); t.merchant_name = txMerchant(t.merchant_name); });
   } catch (err) {
     partnerOk = false;
     if (!stored.length) {

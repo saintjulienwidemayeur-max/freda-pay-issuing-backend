@@ -103,11 +103,19 @@ async function loadCard(id) {
   return card;
 }
 
+const TX_FR = { AUTHORIZATION: 'Achat', 'AUTHORIZATION-SETTLEMENT': 'Règlement', SETTLEMENT: 'Règlement', REFUND: 'Remboursement', REVERSAL: 'Annulation', DECLINE: 'Refusé', FUNDING: 'Recharge', WITHDRAWAL: 'Retrait', TERMINATION: 'Fermeture', CHARGE: 'Frais de carte', 'CROSS-BORDER': 'Frais de change' };
+function txLabelFr(type, status) {
+  const k = String(type || '').toUpperCase();
+  if (k === 'AUTHORIZATION' && /DECLIN|FAIL|REJECT/i.test(String(status || ''))) return 'Achat refusé';
+  return TX_FR[k] || k || 'Transaction';
+}
+
 function publicTransaction(t) {
   return {
     id: t.id, type: t.type, status: t.status, direction: t.direction,
     amount: t.amount_usd == null ? null : Number(t.amount_usd), currency: t.currency || 'USD',
     description: t.description, merchant_name: t.merchant_name, occurred_at: t.occurred_at,
+    label: txLabelFr(t.type, t.status),
   };
 }
 
