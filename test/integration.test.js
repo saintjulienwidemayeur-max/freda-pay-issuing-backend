@@ -7322,4 +7322,16 @@ test('crypto wallet: when the partner refuses a customer address, the merchant g
   assert.ok(a1.data.address.startsWith('0xMERCH'));
   assert.notEqual(a1.data.address, a2.data.address);
   assert.equal((await api('POST', '/dashboard/crypto/addresses', { token: one.data.session_token, body: { chain: 'solana', coin: 'USDT' } })).data.address, a1.data.address);
+  await fetch('http://localhost:4504/__control/fail-crypto-customer?off=1', { method: 'POST' }); // the partner works again
+});
+
+test('crypto wallet: an address the partner already holds is taken back (listed by customer), not created twice', async () => {
+  const reg = await registerAndVerify({ business_name: 'Reuse Crypto Co', email: 'reusecrypto@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const first = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'polygon', coin: 'USDC' } });
+  assert.equal(first.status, 201);
+  mockTables.crypto_addresses.length = 0; // our copy is lost; the partner still holds the address
+  const again = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'polygon', coin: 'USDC' } });
+  assert.equal(again.status, 201);
+  assert.equal(again.data.address, first.data.address);
 });
