@@ -67,10 +67,32 @@ async function history(merchantId, mode, limit) {
   return rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, limit || 50);
 }
 
-/** The partner customer that owns this merchant's crypto addresses (created once per merchant and mode). */
+/** Details for the partner's Tier 1 upgrade (a customer must be Tier 1 to own a crypto address). Sandbox accepts test values for what we do not hold. */
+function tierOneDetails(merchant) {
+  const digits = String(merchant.phone || '').replace(/[^\d+]/g, '');
+  const m = /^\+?(509|1|33|44)(\d{6,12})$/.exec(digits);
+  return {
+    dob: '01-01-1990',
+    phone: { phone_country_code: `+${m ? m[1] : '509'}`, phone_number: m ? m[2] : (digits.replace(/\D/g, '').slice(-8) || '30000000') },
+    address: { street: 'Delmas 33', city: 'Port-au-Prince', state: 'Ouest', postal_code: 'HT6110', country: 'HT' },
+    identificationNumber: `FREDA${String(merchant.id || '').replace(/\W/g, '').slice(-8).toUpperCase()}`,
+  };
+}
+
+/**
+ * The partner customer that owns this merchant's crypto addresses. It must be Tier 1 ("service is only available for Tier 1 customers"):
+ *   1) a card holder of this merchant already enrolled at the partner (it is above Tier 1) is used as it is;
+ *   2) otherwise a customer of its own is created (or taken back from an earlier attempt) and upgraded to Tier 1.
+ * In Live the upgrade needs the merchant's real identity details, so there it only works through an enrolled holder.
+ */
 async function customerFor(merchant, mode) {
   const rows = await supabase.select('crypto_addresses', { merchant_id: merchant.id, mode }, { limit: 1 });
-  if (rows && rows[0]) return rows[0].maplerad_customer_id;
+  if (rows && rows[0] && rows[0].maplerad_customer_id !== 'business') return rows[0].maplerad_customer_id;
+  const holders = await supabase.select('maplerad_customers', { merchant_id: merchant.id, mode }, { order: 'created_at.desc', limit: 20 }).catch(() => []);
+  const holder = (holders || []).find((h) => h.status === 'enrolled' && h.maplerad_customer_id);
+  if (holder) return holder.maplerad_customer_id;
+  if (mode === 'live') throw httpError(400, 'IDENTITY_REQUIRED', "Pour créer votre wallet crypto en Live, ajoutez d'abord un titulaire vérifié dans Cartes.");
+
   const email = String(merchant.email || '').trim();
   const at = email.indexOf('@');
   const aliased = at > 0 ? `${email.slice(0, at)}+crypto${email.slice(at)}` : email; // a separate customer from any card holder with the same e-mail
@@ -88,6 +110,11 @@ async function customerFor(merchant, mode) {
     if (!id) id = idOf(await create(at > 0 ? `${email.slice(0, at)}+crypto${randomHex(3)}${email.slice(at)}` : email)); // not found: a fresh customer with its own address
   }
   if (!id) throw httpError(502, 'CRYPTO_UNAVAILABLE', 'Le service crypto est momentanément indisponible. Réessayez dans un instant.');
+  try {
+    await provider.upgradeCustomerTier1(Object.assign({ customerId: id }, tierOneDetails(merchant)));
+  } catch (err) {
+    if (!/already/i.test(err.providerRawMessage || '')) throw err; // already Tier 1 or above: that is the state we want
+  }
   return id;
 }
 

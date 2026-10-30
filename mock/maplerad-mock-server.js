@@ -151,6 +151,8 @@ async function handle(req, res) {
   // ---- POST /crypto (stablecoin deposit address for a customer) ----
   if (url.pathname === '/crypto' && req.method === 'POST') {
     if (behavior.failCryptoCustomer) return send(res, 400, { status: false, message: 'The operation could not be completed' });
+    const holder = customerFor(env, body.customer_id);
+    if (!holder || !(holder.tier >= 1)) return send(res, 400, { status: false, message: 'service is only available for Tier 1 customers' });
     if (!body.customer_id || !body.coin || !body.chain) return send(res, 400, { status: false, message: 'customer_id, coin and chain are required' });
     const id = randomId('cry');
     return send(res, 200, { status: true, message: 'address generated', data: { id, address: `0xMOCK${id.replace(/[^a-z0-9]/gi, '')}${body.chain}`, chain: body.chain, coin: body.coin, offramp: body.offramp === true, active: true } });
