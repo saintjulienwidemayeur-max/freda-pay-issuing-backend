@@ -6885,3 +6885,68 @@ test('per-card transactions: stored purchases show up with a French label and th
   assert.deepEqual(labels, ['Achat', 'Refusé', 'Remboursement']);
   assert.equal(r.data.month_spend, 7); // 10 spent - 3 refunded, the decline does not count
 });
+
+test('withdrawal safety net: a MonCash payout lost by a restart is settled from what the partner says (success, failed, never sent)', async () => {
+  const orchestrator = require('../src/services/payoutOrchestrator');
+  const plopplop = require('../src/services/plopplop');
+  const live = await liveWithGateway('payrecon', 10000);
+  const old = new Date(Date.now() - 3600 * 1000).toISOString();
+  const mk = async (suffix, amount) => {
+    const id = `po_recon_${suffix}`;
+    const ref = `fp_${live.merchantId}_RECON-${suffix}`;
+    mockTables.payouts.push({ id, merchant_id: live.merchantId, own_reference: `RECON-${suffix}`, plopplop_reference: ref, amount, method: 'moncash', recipient: '50937001234', status: 'pending', fee: 50, currency: 'HTG', mode: 'live', created_at: old, updated_at: old });
+    await require('../src/services/ledger').debitGatewayForPayout(live.merchantId, amount, 'HTG', `${ref}:hold`, id, 'live');
+    await require('../src/services/ledger').debitGatewayForPayout(live.merchantId, 50, 'HTG', `${ref}:hold-fee`, id, 'live');
+    return id;
+  };
+  const okId = await mk('ok', 1000), failId = await mk('fail', 800), lostId = await mk('lost', 600), waitId = await mk('wait', 400);
+  const afterHold = await gw(live.token);
+  const original = plopplop.verifyWithdrawal;
+  plopplop.verifyWithdrawal = async ({ reference }) => {
+    if (reference.endsWith('RECON-ok')) return { httpStatus: 200, data: { success: true, data: { status: 'success', transaction_id: 'T1' } } };
+    if (reference.endsWith('RECON-fail')) return { httpStatus: 200, data: { success: true, data: { status: 'failed' } } };
+    if (reference.endsWith('RECON-lost')) return { httpStatus: 404, data: { success: false, message: 'Aucun retrait trouvé pour cette référence.' } };
+    return { httpStatus: 200, data: { success: true, data: { status: 'pending' } } };
+  };
+  let res;
+  try { res = await orchestrator.reconcilePendingPayouts(10); } finally { plopplop.verifyWithdrawal = original; }
+  assert.ok(res.settled >= 3);
+  const status = (id) => mockTables.payouts.find((p) => p.id === id).status;
+  assert.equal(status(okId), 'success');
+  assert.equal(status(failId), 'failed');
+  assert.equal(status(lostId), 'failed');
+  assert.equal(status(waitId), 'pending');
+  // failed + never sent give back amount + fee: (800 + 50) + (600 + 50)
+  assert.equal((await gw(live.token)) - afterHold, 1500);
+  // Nothing happens twice.
+  plopplop.verifyWithdrawal = async () => ({ httpStatus: 200, data: { success: true, data: { status: 'failed' } } });
+  try { await orchestrator.reconcilePendingPayouts(10); } finally { plopplop.verifyWithdrawal = original; }
+  assert.equal((await gw(live.token)) - afterHold, 1500 + 450); // only the still-pending one (400 + 50) is now given back
+});
+
+test('card safety nets: a creation whose notification never came is activated from the partner, a partner closure marks the card terminated, a partner fee lowers the balance', async () => {
+  const orchestrator = require('../src/services/cardOrchestrator');
+  const maplerad = require('../src/services/maplerad');
+  const reg = await registerAndVerify({ business_name: 'Net Co', email: 'netco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'NET-1', kind: 'business', business_name: 'Net Co', brand: 'VISA', amount: 20 } });
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  // 1) creation lost: the card is pending again, 20 minutes old, and the partner knows it.
+  row.status = 'pending'; row.masked_pan = null; row.created_at = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+  const original = maplerad.forMode;
+  maplerad.forMode = () => ({ getCard: async () => ({ data: { id: row.maplerad_card_id, status: 'ACTIVE', masked_pan: '411111******9999', name: 'NET CO', currency: 'USD' } }) });
+  try { assert.ok((await orchestrator.reconcilePendingCardCreations(10)).activated >= 1); } finally { maplerad.forMode = original; }
+  assert.equal(mockTables.cards.find((x) => x.id === row.id).status, 'active');
+  // 2) partner fee (issuing.charge) lowers the balance once
+  const before = Number(mockTables.cards.find((x) => x.id === row.id).balance);
+  const charge = { event: 'issuing.charge', amount: 150, card_id: row.maplerad_card_id, transaction_date: '2026-10-30 10:00:00 +0000 UTC' };
+  await sendProviderEvent(charge, MOCK_SANDBOX_WHSEC);
+  await sendProviderEvent(charge, MOCK_SANDBOX_WHSEC);
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), before - 1.5);
+  // 3) the partner closes the card: it is terminated here too, the merchant's webhook is sent
+  await sendProviderEvent({ event: 'issuing.terminated', amount: 0, card_id: row.maplerad_card_id, reason: 'Insufficient Funds', reference: 'term-1' }, MOCK_SANDBOX_WHSEC);
+  const after = mockTables.cards.find((x) => x.id === row.id);
+  assert.equal(after.status, 'terminated');
+  assert.match(after.failure_reason, /Insufficient Funds/);
+});

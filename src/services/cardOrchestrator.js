@@ -1024,12 +1024,57 @@ async function recordCardTransaction(event, webhookMode) {
  * withdrawals are applied by our own endpoints, and a SETTLEMENT repeats a purchase already taken at authorization, so those do not
  * move it. Runs once per partner event (recordCardTransaction stores each event once), never below zero.
  */
+/**
+ * The partner closed a card by itself (for instance for insufficient funds): the card is marked terminated here too, so it stops showing
+ * as active and usable. A closure we asked for already left the card terminated: nothing happens then. The remaining money is NOT
+ * credited back (the partner's event does not say where it went); the team is told so it can look at the card.
+ */
+async function applyCardTerminationWebhook(event, webhookMode) {
+  const card = event && event.card_id ? await supabase.selectOne('cards', { maplerad_card_id: event.card_id }) : null;
+  if (!card) return null;
+  if (webhookMode && (card.mode || 'sandbox') !== webhookMode) return null;
+  if (card.status === 'terminated' || card.status === 'failed') return card;
+  const reason = event.reason ? String(event.reason).slice(0, 200) : null;
+  const [done] = await supabase.update('cards', { id: card.id, status: card.status }, { status: 'terminated', failure_reason: reason ? `Carte fermée : ${reason}` : 'Carte fermée par le service de cartes.', updated_at: new Date().toISOString() });
+  if (!done) return card;
+  webhookDispatcher.dispatch(card.merchant_id, 'card.terminated', { id: card.id, reference: card.own_reference, reason });
+  require('./adminAlerts').cardClosedByPartner({ card, reason, balance: Number(card.balance || 0) }).catch(() => {});
+  return done;
+}
+
+/**
+ * Safety net for card creation. The partner confirms a new card by notification; when that notification never arrives the card stays
+ * "pending" for ever (money debited, no card shown). Pending cards older than 10 minutes are looked up at the partner by their
+ * reference: if the card exists it is activated exactly like the notification would do; one still unknown after 30 minutes alerts the team.
+ */
+async function reconcilePendingCardCreations(limit) {
+  const now = Date.now();
+  const rows = (await supabase.select('cards', { status: 'pending', created_at: supabase.gt(new Date(now - 3 * 24 * 3600 * 1000).toISOString()) }, { order: 'created_at.asc', limit: 100 }))
+    .filter((c) => c.maplerad_reference && now - new Date(c.created_at).getTime() > 10 * 60 * 1000)
+    .slice(0, limit || 10);
+  let activated = 0;
+  for (const c of rows) {
+    try {
+      const res = await maplerad.forMode(c.mode).getCard(c.maplerad_reference);
+      const d = (res && (res.data || res)) || {};
+      if (d.id && /^(ACTIVE|DISABLED)$/i.test(String(d.status || 'ACTIVE'))) {
+        const done = await applyCardCreationWebhook({ mapleradReference: c.maplerad_reference, mapleradCardId: d.id, maskedPan: d.masked_pan || null, holderName: d.name || null, status: 'ACTIVE', currency: d.currency || 'USD', webhookMode: c.mode || 'sandbox' });
+        if (done && done.status === 'active') activated += 1;
+      }
+    } catch (err) {
+      if (now - new Date(c.created_at).getTime() > 30 * 60 * 1000) require('./adminAlerts').cardCreationStuck({ card: c, why: err.message }).catch(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 800));
+  }
+  return { checked: rows.length, activated };
+}
+
 /** How one stored card transaction moves the card's balance: negative for a purchase, positive for a reversal or refund, 0 otherwise. */
 function balanceDeltaOf(row) {
   const amount = Number(row.amount_usd);
   if (!(amount > 0)) return 0;
   if (/DECLIN|FAIL|REJECT/.test(String(row.status || ''))) return 0;
-  if (row.type === 'AUTHORIZATION' && row.direction === 'DEBIT') return -amount;
+  if ((row.type === 'AUTHORIZATION' || row.type === 'CHARGE') && row.direction === 'DEBIT') return -amount;
   if ((row.type === 'REVERSAL' || row.type === 'REFUND') && row.direction !== 'DEBIT') return amount;
   return 0;
 }
@@ -1142,6 +1187,8 @@ module.exports = {
   transactionWebhookData,
   recordCardTransaction,
   backfillCardBalances,
+  reconcilePendingCardCreations,
+  applyCardTerminationWebhook,
   applyCardDeclineWebhook,
   _test: { parseExpiry, formatAddress, extractCustomerIdFromList },
   getHolderProfile,

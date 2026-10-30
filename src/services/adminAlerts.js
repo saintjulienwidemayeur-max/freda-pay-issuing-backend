@@ -67,6 +67,32 @@ function paymentStuck({ payment, heard, ageMin, label }) {
   });
 }
 
+/** The card partner closed a card on its own. */
+function cardClosedByPartner({ card, reason, balance }) {
+  return alert({
+    key: `card-closed:${card.id}`, throttleMs: 24 * 3600 * 1000, tone: 'warning',
+    subject: 'Alerte carte : une carte a été fermée par le fournisseur',
+    eyebrow: 'Alerte carte', heading: 'Une carte a été fermée',
+    paragraphs: [
+      `La carte **${card.own_reference}** (${card.kind === 'business' ? 'entreprise' : 'individuelle'}, ${card.mode === 'live' ? 'Live' : 'Sandbox'}) a été fermée par le fournisseur${reason ? ` : « ${reason} »` : ''}.`,
+      `Solde affiché chez nous avant la fermeture : **${Number(balance || 0).toFixed(2)} $**. Il n'a pas été rendu automatiquement au Master Wallet : vérifiez avec le fournisseur où cet argent est allé.`,
+    ],
+  });
+}
+
+/** A card has been "pending" for over 30 minutes and the partner cannot be asked about it, or does not know it. */
+function cardCreationStuck({ card, why }) {
+  return alert({
+    key: `card-stuck:${card.id}`, throttleMs: 6 * 3600 * 1000, tone: 'warning',
+    subject: 'Alerte carte : une création de carte reste en attente',
+    eyebrow: 'Alerte carte', heading: 'Une carte reste en attente',
+    paragraphs: [
+      `La carte **${card.own_reference}** (${card.mode === 'live' ? 'Live' : 'Sandbox'}) est en attente depuis plus de 30 minutes : le fournisseur n'a pas confirmé sa création.`,
+      `Réponse du fournisseur quand nous l'interrogeons : « ${String(why || '').slice(0, 200)} ». Ouvrez « Erreurs cartes » dans le panneau admin, puis vérifiez ce que le marchand a été débité.`,
+    ],
+  });
+}
+
 /** A merchant wrote in the chat. One alert per merchant per 10 minutes, with the message. */
 function chatMessage({ merchantId, merchantName, body, hasPhoto }) {
   const excerpt = String(body || '').slice(0, 300);
@@ -101,4 +127,4 @@ function start() {
 
 function reset() { lastSent.clear(); }
 
-module.exports = { alert, apiAbuse, chatMessage, watchApi, start, reset, paymentStuck };
+module.exports = { alert, apiAbuse, chatMessage, watchApi, start, reset, paymentStuck, cardClosedByPartner, cardCreationStuck };
