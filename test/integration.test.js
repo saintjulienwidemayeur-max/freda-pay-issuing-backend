@@ -7064,3 +7064,40 @@ test('admin debit: reason required and e-mailed, limited to what the wallet hold
   assert.ok(mockTables.ledger_entries.some((e) => e.merchant_id === live.merchantId && e.type === 'admin_debit' && Number(e.amount) === -20));
   assert.equal((await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: (await adminLogin('editor')).token, body: { wallet: 'master_wallet', amount: 1, reason: 'Test de rôle' } })).status, 403);
 });
+
+test('guarantee deposit: 50 $ by default, the team raises or lowers it per merchant (reason e-mailed), operations respect the new floor', async () => {
+  const guarantee = require('../src/services/guarantee');
+  guarantee.clearCache();
+  const { token: owner } = await adminLogin('owner');
+  const live = await makeLiveMerchant('guar', { fundUsd: 200 });
+  const bal = await api('GET', '/dashboard/balance', { token: live.token });
+  assert.equal(bal.data.master_wallet.guarantee_usd, 50);
+  assert.equal(bal.data.master_wallet.spendable_usd, bal.data.master_wallet.available - 50);
+  const get = await api('GET', `/admin/merchants/${live.merchantId}/guarantee`, { token: owner });
+  assert.equal(get.data.guarantee_usd, 50);
+  assert.equal(get.data.default_usd, 50);
+  sentEmails.length = 0;
+  assert.equal((await api('PUT', `/admin/merchants/${live.merchantId}/guarantee`, { token: owner, body: { guarantee_usd: 150 } })).data.error.code, 'REASON_REQUIRED');
+  assert.equal((await api('PUT', `/admin/merchants/${live.merchantId}/guarantee`, { token: owner, body: { guarantee_usd: -5, reason: 'Montant invalide' } })).status, 400);
+  const up = await api('PUT', `/admin/merchants/${live.merchantId}/guarantee`, { token: owner, body: { guarantee_usd: 180, reason: 'Volume de litiges élevé ce mois-ci' } });
+  assert.equal(up.status, 200);
+  assert.equal(up.data.previous_usd, 50);
+  assert.equal(up.data.guarantee_usd, 180);
+  const mail = sentEmails.find((e) => e.to === emailOf(live) && /garantie/i.test(e.subject));
+  assert.ok(mail && /Volume de litiges/.test(mail.html) && /180,00/.test(mail.html));
+  assert.equal((await api('GET', '/dashboard/balance', { token: live.token })).data.master_wallet.guarantee_usd, 180);
+  // The wallet holds 200: a card that would leave less than 180 is refused, a small one passes.
+  const refused = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'GUAR-1', kind: 'business', business_name: 'Guar Co', brand: 'VISA', amount: 30 } });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.data.error.code, 'BELOW_MINIMUM_BALANCE');
+  assert.match(refused.data.error.message, /180/);
+  // Lowering frees money; the history lists both changes.
+  const down = await api('PUT', `/admin/merchants/${live.merchantId}/guarantee`, { token: owner, body: { guarantee_usd: 20, reason: 'Litiges réglés' } });
+  assert.equal(down.data.guarantee_usd, 20);
+  const ok = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'GUAR-2', kind: 'business', business_name: 'Guar Co', brand: 'VISA', amount: 30 } });
+  assert.equal(ok.status, 202);
+  const after = await api('GET', `/admin/merchants/${live.merchantId}/guarantee`, { token: owner });
+  assert.equal(after.data.history.length, 2);
+  assert.equal((await api('PUT', `/admin/merchants/${live.merchantId}/guarantee`, { token: (await adminLogin('editor')).token, body: { guarantee_usd: 10, reason: 'Test de rôle' } })).status, 403);
+  guarantee.clearCache();
+});

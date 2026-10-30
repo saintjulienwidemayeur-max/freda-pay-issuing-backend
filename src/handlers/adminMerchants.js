@@ -6,6 +6,8 @@ const notify = require('../services/notify');
 const { randomHex } = require('../utils/ids');
 const { planKeyFor } = require('../services/plans');
 const adminStats = require('../services/adminStats');
+const guarantee = require('../services/guarantee');
+const config = require('../config');
 
 /** Both balances of one merchant for one mode (live = real money, sandbox = play money), fetched in parallel. */
 async function balancesFor(merchantId, mode) {
@@ -182,6 +184,37 @@ async function debit(ctx) {
   return { status: 200, body: { debited: true, mode, new_balance: newBalance } };
 }
 
+/** The merchant's guarantee deposit (locked part of the Master Wallet): the current amount, the default, the balance and what is spendable. */
+async function getGuarantee(ctx) {
+  const merchant = await supabase.selectOne('merchants', { id: ctx.params.id });
+  if (!merchant) throw httpError(404, 'NOT_FOUND', 'Marchand introuvable.');
+  const mode = ctx.query && ctx.query.mode === 'sandbox' ? 'sandbox' : 'live';
+  const [value, balance, history] = await Promise.all([
+    guarantee.get(merchant.id),
+    ledger.getBalance(merchant.id, 'master_wallet', 'USD', mode),
+    supabase.select('admin_wallet_credits', { merchant_id: merchant.id, wallet: 'guarantee' }, { order: 'created_at.desc', limit: 20 }),
+  ]);
+  return { status: 200, body: { mode, guarantee_usd: value, default_usd: config.masterWallet.minimumBalanceUsd, max_usd: guarantee.MAX_USD, master_wallet_balance: balance, spendable_usd: Math.max(0, Math.round((balance - value) * 100) / 100), history: history.map((h) => ({ at: h.created_at, new_value: Number(h.amount), note: h.note })) } };
+}
+
+/** Raises or lowers the guarantee deposit of ONE merchant. The reason is required and e-mailed to the merchant with the new amounts. */
+async function setGuarantee(ctx) {
+  const merchant = await supabase.selectOne('merchants', { id: ctx.params.id });
+  if (!merchant) throw httpError(404, 'NOT_FOUND', 'Marchand introuvable.');
+  const b = ctx.body || {};
+  const value = Number(b.guarantee_usd);
+  if (!Number.isFinite(value) || value < 0 || value > guarantee.MAX_USD || Math.abs(Math.round(value * 100) - value * 100) > 1e-6) throw httpError(400, 'INVALID_AMOUNT', `guarantee_usd doit être entre 0 et ${guarantee.MAX_USD} $, avec 2 décimales au maximum.`);
+  const why = String(b.reason == null ? '' : b.reason).replace(/[\u0000-\u001f]/g, ' ').trim();
+  if (why.length < 5) throw httpError(400, 'REASON_REQUIRED', "Un motif d'au moins 5 caractères est obligatoire : le marchand le reçoit par e-mail.");
+  const mode = b.mode === 'sandbox' ? 'sandbox' : 'live';
+  const { previous } = await guarantee.set(merchant.id, value, ctx.adminId);
+  if (Math.abs(previous - value) < 0.005) return { status: 200, body: { changed: false, guarantee_usd: value } };
+  await supabase.insert('admin_wallet_credits', { id: `awc_${randomHex(8)}`, merchant_id: merchant.id, admin_id: ctx.adminId, wallet: 'guarantee', amount: value, currency: 'USD', note: `GARANTIE ${previous} → ${value} : ${why}`.slice(0, 300), mode });
+  const balance = await ledger.getBalance(merchant.id, 'master_wallet', 'USD', mode);
+  await notify.guaranteeChanged(merchant, { previous, value, balance, reason: why });
+  return { status: 200, body: { changed: true, previous_usd: previous, guarantee_usd: value, master_wallet_balance: balance, spendable_usd: Math.max(0, Math.round((balance - value) * 100) / 100) } };
+}
+
 const PRICING_FIELDS = ['card_creation_usd', 'card_recharge_usd', 'card_withdrawal_usd', 'card_decline_usd', 'wallet_funding_pct', 'gateway_pct', 'gateway_fixed_htg', 'payout_mobile_pct', 'payout_bank_fee_htg', 'payout_fee_htg', 'gateway_card_pct', 'gateway_card_fixed_usd', 'payout_bank_fee_usd'];
 
 function toPublicPricing(row) {
@@ -311,4 +344,4 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit };
+module.exports = { list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit, getGuarantee, setGuarantee };
