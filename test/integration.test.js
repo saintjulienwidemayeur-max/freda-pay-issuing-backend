@@ -1037,7 +1037,9 @@ test('deleting a card closes it at the partner, refunds its remaining balance an
   assert.equal(term.data.balance, 0);
 
   const after = await api('GET', '/dashboard/balance', { token: sessionToken });
-  assert.equal(after.data.master_wallet.available, before.data.master_wallet.available + 25);
+  assert.equal(Math.round((after.data.master_wallet.available - before.data.master_wallet.available) * 100) / 100, 24.5); // 25 left on the card, 0.50 closure fee
+  assert.equal(term.data.refunded_usd, 24.5);
+  assert.equal(term.data.closure_fee_usd, 0.5);
 
   // Deleted means gone: not in the list any more, not reachable by id, and a second delete finds nothing.
   assert.equal(term.data.deleted, true);
@@ -4423,7 +4425,7 @@ test('delete is real for every card state: active (closed at the partner + refun
   const del = await api('POST', `/dashboard/cards/${m.businessId}/terminate`, { token: m.token });
   assert.equal(del.status, 200);
   assert.equal(mockTables.cards.find((c) => c.id === m.businessId).status, 'terminated');
-  assert.equal((await api('GET', '/dashboard/balance', { token: m.token })).data.master_wallet.available, before + 15);
+  assert.equal(Math.round(((await api('GET', '/dashboard/balance', { token: m.token })).data.master_wallet.available - before) * 100) / 100, 14.5); // 15 on the card, 0.50 closure fee
   assert.ok(!(await api('GET', '/dashboard/cards', { token: m.token })).data.cards.some((c) => c.id === m.businessId));
   // the row is kept for the ledger and the audit, flagged as deleted
   assert.ok(mockTables.cards.find((c) => c.id === m.businessId).deleted_at);
@@ -5832,7 +5834,7 @@ test('fixer2: terminating a card does not refund what the card spent online', as
   const term = await api('POST', `/dashboard/cards/${live.card.id}/terminate`, { token: live.token });
   assert.equal(term.status, 200);
   const after = (await f2Balance(live.token)).master_wallet.available;
-  assert.equal(Math.round((after - before) * 100) / 100, 70); // 100 loaded - 30 spent, not 100
+  assert.equal(Math.round((after - before) * 100) / 100, 69.5); // 100 loaded - 30 spent = 70 left, minus the 0.50 closure fee
 });
 
 test('fixer2: money amounts must be real positive numbers with at most two decimals (French 400, nothing charged)', async () => {
@@ -7011,4 +7013,54 @@ test('card.balance_updated: sent when the team aligns a card with the partner, o
     await sleep(300);
     assert.equal(receiver.received.filter((d) => d.json.event === 'card.balance_updated').length, before + 1);
   } finally { maplerad.forMode = original; receiver.server.close(); }
+});
+
+test('closing a card keeps 0.50 $ from what is given back, never more than what is left, and logs it as income', async () => {
+  const reg = await registerAndVerify({ business_name: 'Close Fee Co', email: 'closefee@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const mk = async (ref) => {
+    const c = await api('POST', '/dashboard/cards', { token, body: { reference: ref, kind: 'business', business_name: 'Close Fee Co', brand: 'VISA', amount: 10 } });
+    await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+    return c.data.id;
+  };
+  const a = await mk('CLOSE-A');
+  const b = await mk('CLOSE-B');
+  mockTables.cards.find((c) => c.id === b).balance = 0.3; // less than the fee
+  const bal = async () => (await api('GET', '/dashboard/balance', { token })).data.master_wallet.available;
+  const start = await bal();
+  const ra = await api('POST', `/dashboard/cards/${a}/terminate`, { token });
+  assert.equal(ra.data.refunded_usd, 9.5);
+  assert.equal(ra.data.closure_fee_usd, 0.5);
+  const rb = await api('POST', `/dashboard/cards/${b}/terminate`, { token });
+  assert.equal(rb.data.refunded_usd, 0);
+  assert.equal(rb.data.closure_fee_usd, 0.3);
+  assert.equal(Math.round(((await bal()) - start) * 100) / 100, 9.5);
+  assert.ok(mockTables.fee_revenue.some((r) => r.kind === 'card_closure' && r.related_id === a && Number(r.amount) === 0.5));
+});
+
+test('admin debit: reason required and e-mailed, limited to what the wallet holds, the owner can force it, every debit is in the ledger', async () => {
+  const { token: owner } = await adminLogin('owner');
+  const live = await makeLiveMerchant('admdebit', { fundUsd: 200 });
+  const bal = async () => (await api('GET', '/dashboard/balance', { token: live.token })).data.master_wallet.available;
+  const start = await bal();
+  sentEmails.length = 0;
+  assert.equal((await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: owner, body: { wallet: 'master_wallet', amount: 20 } })).data.error.code, 'REASON_REQUIRED');
+  assert.equal((await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: owner, body: { wallet: 'master_wallet', amount: 0, reason: 'Avertissement de paiement' } })).status, 400);
+  const ok = await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: owner, body: { wallet: 'master_wallet', amount: 20, reason: 'Avertissement de paiement : litige client #123', mode: 'live' } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.new_balance, start - 20);
+  assert.equal(await bal(), start - 20);
+  const mail = sentEmails.find((e) => e.to === emailOf(live) && /Débit/.test(e.subject));
+  assert.ok(mail && /litige client #123/.test(mail.html));
+  const tooMuch = await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: owner, body: { wallet: 'master_wallet', amount: 5000, reason: 'Recouvrement', mode: 'live' } });
+  assert.equal(tooMuch.status, 400);
+  assert.equal(tooMuch.data.error.code, 'INSUFFICIENT_BALANCE');
+  const adminRow = await adminLogin('admin');
+  const notOwner = await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: adminRow.token, body: { wallet: 'master_wallet', amount: 5000, reason: 'Recouvrement', mode: 'live', force: true } });
+  assert.equal(notOwner.status, 403);
+  const forced = await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: owner, body: { wallet: 'master_wallet', amount: 5000, reason: 'Recouvrement après litige', mode: 'live', force: true } });
+  assert.equal(forced.status, 200);
+  assert.ok(forced.data.new_balance < 0);
+  assert.ok(mockTables.ledger_entries.some((e) => e.merchant_id === live.merchantId && e.type === 'admin_debit' && Number(e.amount) === -20));
+  assert.equal((await api('POST', `/admin/merchants/${live.merchantId}/debit`, { token: (await adminLogin('editor')).token, body: { wallet: 'master_wallet', amount: 1, reason: 'Test de rôle' } })).status, 403);
 });

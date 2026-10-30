@@ -350,6 +350,7 @@ router.get('/admin/overview', adminSession.requireAdminSession, (ctx) => { admin
 router.get('/admin/visits', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return trackHandlers.adminVisits(ctx); });
 router.get('/admin/merchants', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.list(ctx); });
 router.get('/admin/merchants/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.get(ctx); });
+router.post('/admin/merchants/:id/debit', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.debit(ctx); });
 router.post('/admin/merchants/:id/credit', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.credit(ctx); });
 router.put('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.setPricing(ctx); });
 router.del('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.clearPricing(ctx); });
