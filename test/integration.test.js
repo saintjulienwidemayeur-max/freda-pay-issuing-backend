@@ -7243,10 +7243,9 @@ test('crypto wallet: its own balance (separate from the Master Wallet), receive,
   await sendProviderEvent({ ...ev, reference: 'crypto-dep-4', amount: undefined }, MOCK_SANDBOX_WHSEC);
   assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 995);
 
-  // sandbox test deposit
-  const sim = await api('POST', '/dashboard/crypto/simulate-deposit', { token, body: { chain: 'solana', coin: 'USDT', amount: 5 } });
-  assert.equal(sim.status, 201);
-  assert.equal(sim.data.balances.USDT, 999.97); // 995 + 5 - 0.5 % (0.03 rounded up)
+  // a second deposit (the partner's sandbox sends the notifications itself)
+  await sendProviderEvent({ ...ev, reference: 'crypto-dep-5', amount: 500 }, MOCK_SANDBOX_WHSEC); // 5.00 USDT
+  assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 999.97); // 995 + 5 - 0.5 % (0.03 rounded up)
 
   // sending: fee on top, only on Solana, refused addresses are refunded
   const dest = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';

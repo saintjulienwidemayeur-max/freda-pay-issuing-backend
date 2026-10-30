@@ -169,18 +169,6 @@ async function applyDepositEvent(event, webhookMode) {
   return row;
 }
 
-/** Sandbox only: a deposit as the partner would notify it, to test receiving without real crypto. */
-async function simulateDeposit(merchant, mode, { chain, coin, amount }) {
-  if (mode !== 'sandbox') throw httpError(400, 'SANDBOX_ONLY', 'La simulation de dépôt est réservée au mode Sandbox.');
-  const value = Number(amount);
-  if (!Number.isFinite(value) || value <= 0 || value > 100000) throw httpError(400, 'INVALID_AMOUNT', 'Montant invalide.');
-  const addr = await getOrCreateAddress(merchant, mode, chain, coin);
-  const reference = `sim_${randomHex(8)}`;
-  const row = await applyDepositEvent({ event: 'collection.successful', status: 'SUCCESS', address: addr.address, amount: Math.round(value * 100), currency: coin, reference, tx_hash: `0xsim${randomHex(8)}` }, 'sandbox');
-  if (!row) throw httpError(400, 'DEPOSIT_NOT_CREDITED', `Dépôt simulé non crédité (minimum ${(await cryptoFees.get()).min_deposit_usd}).`);
-  return row;
-}
-
 /** Hold the money first, then check nobody spent it at the same time (the same pattern as withdrawals). */
 async function holdOrFail(merchantId, amount, coin, mode, reference, relatedId) {
   await ledger.debitCrypto(merchantId, amount, coin, `${reference}:hold`, relatedId, mode);
@@ -292,4 +280,4 @@ async function convert(merchant, mode, { coin, amount, reference }) {
   return updated || row;
 }
 
-module.exports = { liveEnabled, catalog, balances, history, getOrCreateAddress, applyDepositEvent, parseDepositEvent, simulateDeposit, send, convert, toPublicAddress, CHAINS, COINS, AUTO_CREDIT_MAX };
+module.exports = { liveEnabled, catalog, balances, history, getOrCreateAddress, applyDepositEvent, parseDepositEvent, send, convert, toPublicAddress, CHAINS, COINS, AUTO_CREDIT_MAX };

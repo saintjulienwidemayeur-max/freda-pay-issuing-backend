@@ -98,15 +98,6 @@ async function convert(ctx) {
   return { status: 201, body: publicTx(row) };
 }
 
-/** POST /dashboard/crypto/simulate-deposit { chain, coin, amount } : Sandbox only. */
-async function simulateDeposit(ctx) {
-  const mode = await resolveMode(ctx);
-  const merchant = await loadMerchant(ctx, mode);
-  const { chain, coin, amount } = ctx.body || {};
-  await cryptoWallet.simulateDeposit(merchant, mode, { chain: String(chain || '').toLowerCase(), coin: String(coin || '').toUpperCase(), amount });
-  return { status: 201, body: { balances: await cryptoWallet.balances(ctx.merchantId, mode) } };
-}
-
 /** Admin: GET /admin/settings/crypto-fees */
 async function getFees() {
   return { status: 200, body: { fees: await cryptoFees.get(), defaults: cryptoFees.DEFAULTS } };
@@ -164,4 +155,4 @@ async function adminDeposits(ctx) {
   };
 }
 
-module.exports = { overview, createAddress, quote, send, convert, simulateDeposit, getFees, setFees, adminDeposits };
+module.exports = { overview, createAddress, quote, send, convert, getFees, setFees, adminDeposits };

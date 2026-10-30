@@ -137,7 +137,6 @@ router.get('/dashboard/crypto/quote', session.requireSession, cryptoWalletHandle
 router.post('/dashboard/crypto/addresses', session.requireSession, cryptoWalletHandlers.createAddress);
 router.post('/dashboard/crypto/send', session.requireSession, cryptoWalletHandlers.send);
 router.post('/dashboard/crypto/convert', session.requireSession, cryptoWalletHandlers.convert);
-router.post('/dashboard/crypto/simulate-deposit', session.requireSession, cryptoWalletHandlers.simulateDeposit);
 
 // ---- Account (business info, individual -> business conversion) ----
 router.put('/dashboard/account', session.requireSession, accountHandlers.update);
