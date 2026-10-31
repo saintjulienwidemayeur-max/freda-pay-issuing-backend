@@ -1,7 +1,7 @@
 'use strict';
 const supabase = require('../lib/supabase');
 const paymentOrchestrator = require('../services/paymentOrchestrator');
-const { generatePaymentId, namespaceReference } = require('../utils/ids');
+const { generatePaymentId, partnerReference } = require('../utils/ids');
 const { fetchPage } = require('../utils/pagination');
 const { resolveMode } = require('../utils/mode');
 const { parseAmount } = require('../utils/money');
@@ -26,7 +26,7 @@ async function create(ctx) {
   const finalCurrency = currency || (method === 'carte' ? 'USD' : 'HTG');
 
   const id = generatePaymentId();
-  const plopplopReference = namespaceReference(ctx.merchantId, reference);
+  const plopplopReference = partnerReference(ctx.merchantId, reference, method);
   const mode = await resolveMode(ctx);
 
   try {

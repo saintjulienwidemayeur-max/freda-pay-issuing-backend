@@ -1,6 +1,6 @@
 'use strict';
 const orchestrator = require('../services/walletTopupOrchestrator');
-const { generatePaymentId, namespaceReference } = require('../utils/ids');
+const { generatePaymentId, partnerReference } = require('../utils/ids');
 const { resolveMode } = require('../utils/mode');
 const { parseAmount } = require('../utils/money');
 const supabase = require('../lib/supabase');
@@ -29,7 +29,7 @@ async function create(ctx) {
     if (orchestrator.AUTO_METHODS.includes(method)) {
       const { amount_htg } = ctx.body;
       parseAmount(amount_htg, { field: 'amount_htg' });
-      const plopplopReference = namespaceReference(ctx.merchantId, reference);
+      const plopplopReference = partnerReference(ctx.merchantId, reference, method);
       const topup = await orchestrator.createAutoTopup({
         merchantId: ctx.merchantId,
         id,
