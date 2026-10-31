@@ -163,6 +163,8 @@ function translateKnownMessage(rawMessage) {
 }
 
 /** Builds the merchant-safe error for a failed provider response and throws it. */
+const VERIFICATION_MESSAGE = "Le titulaire doit d'abord compléter sa vérification d'identité.";
+
 function throwProviderError(mode, method, path, httpStatus, data, body) {
   const rawMessage = data && (data.message || data.error || data.msg);
   // The raw provider text is for the operator only.
@@ -173,6 +175,11 @@ function throwProviderError(mode, method, path, httpStatus, data, body) {
   const err = new Error(message);
   err.code = 'CARD_SERVICE_ERROR';
   err.httpStatus = httpStatus >= 500 ? 502 : 400;
+  if (message === VERIFICATION_MESSAGE && httpStatus < 500) {
+    // The partner says the cardholder's identity check is not complete: a precise code the merchant can act on (not a generic card error).
+    err.code = 'HOLDER_NOT_VERIFIED';
+    err.httpStatus = 409;
+  }
   if (httpStatus === 401 || httpStatus === 403) {
     // The provider refused OUR credentials (or our server's IP): nothing the merchant did, nothing they can fix.
     err.code = 'CARD_PROVIDER_AUTH';

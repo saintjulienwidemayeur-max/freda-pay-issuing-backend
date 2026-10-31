@@ -194,7 +194,7 @@ async function handle(req, res) {
     const wantStatus = url.searchParams.get('status');
     const statusOf = (c) => ((c.tier || 0) >= 2 ? 'APPROVED' : (c.tier || 0) === 1 ? 'COMPLETED' : 'PENDING');
     const found = Array.from(customers.values()).filter((c) => c.env === env && (!email || (c.email || '').toLowerCase() === email) && (!wantStatus || statusOf(c) === wantStatus));
-    return send(res, 200, { status: true, message: 'ok', data: found.map((c) => ({ id: c.id, email: c.email, first_name: c.first_name, last_name: c.last_name })) });
+    return send(res, 200, { status: true, message: 'ok', data: found.map((c) => ({ id: c.id, email: c.email, first_name: c.first_name, last_name: c.last_name, tier: c.tier || 0, status: statusOf(c) })) });
   }
 
   // ---- PATCH /customers/upgrade/tier1 (dob must be DD-MM-YYYY) ----

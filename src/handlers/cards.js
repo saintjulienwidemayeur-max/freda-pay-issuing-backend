@@ -26,7 +26,13 @@ async function listHolders(ctx) {
 async function getHolder(ctx) {
   const holder = await cardOrchestrator.getHolderById(ctx.merchantId, ctx.params.id);
   if (!holder) throw httpError(404, 'NOT_FOUND', 'Titulaire introuvable.');
-  return { status: 200, body: { holder: toPublicProfile(holder) } };
+  // What the card partner really holds for this holder (its identity check can be unfinished although the holder is saved as "enrolled").
+  let verification = null;
+  if (holder.maplerad_customer_id) {
+    const state = await cardOrchestrator.partnerCustomerState(holder.mode || 'sandbox', holder.email, holder.maplerad_customer_id).catch(() => null);
+    if (state) verification = { tier: state.tier, status: state.status, ready_for_cards: state.tier == null ? null : state.tier >= 2 };
+  }
+  return { status: 200, body: { holder: toPublicProfile(holder), verification } };
 }
 
 const VALID_IDENTITY_TYPES = ['NIN', 'PASSPORT', 'VOTERS_CARD', 'DRIVERS_LICENSE'];
