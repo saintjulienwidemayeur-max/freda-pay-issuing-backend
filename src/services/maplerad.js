@@ -201,7 +201,9 @@ async function request(mode, method, path, body) {
       body: body ? JSON.stringify(body) : undefined,
     };
     // With a static-IP proxy configured, the partner sees the proxy's fixed address instead of the host's shared one.
-    res = config.maplerad.proxyUrl ? await proxyRequest.proxiedFetch(config.maplerad.proxyUrl, url, options) : await fetch(url, options);
+    // A request that never answers must not hang for ever (the card would stay "creating" and the merchant's call would never end):
+    // the direct call stops after 30 seconds like the proxied one (20 seconds).
+    res = config.maplerad.proxyUrl ? await proxyRequest.proxiedFetch(config.maplerad.proxyUrl, url, options) : await fetch(url, Object.assign({ signal: AbortSignal.timeout(Number(process.env.MAPLERAD_TIMEOUT_MS) || 30000) }, options));
   } catch (networkErr) {
     const err = new Error(TEMPORARY_FAILURE);
     err.code = 'CARD_SERVICE_UNAVAILABLE';

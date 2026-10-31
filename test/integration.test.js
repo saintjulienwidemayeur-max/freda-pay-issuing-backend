@@ -7698,3 +7698,29 @@ test('the sitemap lists the crypto wallet pages with their French/English altern
   assert.match(xml, /<loc>[^<]*\/docs\/portefeuille-crypto<\/loc>/);
   assert.match(xml, /hreflang="en" href="[^"]*\/en\/crypto-wallet-api"/);
 });
+
+test('a card left "creating" without a partner reference (the request never left) is closed after 15 minutes and refunded once', async () => {
+  const reg = await registerAndVerify({ business_name: 'Unsent Card Co', email: 'unsentcard@sandbox-test.example.com', password: 'password123' });
+  const merchantId = mockTables.merchants.find((m) => m.email === 'unsentcard@sandbox-test.example.com').id;
+  const ledger = require('../src/services/ledger');
+  const orchestrator = require('../src/services/cardOrchestrator');
+  const before = await ledger.getBalance(merchantId, 'master_wallet', 'USD', 'sandbox');
+  const mk = (id, ref, minutesAgo, extra) => { const row = Object.assign({ id, merchant_id: merchantId, own_reference: ref, kind: 'business', brand: 'VISA', currency: 'USD', status: 'pending', holder_name: 'X', initial_amount: 2000, creation_fee: 5, mode: 'sandbox', maplerad_reference: null, created_at: new Date(Date.now() - minutesAgo * 60000).toISOString() }, extra || {}); mockTables.cards.push(row); return row; };
+  const stuck = mk('card_unsent1', 'UNSENT-1', 40);
+  const fresh = mk('card_unsent2', 'UNSENT-2', 5);                      // still being sent: left alone
+  const sent = mk('card_unsent3', 'UNSENT-3', 40, { maplerad_reference: 'mpr_ref_1' }); // reached the partner: its own path handles it
+  const res = await orchestrator.failUnsentPendingCards();
+  assert.equal(res.failed, 1);
+  assert.equal(mockTables.cards.find((c) => c.id === stuck.id).status, 'failed');
+  assert.match(mockTables.cards.find((c) => c.id === stuck.id).failure_reason, /remboursés/);
+  assert.equal(mockTables.cards.find((c) => c.id === fresh.id).status, 'pending');
+  assert.equal(mockTables.cards.find((c) => c.id === sent.id).status, 'pending');
+  assert.equal(Math.round((await ledger.getBalance(merchantId, 'master_wallet', 'USD', 'sandbox') - before) * 100) / 100, 25); // 20 $ preload + 5 $ fee given back
+  assert.equal((await orchestrator.failUnsentPendingCards()).failed, 0); // not refunded twice
+  assert.equal(Math.round((await ledger.getBalance(merchantId, 'master_wallet', 'USD', 'sandbox') - before) * 100) / 100, 25);
+
+  // the admin diagnostic points at it while it lasts
+  mockTables.cards.push({ id: 'card_unsent4', merchant_id: merchantId, own_reference: 'UNSENT-4', kind: 'business', brand: 'VISA', currency: 'USD', status: 'pending', initial_amount: 1000, creation_fee: 5, mode: 'sandbox', maplerad_reference: null, created_at: new Date(Date.now() - 12 * 60000).toISOString() });
+  const d = await api('GET', `/admin/merchants/${merchantId}/diagnostic`, { token: (await adminLogin('owner')).token });
+  assert.equal(d.data.checks.find((c) => c.id === 'cards_unsent').status, 'fail');
+});
