@@ -7699,7 +7699,7 @@ test('the sitemap lists the crypto wallet pages with their French/English altern
   assert.match(xml, /hreflang="en" href="[^"]*\/en\/crypto-wallet-api"/);
 });
 
-test('a card left "creating" without a partner reference (the request never left) is closed after 15 minutes and refunded once', async () => {
+test('a card left "creating" without a partner reference (the request never left) is closed after 3 minutes, refunded once, and the merchant is emailed', async () => {
   const reg = await registerAndVerify({ business_name: 'Unsent Card Co', email: 'unsentcard@sandbox-test.example.com', password: 'password123' });
   const merchantId = mockTables.merchants.find((m) => m.email === 'unsentcard@sandbox-test.example.com').id;
   const ledger = require('../src/services/ledger');
@@ -7707,7 +7707,7 @@ test('a card left "creating" without a partner reference (the request never left
   const before = await ledger.getBalance(merchantId, 'master_wallet', 'USD', 'sandbox');
   const mk = (id, ref, minutesAgo, extra) => { const row = Object.assign({ id, merchant_id: merchantId, own_reference: ref, kind: 'business', brand: 'VISA', currency: 'USD', status: 'pending', holder_name: 'X', initial_amount: 2000, creation_fee: 5, mode: 'sandbox', maplerad_reference: null, created_at: new Date(Date.now() - minutesAgo * 60000).toISOString() }, extra || {}); mockTables.cards.push(row); return row; };
   const stuck = mk('card_unsent1', 'UNSENT-1', 40);
-  const fresh = mk('card_unsent2', 'UNSENT-2', 5);                      // still being sent: left alone
+  const fresh = mk('card_unsent2', 'UNSENT-2', 1);                      // still being sent: left alone
   const sent = mk('card_unsent3', 'UNSENT-3', 40, { maplerad_reference: 'mpr_ref_1' }); // reached the partner: its own path handles it
   const res = await orchestrator.failUnsentPendingCards();
   assert.equal(res.failed, 1);
@@ -7716,6 +7716,8 @@ test('a card left "creating" without a partner reference (the request never left
   assert.equal(mockTables.cards.find((c) => c.id === fresh.id).status, 'pending');
   assert.equal(mockTables.cards.find((c) => c.id === sent.id).status, 'pending');
   assert.equal(Math.round((await ledger.getBalance(merchantId, 'master_wallet', 'USD', 'sandbox') - before) * 100) / 100, 25); // 20 $ preload + 5 $ fee given back
+  const mail = await waitForEmail('unsentcard@sandbox-test.example.com', /UNSENT-1/); // the merchant is told, not left waiting
+  assert.match(mail.subject, /UNSENT-1/);
   assert.equal((await orchestrator.failUnsentPendingCards()).failed, 0); // not refunded twice
   assert.equal(Math.round((await ledger.getBalance(merchantId, 'master_wallet', 'USD', 'sandbox') - before) * 100) / 100, 25);
 
@@ -7803,4 +7805,18 @@ test('failed creation with a partner verification link: the link is kept on the 
   mockTables.cards.find((x) => x.id === c.data.id).verification_link_expires_at = new Date(Date.now() - 1000).toISOString();
   const later = await api('GET', `/dashboard/cards/${c.data.id}`, { token });
   assert.equal(later.data.verification_link, undefined);
+});
+
+test('a refused card (partner notification): the merchant is emailed the reason, the refund and the identity-check link', async () => {
+  const reg = await registerAndVerify({ business_name: 'Mail Fail Co', email: 'mailfail@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'MAILFAIL-1', kind: 'business', business_name: 'Mail Fail Co', brand: 'VISA', amount: 20 } });
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  row.status = 'pending';
+  await sendProviderEvent({ event: 'issuing.created.failed', reference: row.maplerad_reference, reason: 'Facial verification mismatch: Selfie does not match passport photo', verification_link: 'https://verify.example.com/s/zzz', link_expire_at: new Date(Date.now() + 3600 * 1000).toISOString() }, MOCK_SANDBOX_WHSEC);
+  const mail = await waitForEmail('mailfail@sandbox-test.example.com', /MAILFAIL-1/);
+  assert.match(mail.subject, /MAILFAIL-1/);
+  assert.match(mail.html, /remboursés/);
+  assert.match(mail.html, /verify\.example\.com\/s\/zzz/);
 });

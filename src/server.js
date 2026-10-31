@@ -472,6 +472,15 @@ if (require.main === module) {
           .catch((e) => console.error('Card creation reconciliation:', e.message))
           .finally(() => { cardBusy = false; });
       }, 5 * 60 * 1000).unref();
+      // A card that never reached the partner is closed and refunded within a few minutes (the merchant is emailed), not at the next 5-minute pass.
+      let unsentBusy = false;
+      setInterval(() => {
+        if (unsentBusy) return;
+        unsentBusy = true;
+        require('./services/cardOrchestrator').failUnsentPendingCards()
+          .catch((e) => console.error('Unsent card clean-up:', e.message))
+          .finally(() => { unsentBusy = false; });
+      }, 60 * 1000).unref();
       let payoutBusy = false;
       setInterval(() => {
         if (payoutBusy) return;
