@@ -420,6 +420,9 @@ function toPublicCard(c, ctx) {
     holder_name: c.holder_name,
     balance: num(c.balance),
     failure_reason: c.failure_reason,
+    // Only while it can still be used: where the cardholder redoes the identity check after a refusal.
+    ...(c.verification_link && (!c.verification_link_expires_at || new Date(c.verification_link_expires_at) > new Date())
+      ? { verification_link: c.verification_link, verification_link_expires_at: c.verification_link_expires_at || null } : {}),
     created_at: c.created_at,
     updated_at: c.updated_at,
   };

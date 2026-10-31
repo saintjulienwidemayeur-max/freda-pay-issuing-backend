@@ -7785,3 +7785,22 @@ test('restart_verification: a holder whose document was refused is sent again wi
   assert.equal(holder.data.verification && holder.data.verification.tier !== null ? holder.data.verification.ready_for_cards : true, true);
   void state;
 });
+
+test('failed creation with a partner verification link: the link is kept on the card and shown while it is valid', async () => {
+  const reg = await registerAndVerify({ business_name: 'Link Co', email: 'linkco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'LINK-1', kind: 'business', business_name: 'Link Co', brand: 'VISA', amount: 20 } });
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  row.status = 'pending';
+  const expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+  await sendProviderEvent({ event: 'issuing.created.failed', reference: row.maplerad_reference, reason: 'Facial verification mismatch: Selfie does not match passport photo', verification_link: 'https://verify.example.com/session/abc', link_expire_at: expires }, MOCK_SANDBOX_WHSEC);
+  const shown = await api('GET', `/dashboard/cards/${c.data.id}`, { token });
+  assert.equal(shown.data.status, 'failed');
+  assert.equal(shown.data.verification_link, 'https://verify.example.com/session/abc');
+  assert.equal(shown.data.verification_link_expires_at, expires);
+  // once it has expired it is no longer shown
+  mockTables.cards.find((x) => x.id === c.data.id).verification_link_expires_at = new Date(Date.now() - 1000).toISOString();
+  const later = await api('GET', `/dashboard/cards/${c.data.id}`, { token });
+  assert.equal(later.data.verification_link, undefined);
+});
