@@ -67,8 +67,33 @@ async function history(merchantId, mode, limit) {
   return rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, limit || 50);
 }
 
-/** Details for the partner's Tier 1 upgrade (a customer must be Tier 1 to own a crypto address). Sandbox accepts test values for what we do not hold. */
-function tierOneDetails(merchant) {
+/** What the partner needs to make a customer Tier 1 (the identity details of the person behind the account). */
+const PROFILE_FIELDS = ['date_of_birth', 'identification_number', 'phone', 'address.street', 'address.city', 'address.state', 'address.postal_code', 'address.country'];
+
+/** Reads the merchant's identity profile ({ date_of_birth: 'YYYY-MM-DD', identification_number, phone: '+509...', address: {...} }); returns { details } or { missing }. */
+function readProfile(profile) {
+  const p = profile && typeof profile === 'object' ? profile : {};
+  const a = p.address && typeof p.address === 'object' ? p.address : {};
+  const get = (k) => (k.startsWith('address.') ? a[k.slice(8)] : p[k]);
+  const missing = PROFILE_FIELDS.filter((k) => !String(get(k) == null ? '' : get(k)).trim());
+  const dob = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(p.date_of_birth || ''));
+  if (p.date_of_birth && !dob && !missing.includes('date_of_birth')) missing.push('date_of_birth');
+  const digits = String(p.phone || '').replace(/[^\d+]/g, '');
+  const ph = /^\+(\d{1,3})(\d{6,12})$/.exec(digits);
+  if (p.phone && !ph && !missing.includes('phone')) missing.push('phone');
+  if (missing.length) return { missing };
+  return {
+    details: {
+      dob: `${dob[3]}-${dob[2]}-${dob[1]}`, // the partner wants DD-MM-YYYY
+      phone: { phone_country_code: `+${ph[1]}`, phone_number: ph[2] },
+      address: { street: String(a.street).trim(), city: String(a.city).trim(), state: String(a.state).trim(), postal_code: String(a.postal_code).trim(), country: String(a.country).trim().toUpperCase().slice(0, 2) },
+      identificationNumber: String(p.identification_number).trim(),
+    },
+  };
+}
+
+/** Sandbox accepts test values for what we do not hold; Live always asks the merchant. */
+function sandboxProfile(merchant) {
   const digits = String(merchant.phone || '').replace(/[^\d+]/g, '');
   const m = /^\+?(509|1|33|44)(\d{6,12})$/.exec(digits);
   return {
@@ -79,19 +104,32 @@ function tierOneDetails(merchant) {
   };
 }
 
+const needsTierOne = (err) => /tier\s*1/i.test(String((err && (err.providerRawMessage || err.message)) || ''));
+
+function profileRequired(reason) {
+  const err = httpError(422, 'PROFILE_REQUIRED', reason || "Pour créer votre wallet crypto, le fournisseur demande les informations d'identité du titulaire du compte. Complétez-les et réessayez.");
+  err.details = { required: PROFILE_FIELDS };
+  return err;
+}
+
+/** Makes the partner customer Tier 1. "already" means it is: that is the state we want. */
+async function upgradeToTierOne(provider, customerId, details) {
+  try {
+    await provider.upgradeCustomerTier1(Object.assign({ customerId }, details));
+  } catch (err) {
+    if (!/already/i.test(err.providerRawMessage || '')) throw err;
+  }
+}
+
 /**
- * The partner customer that owns this merchant's crypto addresses. It must be Tier 1 ("service is only available for Tier 1 customers"):
- *   1) a card holder of this merchant already enrolled at the partner (it is above Tier 1) is used as it is;
- *   2) otherwise a customer of its own is created (or taken back from an earlier attempt) and upgraded to Tier 1.
- * In Live the upgrade needs the merchant's real identity details, so there it only works through an enrolled holder.
+ * The partner customer that owns this merchant's crypto addresses. The merchant never has to create a card holder:
+ *   1) a customer already used for this merchant's crypto addresses;
+ *   2) otherwise a customer of its own is created (or taken back from an earlier attempt). Making it Tier 1 happens when the partner
+ *      asks for it: Sandbox fills test values, Live asks the merchant for the identity details (PROFILE_REQUIRED).
  */
 async function customerFor(merchant, mode) {
   const rows = await supabase.select('crypto_addresses', { merchant_id: merchant.id, mode }, { limit: 1 });
   if (rows && rows[0] && rows[0].maplerad_customer_id !== 'business') return rows[0].maplerad_customer_id;
-  const holders = await supabase.select('maplerad_customers', { merchant_id: merchant.id, mode }, { order: 'created_at.desc', limit: 20 }).catch(() => []);
-  const holder = (holders || []).find((h) => h.status === 'enrolled' && h.maplerad_customer_id);
-  if (holder) return holder.maplerad_customer_id;
-  if (mode === 'live') throw httpError(400, 'IDENTITY_REQUIRED', "Pour créer votre wallet crypto en Live, ajoutez d'abord un titulaire vérifié dans Cartes.");
 
   const email = String(merchant.email || '').trim();
   const at = email.indexOf('@');
@@ -110,16 +148,12 @@ async function customerFor(merchant, mode) {
     if (!id) id = idOf(await create(at > 0 ? `${email.slice(0, at)}+crypto${randomHex(3)}${email.slice(at)}` : email)); // not found: a fresh customer with its own address
   }
   if (!id) throw httpError(502, 'CRYPTO_UNAVAILABLE', 'Le service crypto est momentanément indisponible. Réessayez dans un instant.');
-  try {
-    await provider.upgradeCustomerTier1(Object.assign({ customerId: id }, tierOneDetails(merchant)));
-  } catch (err) {
-    if (!/already/i.test(err.providerRawMessage || '')) throw err; // already Tier 1 or above: that is the state we want
-  }
+  if (mode !== 'live') await upgradeToTierOne(provider, id, sandboxProfile(merchant));
   return id;
 }
 
 /** The merchant's deposit address for a coin on a chain, created at the partner the first time. Deposits stay in crypto (no auto-conversion). */
-async function getOrCreateAddress(merchant, mode, chain, coin) {
+async function getOrCreateAddress(merchant, mode, chain, coin, profile) {
   const c = CHAINS[chain];
   if (!c || !COINS.includes(coin) || !c.coins.includes(coin)) throw httpError(400, 'INVALID_CRYPTO', `${coin || '?'} sur ${chain || '?'} n'est pas disponible.`);
   const existing = await supabase.selectOne('crypto_addresses', { merchant_id: merchant.id, mode, chain, coin });
@@ -139,17 +173,27 @@ async function getOrCreateAddress(merchant, mode, chain, coin) {
   let d = null;
   try {
     customerId = await customerFor(merchant, mode);
+    const provider = maplerad.forMode(mode);
     // The partner may already hold this address (an earlier attempt created it but failed before we saved it): take it back.
-    const listed = await maplerad.forMode(mode).getCryptoAddresses(customerId).catch(() => null);
+    const listed = await provider.getCryptoAddresses(customerId).catch(() => null);
     const rows = (listed && (Array.isArray(listed.data) ? listed.data : Array.isArray(listed) ? listed : [])) || [];
     d = rows.find((r) => String(r.chain).toLowerCase() === c.provider && String(r.coin).toLowerCase() === coin.toLowerCase() && r.address) || null;
     if (!d) {
-      const res = await maplerad.forMode(mode).createCryptoAddress({ customerId, coin, chain: c.provider, offramp: false });
+      const generate = () => provider.createCryptoAddress({ customerId, coin, chain: c.provider, offramp: false });
+      let res;
+      try { res = await generate(); } catch (err) {
+        if (!needsTierOne(err)) throw err;
+        // The partner asks for Tier 1: the merchant gives the identity details it needs, and only then do we continue.
+        const read = readProfile(profile);
+        if (read.missing) throw profileRequired();
+        await upgradeToTierOne(provider, customerId, read.details);
+        res = await generate();
+      }
       d = (res && (res.data || res)) || {};
     }
     if (!d.address) d = null;
   } catch (err) {
-    if (err.code === 'IDENTITY_REQUIRED') throw err; // the merchant has something to do: not a reason to try the business wallet
+    if (err.code === 'PROFILE_REQUIRED') throw err; // the merchant has something to give: not a reason to try the business wallet
     console.error(`Crypto address for customer path failed (${err.message}); trying the business wallet.`); // eslint-disable-line no-console
     customerId = null;
   }
@@ -346,4 +390,4 @@ async function convert(merchant, mode, { coin, amount, reference }) {
   return updated || row;
 }
 
-module.exports = { liveEnabled, catalog, balances, history, getOrCreateAddress, applyDepositEvent, parseDepositEvent, send, convert, toPublicAddress, CHAINS, COINS, AUTO_CREDIT_MAX };
+module.exports = { PROFILE_FIELDS, readProfile, liveEnabled, catalog, balances, history, getOrCreateAddress, applyDepositEvent, parseDepositEvent, send, convert, toPublicAddress, CHAINS, COINS, AUTO_CREDIT_MAX };
