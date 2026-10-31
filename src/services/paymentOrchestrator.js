@@ -294,25 +294,21 @@ async function refreshStatus(merchantId, payment) {
   if (payment.status === 'succeeded' || payment.status === 'failed') return payment;
   if (payment.provider === 'tranzak') return refreshCardStatus(payment);
 
-  let res = await plopplop.verifyPayment({ refferenceId: payment.plopplop_reference });
-  // The partner also finds a payment by the transaction id it returned: when it does not know our reference, ask that way before giving up.
-  if (payment.plopplop_transaction_id && ['not_found', 'error', 'unreadable'].includes(paymentHealth.classify(res))) {
-    const second = await plopplop.verifyPayment({ transactionId: payment.plopplop_transaction_id }).catch(() => null);
-    if (second && paymentHealth.classify(second) !== 'not_found' && paymentHealth.classify(second) !== 'unreadable') res = second;
-  }
-  // The partner's own transaction id is the surest identifier. When the answer by reference is "not paid yet" for a payment that has waited
-  // a while, ask by transaction id as well: if THAT says confirmed and it is clearly the same payment (same reference and same amount when
-  // the partner returns them), it is trusted. (A payment the partner shows as paid in its dashboard must not stay pending here.)
-  const waitedMin = (Date.now() - new Date(payment.created_at || Date.now()).getTime()) / 60000;
-  if (payment.plopplop_transaction_id && !paymentHealth.isConfirmed(res.data) && waitedMin >= 20) {
+  // The partner's own transaction id (returned when the payment was created) is the surest way to ask: in practice it finds the payment
+  // when a lookup by our reference answers "Transaction not found". Its answer is used when it is a real one and it is clearly this payment
+  // (the amount matches when the partner returns it, and no other payment of ours carries the same transaction id).
+  let res = null;
+  if (payment.plopplop_transaction_id) {
     const byTx = await plopplop.verifyPayment({ transactionId: payment.plopplop_transaction_id }).catch(() => null);
+    const kind = byTx ? paymentHealth.classify(byTx) : 'unreadable';
     const d = byTx && byTx.data;
-    if (d && paymentHealth.isConfirmed(d)
-      && (d.refference_id == null || String(d.refference_id) === String(payment.plopplop_reference))
-      && (d.montant == null || Number(d.montant) === Number(payment.amount))) {
-      res = byTx;
+    if (d && !['not_found', 'unreadable', 'error'].includes(kind) && (d.montant == null || Number(d.montant) === Number(payment.amount))) {
+      const same = await supabase.select('payments', { plopplop_transaction_id: payment.plopplop_transaction_id }, { limit: 2 }).catch(() => []);
+      if (same.length <= 1) res = byTx;
     }
   }
+  // No usable answer by transaction id (no id saved, or the partner does not know it): ask by our reference.
+  if (!res) res = await plopplop.verifyPayment({ refferenceId: payment.plopplop_reference });
   const heard = paymentHealth.note(payment, res);
   if (heard.kind === 'not_found' || heard.kind === 'unexpected' || heard.kind === 'error') alertIfStuck(payment, heard);
   const confirmed = paymentHealth.isConfirmed(res.data);
