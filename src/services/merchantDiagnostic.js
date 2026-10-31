@@ -3,6 +3,7 @@ const supabase = require('../lib/supabase');
 const ledger = require('./ledger');
 const guarantee = require('./guarantee');
 const config = require('../config');
+const tranzak = require('./tranzak');
 
 /**
  * "Why can this merchant not connect the payment service or the cards?" One list of checks, each ok / warn / fail, with what it means and
@@ -77,6 +78,31 @@ async function diagnose(merchantId) {
   else if (unauthorized && unauthorized === errs.length && unauthorized >= calls.length * 0.5) checks.push(fail('api_calls', 'Intégration', "Appels API des 7 derniers jours", `${unauthorized} appel(s) refusé(s) (clé absente ou invalide) sur ${calls.length}.`, "Le marchand utilise une mauvaise clé, une clé révoquée, ou ne met pas l'en-tête Authorization: Bearer."));
   else if (errs.length > calls.length * 0.3) checks.push(warn('api_calls', 'Intégration', "Appels API des 7 derniers jours", `${errs.length} erreur(s) sur ${calls.length} appels.`, 'Voyez les codes ci-dessous.'));
   else checks.push(ok('api_calls', 'Intégration', "Appels API des 7 derniers jours", `${calls.length} appel(s), ${errs.length} erreur(s).`));
+
+  // ---- Paiement par carte (Visa / Mastercard, USD)
+  const cardPays = (payments || []).filter((p) => p.provider === 'tranzak');
+  for (const mode of ['sandbox', 'live']) {
+    const configured = tranzak.isConfigured(mode);
+    const label = `Service de paiement par carte (${mode === 'live' ? 'Live' : 'Sandbox'})`;
+    if (configured) checks.push(ok(`card_service_${mode}`, 'Paiement par carte', label, 'Clé et secret de webhook configurés sur la plateforme.'));
+    else checks.push((mode === 'live' && m.gateway_live_enabled ? fail : warn)(`card_service_${mode}`, 'Paiement par carte', label, "Le service de paiement par carte n'est pas configuré sur la plateforme pour ce mode (clé ou secret de webhook manquant) : tous les marchands reçoivent une erreur.", "Renseignez les clés du service carte dans les variables d'environnement du serveur."));
+  }
+  if (!cardPays.length) {
+    checks.push(warn('card_payments', 'Paiement par carte', 'Paiements par carte des 7 derniers jours', "Aucun paiement par carte créé : le marchand n'a pas encore essayé (method « carte », currency USD, minimum 1 USD).", "Vérifiez qu'il envoie method: \"carte\" et currency: \"USD\"."));
+  } else {
+    const okCount = cardPays.filter((p) => p.status === 'succeeded').length;
+    const failedCard = cardPays.filter((p) => p.status === 'failed');
+    const stuck = cardPays.filter((p) => p.status === 'pending' && Date.now() - new Date(p.created_at).getTime() > 3600 * 1000).length;
+    const reasons = {};
+    for (const p of failedCard) { const r = String(p.failure_reason || 'raison inconnue').slice(0, 100); reasons[r] = (reasons[r] || 0) + 1; }
+    const top = Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([r, n]) => `${r} (${n})`).join(' ; ');
+    const detail = `${cardPays.length} créé(s) : ${okCount} réussi(s), ${failedCard.length} échoué(s), ${stuck} en attente depuis plus d'une heure.${top ? ' Causes : ' + top + '.' : ''}`;
+    if (okCount === 0 && failedCard.length >= 3) checks.push(fail('card_payments', 'Paiement par carte', 'Paiements par carte des 7 derniers jours', detail, "Aucun n'a réussi : voyez les causes ci-dessus (carte refusée, montant trop bas, service indisponible)."));
+    else if (failedCard.length > cardPays.length * 0.5 || stuck) checks.push(warn('card_payments', 'Paiement par carte', 'Paiements par carte des 7 derniers jours', detail, stuck ? "Des paiements restent en attente : le webhook du service carte n'arrive peut-être pas." : 'Beaucoup d\'échecs : voyez les causes.'));
+    else checks.push(ok('card_payments', 'Paiement par carte', 'Paiements par carte des 7 derniers jours', detail));
+  }
+  const cardCodes = Object.entries(byCode).filter(([k]) => /CARD|AMOUNT_TOO|CURRENCY|CHECKOUT/i.test(k));
+  if (cardCodes.length) checks.push(warn('card_errors', 'Paiement par carte', "Erreurs API liées à la carte", cardCodes.map(([k, v]) => `${k} : ${v}`).join(' · '), 'Montant minimum 1 USD, currency USD, method carte : vérifiez la requête du marchand.'));
 
   // ---- Cartes (Issuing)
   const pendingAccess = (access || []).find((a) => a.status === 'pending');
