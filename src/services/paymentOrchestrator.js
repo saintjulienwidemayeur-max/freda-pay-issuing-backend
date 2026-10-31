@@ -250,7 +250,9 @@ function noteUnexpectedVerify(payment, res) {
  */
 const MOBILE_FRESH_MS = 15 * 60 * 1000;
 const MOBILE_OLD_GAP_MS = 10 * 60 * 1000;
-const MOBILE_MAX_AGE_MS = 3 * 24 * 3600 * 1000;
+const MOBILE_MAX_AGE_MS = 14 * 24 * 3600 * 1000; // a customer can pay late: pending payments are read for two weeks (rarely after 3 days)
+const MOBILE_VERY_OLD_MS = 3 * 24 * 3600 * 1000;
+const MOBILE_VERY_OLD_GAP_MS = 6 * 3600 * 1000;
 const lastMobilePoll = new Map(); // payment id -> time of the last background read
 async function reconcilePendingMobile(limit) {
   const now = Date.now();
@@ -265,7 +267,8 @@ async function reconcilePendingMobile(limit) {
   for (const p of rows) {
     if (!p.plopplop_reference) continue;
     const age = now - new Date(p.created_at).getTime();
-    if (age > MOBILE_FRESH_MS && now - (lastMobilePoll.get(p.id) || 0) < MOBILE_OLD_GAP_MS) continue;
+    const gap = age > MOBILE_VERY_OLD_MS ? MOBILE_VERY_OLD_GAP_MS : MOBILE_OLD_GAP_MS;
+    if (age > MOBILE_FRESH_MS && now - (lastMobilePoll.get(p.id) || 0) < gap) continue;
     lastMobilePoll.set(p.id, now);
     checked += 1;
     try {
@@ -293,13 +296,14 @@ async function refreshStatus(merchantId, payment) {
   const res = await plopplop.verifyPayment({ refferenceId: payment.plopplop_reference });
   const heard = paymentHealth.note(payment, res);
   if (heard.kind === 'not_found' || heard.kind === 'unexpected' || heard.kind === 'error') alertIfStuck(payment, heard);
-  if (!res.data || !res.data.status) {
+  const confirmed = paymentHealth.isConfirmed(res.data);
+  if (!res.data || (!res.data.status && !confirmed)) {
     // provider hiccup - leave as pending, caller can retry. Old pending payments leave a trace for the admin (once in a while).
     noteUnexpectedVerify(payment, res);
     return payment;
   }
 
-  if (res.data.trans_status === 'ok') {
+  if (confirmed) { // "OK" in any case: the same reading as the diagnostic (paymentHealth.isConfirmed)
     const merchant = await supabase.selectOne('merchants', { id: merchantId });
     const gatewayPlanKey = planKeyFor(merchant, 'gateway', payment.mode);
     const pricingOverride = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId });
@@ -334,7 +338,7 @@ async function refreshStatus(merchantId, payment) {
     return updated;
   }
 
-  if (!['no', 'pending', ''].includes(String(res.data.trans_status == null ? '' : res.data.trans_status).trim().toLowerCase())) noteUnexpectedVerify(payment, res);
+  if (!paymentHealth.isWaiting(res.data)) noteUnexpectedVerify(payment, res);
   return payment; // still "no" (pending)
 }
 

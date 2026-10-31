@@ -62,9 +62,10 @@ async function refreshAutoTopup(merchantId, topup) {
   if (topup.status === 'succeeded' || topup.status === 'failed') return topup;
 
   const res = await plopplop.verifyPayment({ refferenceId: topup.plopplop_reference });
-  if (!res.data || !res.data.status) return topup;
+  const confirmed = require('./paymentHealth').isConfirmed(res.data);
+  if (!res.data || (!res.data.status && !confirmed)) return topup;
 
-  if (res.data.trans_status === 'ok') {
+  if (confirmed) {
     const merchant = await supabase.selectOne('merchants', { id: merchantId });
     const pricingOverride = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId });
     const { fee, fredaFee, creditedUsd } = computeAutoConversion(Number(topup.amount_htg), planKeyFor(merchant, 'issuing', topup.mode), pricingOverride);

@@ -7524,3 +7524,25 @@ test('admin payment problems: merchants with stuck or failing payments, every tr
   assert.equal((await api('GET', '/admin/payments/problems/mch_unknown', { token: admin.token })).status, 404);
   assert.equal((await api('GET', '/admin/payments/problems', { token: (await adminLogin('editor')).token })).status, 403);
 });
+
+test('a payment the partner confirms is settled whatever the case of its status word ("OK", " Ok ", "success"), like the diagnostic reads it', async () => {
+  const live = await liveWithGateway('okcase', 0);
+  const before = await require('../src/services/ledger').getBalance(live.merchantId, 'gateway', 'HTG', 'live');
+  const orchestrator = require('../src/services/paymentOrchestrator');
+  const health = require('../src/services/paymentHealth');
+  assert.equal(health.classify({ httpStatus: 200, data: { status: true, trans_status: 'OK' } }), 'confirmed');
+  const words = ['OK', ' Ok ', 'success'];
+  for (const [i, word] of words.entries()) {
+    const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, currency: 'HTG', method: 'natcash', reference: `OKCASE-${i}` } });
+    const row = mockTables.payments.find((p) => p.id === pay.data.id);
+    await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference, trans_status: word }) });
+    const after = await orchestrator.refreshStatus(live.merchantId, row);
+    assert.equal(after.status, 'succeeded', `the status word ${JSON.stringify(word)} must settle the payment`);
+  }
+  const balance = await require('../src/services/ledger').getBalance(live.merchantId, 'gateway', 'HTG', 'live');
+  assert.ok(balance > before); // credited, once per payment
+  const unknown = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, currency: 'HTG', method: 'natcash', reference: 'OKCASE-X' } });
+  const rowX = mockTables.payments.find((p) => p.id === unknown.data.id);
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: rowX.plopplop_reference, trans_status: 'refused' }) });
+  assert.equal((await orchestrator.refreshStatus(live.merchantId, rowX)).status, 'pending'); // an unknown word never settles
+});
