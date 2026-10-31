@@ -39,6 +39,7 @@ tags:
   - name: Retraits
   - name: Solde
   - name: Cartes
+  - name: Crypto
   - name: Webhooks
 
 paths:
@@ -175,6 +176,89 @@ paths:
                   gateway_usd: { type: object, description: "Argent recu par carte (USD), frais deduits", properties: { available: { type: number }, currency: { type: string, example: USD } } }
                   gateway_balances: { type: object, properties: { HTG: { type: number }, USD: { type: number } } }
                   master_wallet: { type: object, properties: { available: { type: number }, currency: { type: string, example: USD } } }
+
+  /crypto/wallets:
+    get:
+      tags: [Crypto]
+      summary: Lister vos wallets crypto
+      description: |
+        Chaque wallet est une adresse de dépôt pour une cryptomonnaie (USDT ou USDC) sur une chaîne (solana, ethereum, polygon, bsc, tron).
+        Le wallet crypto garde son propre solde, séparé du Master Wallet. Disponible en Sandbox (clé `sk_test_...`) pour le moment :
+        avec une clé Live, les routes `/crypto/...` répondent `403 CRYPTO_SANDBOX_ONLY`.
+      responses:
+        "200": { description: "Les wallets, et les cryptomonnaies et chaînes disponibles (supported)." }
+    post:
+      tags: [Crypto]
+      summary: Créer un wallet crypto
+      description: "Crée l'adresse de dépôt pour une cryptomonnaie sur une chaîne. Redemander le même couple renvoie le même wallet (200 au lieu de 201)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [coin, chain], properties: { coin: { type: string, enum: [USDT, USDC], example: USDT }, chain: { type: string, enum: [solana, ethereum, polygon, bsc, tron], example: solana } } }
+      responses:
+        "201": { description: "Wallet créé : id, coin, chain, address." }
+        "200": { description: "Ce wallet existait déjà." }
+        "400": { description: "INVALID_CRYPTO (coin ou chaîne non disponible)" }
+        "403": { description: "CRYPTO_SANDBOX_ONLY avec une clé Live" }
+
+  /crypto/balance:
+    get:
+      tags: [Crypto]
+      summary: Solde crypto
+      description: "Le solde du wallet crypto, par cryptomonnaie (USDT, USDC). Séparé du Master Wallet."
+      responses:
+        "200": { description: "balances : { USDT, USDC }" }
+
+  /crypto/transactions:
+    get:
+      tags: [Crypto]
+      summary: Historique crypto (dépôts, envois, conversions)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200": { description: "Les opérations les plus récentes. type : deposit, send ou convert ; status : completed, pending ou failed." }
+
+  /crypto/quote:
+    get:
+      tags: [Crypto]
+      summary: Calculer les frais avant d'envoyer ou de convertir
+      parameters:
+        - { name: action, in: query, required: true, schema: { type: string, enum: [send, convert] } }
+        - { name: amount, in: query, required: true, schema: { type: number, example: 100 } }
+      responses:
+        "200": { description: "send : fee, total_debited. convert : conversion_fee, funding_fee (frais de votre abonnement pour ajouter de l'argent au Master Wallet), usd_credited." }
+
+  /crypto/send:
+    post:
+      tags: [Crypto]
+      summary: Envoyer de la cryptomonnaie vers une adresse
+      description: "Les frais s'ajoutent au montant (2 % sous 6 000, 3 % au-delà, modifiables par la plateforme). L'envoi est irréversible. Disponible sur Solana pour le moment. Rejouer la même clé ne débite pas deux fois."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [coin, chain, address, amount], properties: { coin: { type: string, enum: [USDT, USDC] }, chain: { type: string, enum: [solana] }, address: { type: string, description: "Une vraie adresse de la chaîne." }, amount: { type: number, minimum: 1, example: 100 }, reference: { type: string, maxLength: 64, description: "Clé d'idempotence (ou en-tête Idempotency-Key). Obligatoire." } } }
+      responses:
+        "201": { description: "L'opération (status completed)." }
+        "400": { description: "INVALID_ADDRESS, SEND_NOT_AVAILABLE, INSUFFICIENT_CRYPTO_BALANCE, SEND_REFUSED, MISSING_FIELDS" }
+        "409": { description: "REFERENCE_REUSED si la clé a servi pour une autre opération" }
+        "502": { description: "SEND_PENDING : réponse du service pas claire, les fonds restent bloqués jusqu'à vérification" }
+
+  /crypto/convert:
+    post:
+      tags: [Crypto]
+      summary: Convertir de la cryptomonnaie en USD vers le Master Wallet
+      description: "Débite le solde crypto et crédite le Master Wallet en USD, immédiatement. Frais : le taux de conversion, puis les frais de votre abonnement pour ajouter de l'argent au Master Wallet (voir /crypto/quote)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [coin, amount], properties: { coin: { type: string, enum: [USDT, USDC] }, amount: { type: number, minimum: 1, example: 100 }, reference: { type: string, maxLength: 64, description: "Clé d'idempotence (ou en-tête Idempotency-Key). Obligatoire." } } }
+      responses:
+        "201": { description: "L'opération, avec usd_credited." }
+        "400": { description: "INSUFFICIENT_CRYPTO_BALANCE, AMOUNT_TOO_SMALL, MISSING_FIELDS" }
+        "409": { description: "REFERENCE_REUSED" }
 
   /cards/holder-profile:
     get:

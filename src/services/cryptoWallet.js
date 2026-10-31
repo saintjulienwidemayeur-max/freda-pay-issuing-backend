@@ -263,9 +263,9 @@ async function send(merchant, mode, { coin, chain, address, amount, reference })
   if (!c.send) throw httpError(400, 'SEND_NOT_AVAILABLE', `L'envoi n'est pas encore disponible sur ${c.label}. Utilisez Solana.`);
   if (!Number.isFinite(value) || value < 1 || value > 1e6) throw httpError(400, 'INVALID_AMOUNT', 'Montant invalide (minimum 1).');
   const addr = String(address || '').trim();
-  // The partner's Sandbox hands out test addresses that do not follow any real format (e.g. 0x17pi...): in Sandbox any plain alphanumeric address is accepted.
-  const formatOk = mode === 'sandbox' ? /^[0-9A-Za-z]{20,70}$/.test(addr) : ADDRESS_FORMAT[chain].test(addr);
-  if (!formatOk) throw httpError(400, 'INVALID_ADDRESS', `Adresse ${c.label} invalide.`);
+  // The partner checks the destination too, and its Sandbox refuses its own test addresses (0x17pi...): a real address of the chain is needed
+  // in both modes. (A Sandbox address starting with FAIL is accepted so the refusal path can be tested.)
+  if (!ADDRESS_FORMAT[chain].test(addr) && !(mode === 'sandbox' && addr.startsWith('FAIL'))) throw httpError(400, 'INVALID_ADDRESS', `Adresse ${c.label} invalide : utilisez une vraie adresse ${c.label}.`);
   if (!reference) throw httpError(400, 'MISSING_FIELDS', 'reference est requis.');
   const done = await replay(merchant.id, reference, 'send', coin, value);
   if (done) return done;
