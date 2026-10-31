@@ -737,6 +737,8 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
   if (!(await markCardFailed(card.id, failureReason))) {
     return supabase.selectOne('cards', { id: card.id });
   }
+  // The partner's link to redo the identity check is kept on the card (a missing column must never undo the failure handling).
+  if (verificationLink) await supabase.update('cards', { id: card.id }, { verification_link: verificationLink, verification_link_expires_at: linkExpireAt || null }).catch((e) => console.error(`Verification link not saved for ${card.id}: ${e.message}`)); // eslint-disable-line no-console
   const refundAmount = fromCents(card.initial_amount || 0) + Number(card.creation_fee || 0);
   if (refundAmount > 0) {
     await refundMasterWalletForFailedCard(card.merchant_id, refundAmount, card.own_reference, card.id, card.mode);
