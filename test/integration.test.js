@@ -7692,8 +7692,9 @@ test('the sitemap lists the crypto wallet pages with their French/English altern
   const res = await fetch(baseUrl + '/sitemap.xml');
   assert.equal(res.status, 200);
   const xml = await res.text();
-  assert.match(xml, /<loc>https:\/\/issuing\.fredapay\.com\/wallet-crypto-api<\/loc>/);
-  assert.match(xml, /<loc>https:\/\/issuing\.fredapay\.com\/en\/crypto-wallet-api<\/loc>/);
-  assert.match(xml, /<loc>https:\/\/issuing\.fredapay\.com\/docs\/portefeuille-crypto<\/loc>/);
-  assert.match(xml, /hreflang="en" href="https:\/\/issuing\.fredapay\.com\/en\/crypto-wallet-api"/);
+  // the site address depends on the environment: only the paths are checked
+  assert.match(xml, /<loc>[^<]*\/wallet-crypto-api<\/loc>/);
+  assert.match(xml, /<loc>[^<]*\/en\/crypto-wallet-api<\/loc>/);
+  assert.match(xml, /<loc>[^<]*\/docs\/portefeuille-crypto<\/loc>/);
+  assert.match(xml, /hreflang="en" href="[^"]*\/en\/crypto-wallet-api"/);
 });
