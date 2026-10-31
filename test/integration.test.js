@@ -7470,6 +7470,13 @@ test('admin diagnostic: why a merchant cannot connect the payment service or the
   assert.equal(d2.data.api_errors_by_code.INVALID_API_KEY, 3);
   assert.equal(d2.data.recent_api_errors[0].code, 'INVALID_API_KEY');
   assert.ok(byId(d2, 'wallet_sandbox'));
+  // card payments: the service state and what happened to the merchant's card payments
+  assert.ok(byId(d2, 'card_service_sandbox') && byId(d2, 'card_service_live'));
+  assert.equal(byId(d2, 'card_payments').status, 'warn'); // none created yet
+  for (let i = 0; i < 3; i += 1) mockTables.payments.push({ id: `pay_diag${i}`, merchant_id: id2, own_reference: `D${i}`, amount: 10, currency: 'USD', method: 'carte', provider: 'tranzak', status: 'failed', failure_reason: 'Carte refusée', mode: 'sandbox', created_at: new Date().toISOString() });
+  const d3 = await api('GET', `/admin/merchants/${id2}/diagnostic`, { token: admin.token });
+  assert.equal(byId(d3, 'card_payments').status, 'fail');
+  assert.match(byId(d3, 'card_payments').detail, /Carte refusée \(3\)/);
   assert.equal((await api('GET', '/admin/merchants/mch_unknown/diagnostic', { token: admin.token })).status, 404);
   assert.equal((await api('GET', `/admin/merchants/${id2}/diagnostic`, { token: (await adminLogin('editor')).token })).status, 403);
 });
