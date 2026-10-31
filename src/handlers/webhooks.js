@@ -198,7 +198,7 @@ async function processMapleradEvent(rawEvent, webhookMode) {
         status: 'FAILED',
         providerReason: [body.reason, body.failure_reason, body.failureReason, body.message, body.error].find((v) => typeof v === 'string' && v.trim()) || null,
         verificationLink: typeof body.verification_link === 'string' && /^https:\/\//.test(body.verification_link) ? body.verification_link : null,
-        linkExpireAt: body.link_expire_at || null,
+        linkExpireAt: body.link_expire_at ? require('../utils/time').toIso(body.link_expire_at, null) : null,
         webhookMode,
       });
       break;

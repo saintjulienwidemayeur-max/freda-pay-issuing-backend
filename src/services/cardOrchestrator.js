@@ -11,6 +11,7 @@ const webhookDispatcher = require('./webhookDispatcher');
 const revenue = require('./revenue');
 const { planKeyFor } = require('./plans');
 const { randomHex } = require('../utils/ids');
+const { toIso } = require('../utils/time');
 
 /**
  * Pulls the "reference" Maplerad returns from POST /issuing (or /issuing/business)
@@ -1123,7 +1124,7 @@ async function recordCardTransaction(event, webhookMode) {
     currency: event.currency || 'USD',
     description: event.description ? String(event.description).slice(0, 200) : null,
     merchant_name: event.merchant && event.merchant.name ? String(event.merchant.name).slice(0, 120) : null,
-    occurred_at: event.created_at || new Date().toISOString(),
+    occurred_at: toIso(event.created_at), // the partner may send Go's time format: see utils/time.js
   }).catch(async (err) => {
     if (await supabase.selectOne('card_transactions', { card_id: card.id, provider_reference: ref }).catch(() => null)) return null;
     throw err;
@@ -1328,14 +1329,14 @@ async function syncCardTransactionsFromPartner(card, opts) {
   for (const t of Array.isArray(raw) ? raw : []) {
     const ref = String(t.reference || t.id || '');
     if (!ref) continue;
-    if (since && t.created_at && new Date(t.created_at).getTime() < since) continue;
+    if (since && t.created_at && new Date(toIso(t.created_at)).getTime() < since) continue;
     if (await supabase.selectOne('card_transactions', { card_id: card.id, provider_reference: ref })) continue;
     const cents = Number(t.amount);
     const row = await supabase.insert('card_transactions', {
       id: `ctx_${randomHex(10)}`, merchant_id: card.merchant_id, card_id: card.id, mode: card.mode === 'live' ? 'live' : 'sandbox', provider_reference: ref,
       type: String(t.type || '').toUpperCase() || 'UNKNOWN', status: t.status ? String(t.status).toUpperCase() : null, direction: t.mode ? String(t.mode).toUpperCase() : null,
       amount_usd: Number.isFinite(cents) ? Math.round(cents) / 100 : null, currency: t.currency || 'USD', description: t.description ? String(t.description).slice(0, 200) : null,
-      merchant_name: t.merchant && t.merchant.name ? String(t.merchant.name).slice(0, 120) : null, occurred_at: t.created_at || new Date().toISOString(),
+      merchant_name: t.merchant && t.merchant.name ? String(t.merchant.name).slice(0, 120) : null, occurred_at: toIso(t.created_at),
     }).catch(() => null);
     if (!row) continue; // inserted meanwhile by the webhook
     current = await applyCardSpendToBalance(current, row).catch(() => current);

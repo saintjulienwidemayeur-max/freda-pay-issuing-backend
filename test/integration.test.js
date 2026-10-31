@@ -7820,3 +7820,17 @@ test('a refused card (partner notification): the merchant is emailed the reason,
   assert.match(mail.html, /remboursés/);
   assert.match(mail.html, /verify\.example\.com\/s\/zzz/);
 });
+
+test('a card purchase notification with a Go-format timestamp is recorded (it used to fail with a 500) and takes the balance down', async () => {
+  const reg = await registerAndVerify({ business_name: 'Go Time Co', email: 'gotime@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'GOTIME-1', kind: 'business', business_name: 'Go Time Co', brand: 'VISA', amount: 20 } });
+  await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token }), (r) => r.data.status === 'active', 40, 20);
+  const row = mockTables.cards.find((x) => x.id === c.data.id);
+  assert.equal(Number(row.balance), 20);
+  await sendProviderEvent({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 700, currency: 'USD', card_id: row.maplerad_card_id, reference: 'go-time-1', merchant: { name: 'SHOP' }, created_at: '2026-10-30 17:39:24.664538266 +0000 UTC m=+367625.837597389' }, MOCK_SANDBOX_WHSEC);
+  const tx = mockTables.card_transactions.find((t) => t.provider_reference === 'go-time-1');
+  assert.ok(tx);
+  assert.equal(tx.occurred_at, '2026-10-30T17:39:24.664Z'); // stored as an ISO date, not the partner's raw text
+  assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 13); // 20 - 7
+});
