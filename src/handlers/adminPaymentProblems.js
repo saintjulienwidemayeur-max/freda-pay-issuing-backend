@@ -120,6 +120,8 @@ async function detail(ctx) {
       counts: rows.reduce((o, p) => Object.assign(o, { [p.status]: (o[p.status] || 0) + 1 }), {}),
       transactions: rows.map((p) => ({
         id: p.id, reference: p.own_reference, method: p.method, provider: p.provider || 'plopplop', amount: Number(p.amount), currency: p.currency, status: p.status,
+        // What to look up in the partner's own dashboard to compare: our reference sent to it, and the transaction id it returned.
+        partner_reference: p.plopplop_reference || null, partner_transaction_id: p.plopplop_transaction_id || p.provider_transaction_id || null,
         fee: p.fee == null ? null : Number(p.fee), failure_reason: p.failure_reason || null, age_min: ageMin(p), created_at: p.created_at,
         customer: p.customer_name || p.customer_phone || p.customer_email || null, partner: p.status === 'pending' ? answerOf(p) : null,
       })),

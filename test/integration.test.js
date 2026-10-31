@@ -7504,6 +7504,7 @@ test('admin payment problems: merchants with stuck or failing payments, every tr
   assert.equal(det.data.counts.pending, 2);
   assert.equal(det.data.by_mode.live.pending, 2); // where the payments really went: Live here
   assert.equal(det.data.transactions.length, 2);
+  assert.ok(det.data.transactions[0].partner_reference); // what to look up at the partner
   assert.equal(det.data.integration_errors[0].code, 'INVALID_AMOUNT');
 
   // the partner has not confirmed: nothing is credited
