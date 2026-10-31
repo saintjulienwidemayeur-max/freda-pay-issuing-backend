@@ -127,6 +127,10 @@ function translateKnownMessage(rawMessage) {
   if (!rawMessage || typeof rawMessage !== 'string') return null;
   const m = rawMessage.toLowerCase();
 
+  // The identity check refused this document before (a cropped or unreadable photo): the partner remembers it for this customer, so a new photo
+  // on the SAME customer is refused again. The merchant sends the holder again with restart_verification (a fresh customer at the partner).
+  if (m.includes('documentdeclinedbefore') || m.includes('declined before') || m.includes('document declined')) return "Le document d'identité de ce titulaire a déjà été refusé par le fournisseur (par exemple une photo coupée). Renvoyez le titulaire avec « restart_verification »: true et de nouvelles photos nettes (recto et verso) : la vérification repart de zéro.";
+
   // Identity-check rejection reasons documented by the partner (https://maplerad.dev/docs/issuing, "User Verification Guide").
   if (m.includes('facial') || m.includes('selfie') || m.includes('face_match') || m.includes('liveness')) return "La vérification faciale a échoué : le selfie ne correspond pas à la photo de la pièce d'identité. Le titulaire doit refaire la vérification.";
   if (m.includes('front_side_missing') || m.includes('front side') || m.includes('document_page_missing') || m.includes('page missing') || m.includes('both sides')) return "Une face de la pièce d'identité manque. Envoyez le recto et le verso (identity.imageBackUrl).";

@@ -308,6 +308,7 @@ paths:
                     number: { type: string, example: "P1234567" }
                     imageUrl: { type: string, description: "Image de la pièce en Base64 (data:image/jpeg;base64,...), ou lien https direct vers l'image (téléchargé et converti par Freda Pay)" }
                     country: { type: string, example: HT, description: "Pays émetteur de la pièce (2 lettres). Par défaut : country du titulaire." }
+                restart_verification: { type: boolean, default: false, description: "À envoyer avec les nouvelles photos quand la vérification d'identité du titulaire a été refusée (par exemple « document refusé avant » : photo coupée ou illisible). Une nouvelle vérification repart de zéro chez le fournisseur ; le titulaire garde le même id (mpc_...). Réponse 200 avec restarted: true. Utile aussi quand GET /cards/holders/{id} montre verification.ready_for_cards à false." }
                 phoneShortCode: { type: string, example: "+509" }
                 phoneNumber: { type: string }
                 address:

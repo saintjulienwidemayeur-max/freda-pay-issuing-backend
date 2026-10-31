@@ -276,11 +276,54 @@ async function getHolderProfile(merchantId, mode) {
  * which one an individual card is issued for at creation time. Identity
  * document + photo are optional at enrollment (Maplerad Tier 0+1).
  */
-async function createHolder(merchantId, profile, mode) {
+/**
+ * Starts the identity check again for a holder the partner refused (documentDeclinedBefore: it remembers the declined document for that
+ * customer, so new photos on the same customer are refused again). A FRESH customer is created at the partner (its e-mail gets a "+kyc..." tag,
+ * it must be new there), taken to Tier 1 and Tier 2 with the new details and photos, and the holder keeps its own id (mpc_...) so the merchant's
+ * integration does not change: only the partner customer behind it does.
+ */
+async function restartHolderVerification(provider, existing, profile) {
+  const email = String(profile.email || '').trim();
+  const at = email.indexOf('@');
+  const tagged = at > 0 ? `${email.slice(0, at)}+kyc${randomHex(3)}${email.slice(at)}` : email;
+  const created = await provider.createCustomer({ firstName: profile.firstName, lastName: profile.lastName, email: tagged, country: profile.country });
+  const customerId = extractMapleradCustomerId(created);
+  if (!customerId) {
+    const err = new Error("Ce titulaire n'a pas pu être recréé. Réessayez dans un instant.");
+    err.code = 'HOLDER_CREATION_FAILED';
+    err.httpStatus = 502;
+    throw err;
+  }
+  try {
+    await provider.upgradeCustomerTier1({
+      customerId, dob: toProviderDob(profile.dob),
+      phone: { phone_number: profile.phoneNumber, phone_country_code: profile.phoneShortCode },
+      address: { street: profile.address && profile.address.street, city: profile.address && profile.address.city, state: profile.address && profile.address.state, postal_code: profile.address && (profile.address.postal_code || profile.address.postalCode), country: profile.address && profile.address.country },
+      identificationNumber: profile.identificationNumber,
+    });
+  } catch (err) {
+    if (!/already/i.test(err.providerRawMessage || '')) throw err;
+  }
+  await upgradeToTier2(provider, customerId, toProviderIdentity(profile), profile.photoIdUrl);
+  const [updated] = await supabase.update('maplerad_customers', { id: existing.id }, {
+    maplerad_customer_id: customerId, status: 'enrolled', failure_reason: null,
+    first_name: profile.firstName, last_name: profile.lastName, country: profile.country, dob: profile.dob,
+    identification_number: profile.identificationNumber, phone_number: profile.phoneNumber, phone_short_code: profile.phoneShortCode,
+    address: profile.address || existing.address || null, photo_url: profile.photoUrl || existing.photo_url || null, updated_at: new Date().toISOString(),
+  });
+  Object.defineProperty(updated, 'restarted', { value: true, enumerable: false });
+  return updated;
+}
+
+async function createHolder(merchantId, profile, mode, options) {
   const providerMode = mode === 'live' ? 'live' : 'sandbox';
   const provider = maplerad.forMode(providerMode);
   // Same person (same email) already enrolled for this merchant in this mode: reuse it instead of creating a duplicate.
   const emailLc = String(profile.email || '').trim().toLowerCase();
+  if (options && options.restartVerification) {
+    const known = (await listHolders(merchantId, providerMode)).find((h) => String(h.email || '').trim().toLowerCase() === emailLc);
+    if (known) return restartHolderVerification(provider, known, profile);
+  }
   const existing = (await listHolders(merchantId, providerMode)).find(
     (h) => h.status === 'enrolled' && String(h.email || '').trim().toLowerCase() === emailLc
   );
