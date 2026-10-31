@@ -28,8 +28,8 @@ const ADDRESS_FORMAT = {
   ethereum: /^0x[0-9a-fA-F]{40}$/, polygon: /^0x[0-9a-fA-F]{40}$/, bsc: /^0x[0-9a-fA-F]{40}$/,
   tron: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
 };
-// The crypto wallet is Sandbox-only for now: Live opens by setting CRYPTO_LIVE_ENABLED=true.
-const liveEnabled = () => process.env.CRYPTO_LIVE_ENABLED === 'true';
+// The crypto wallet is open in Live. CRYPTO_LIVE_ENABLED=false is the switch to close it again (Sandbox keeps working).
+const liveEnabled = () => process.env.CRYPTO_LIVE_ENABLED !== 'false';
 const round2 = (n) => Math.round(n * 100) / 100;
 const AUTO_CREDIT_MAX = 25000; // above this, a deposit waits for the team instead of crediting by itself
 
@@ -149,6 +149,7 @@ async function getOrCreateAddress(merchant, mode, chain, coin) {
     }
     if (!d.address) d = null;
   } catch (err) {
+    if (err.code === 'IDENTITY_REQUIRED') throw err; // the merchant has something to do: not a reason to try the business wallet
     console.error(`Crypto address for customer path failed (${err.message}); trying the business wallet.`); // eslint-disable-line no-console
     customerId = null;
   }

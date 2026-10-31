@@ -7289,16 +7289,32 @@ test('crypto wallet: its own balance (separate from the Master Wallet), receive,
   assert.equal((await api('GET', '/dashboard/crypto/quote?action=convert&amount=100', { token })).data.usd_credited, 94.7);
   const list = await api('GET', '/admin/crypto/deposits?mode=sandbox', { token: admin.token });
   assert.equal(list.data.totals.conversions, 1);
+  assert.ok(list.data.wallets.total >= 1 && list.data.wallets.merchants >= 1); // how many crypto wallets were created
+  assert.ok(list.data.wallets.by_coin.USDT >= 1 && list.data.wallets.by_chain.solana >= 1);
+  assert.ok(list.data.wallets.list[0].address && list.data.wallets.list[0].merchant);
   assert.equal(list.data.totals.sends, 1);
   assert.ok(list.data.totals.margin > 0);
   assert.equal(list.data.totals.to_review, 1);
 
-  // Live is closed for now
+  // Live: closed by the switch, open otherwise (and then it needs Issuing Live access and a verified holder)
   const live = await liveWithGateway('cryptolive', 0);
-  assert.equal((await api('GET', '/dashboard/crypto', { token: live.token })).data.enabled, false);
-  const blocked = await api('POST', '/dashboard/crypto/convert', { token: live.token, body: { coin: 'USDT', amount: 10, reference: 'L1' } });
-  assert.equal(blocked.status, 403);
-  assert.equal(blocked.data.error.code, 'CRYPTO_SANDBOX_ONLY');
+  process.env.CRYPTO_LIVE_ENABLED = 'false';
+  try {
+    assert.equal((await api('GET', '/dashboard/crypto', { token: live.token })).data.enabled, false);
+    const blocked = await api('POST', '/dashboard/crypto/convert', { token: live.token, body: { coin: 'USDT', amount: 10, reference: 'L1' } });
+    assert.equal(blocked.status, 403);
+    assert.equal(blocked.data.error.code, 'CRYPTO_SANDBOX_ONLY');
+  } finally { delete process.env.CRYPTO_LIVE_ENABLED; }
+  assert.equal((await api('GET', '/dashboard/crypto', { token: live.token })).data.enabled, true); // open by default
+  mockTables.merchants.find((m) => m.id === live.merchantId).issuing_live_enabled = false;
+  const noIssuing = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(noIssuing.status, 403);
+  assert.equal(noIssuing.data.error.code, 'LIVE_NOT_ENABLED'); // no Issuing Live access yet
+  mockTables.merchants.find((m) => m.id === live.merchantId).issuing_live_enabled = true;
+  mockTables.maplerad_customers = mockTables.maplerad_customers.filter((h) => h.merchant_id !== live.merchantId);
+  const noHolder = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(noHolder.status, 400);
+  assert.equal(noHolder.data.error.code, 'IDENTITY_REQUIRED'); // Live needs a verified holder: the partner requires a Tier 1 customer
 });
 
 test('crypto wallet: a partner customer left by an earlier failed attempt is taken back, not refused as "already exists"', async () => {
