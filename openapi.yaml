@@ -183,8 +183,8 @@ paths:
       summary: Lister vos wallets crypto
       description: |
         Chaque wallet est une adresse de dépôt pour une cryptomonnaie (USDT ou USDC) sur une chaîne (solana, ethereum, polygon, bsc, tron).
-        Le wallet crypto garde son propre solde, séparé du Master Wallet. Disponible en Sandbox (clé `sk_test_...`) pour le moment :
-        avec une clé Live, les routes `/crypto/...` répondent `403 CRYPTO_SANDBOX_ONLY`.
+        Le wallet crypto garde son propre solde, séparé du Master Wallet. Disponible en Sandbox (clé `sk_test_...`) et en Live (clé `sk_live_...`).
+        Le Live demande l'accès Issuing Live approuvé (`403 LIVE_NOT_ENABLED` sinon) et un titulaire de carte vérifié (`400 IDENTITY_REQUIRED` sinon).
       responses:
         "200": { description: "Les wallets, et les cryptomonnaies et chaînes disponibles (supported)." }
     post:
@@ -200,7 +200,7 @@ paths:
         "201": { description: "Wallet créé : id, coin, chain, address." }
         "200": { description: "Ce wallet existait déjà." }
         "400": { description: "INVALID_CRYPTO (coin ou chaîne non disponible)" }
-        "403": { description: "CRYPTO_SANDBOX_ONLY avec une clé Live" }
+        "403": { description: "LIVE_NOT_ENABLED : pas d'accès Issuing Live. 400 IDENTITY_REQUIRED en Live sans titulaire vérifié." }
 
   /crypto/balance:
     get:

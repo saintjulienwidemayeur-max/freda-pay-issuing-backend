@@ -172,12 +172,13 @@ async function setFees(ctx) {
 /** Admin: GET /admin/crypto/deposits : every crypto movement (deposits, sends, conversions) with what we earned and what the partner kept. */
 async function adminDeposits(ctx) {
   const mode = ctx.query && ctx.query.mode === 'sandbox' ? 'sandbox' : 'live';
-  const [deps, txs] = await Promise.all([
+  const [deps, txs, wallets] = await Promise.all([
     supabase.select('crypto_deposits', { mode }, { order: 'created_at.desc', limit: 500 }),
     supabase.select('crypto_transactions', { mode }, { order: 'created_at.desc', limit: 500 }),
+    supabase.select('crypto_addresses', { mode }, { order: 'created_at.desc', limit: 2000 }),
   ]);
   const names = new Map();
-  for (const id of [...new Set([...deps, ...txs].map((r) => r.merchant_id))]) {
+  for (const id of [...new Set([...deps, ...txs, ...wallets].map((r) => r.merchant_id))]) {
     const m = await supabase.selectOne('merchants', { id }).catch(() => null);
     names.set(id, m ? m.business_name : id);
   }
@@ -202,6 +203,13 @@ async function adminDeposits(ctx) {
         deposits: by('deposit').length, sends: by('send').length, conversions: by('convert').length,
         converted_to_usd: sum(by('convert'), (r) => r.usd_credited),
         to_review: rows.filter((r) => r.status === 'review' || r.status === 'pending').length,
+      },
+      wallets: {
+        total: wallets.length,
+        merchants: new Set(wallets.map((w) => w.merchant_id)).size,
+        by_coin: wallets.reduce((o, w) => Object.assign(o, { [w.coin]: (o[w.coin] || 0) + 1 }), {}),
+        by_chain: wallets.reduce((o, w) => Object.assign(o, { [w.chain]: (o[w.chain] || 0) + 1 }), {}),
+        list: wallets.slice(0, 200).map((w) => ({ id: w.id, merchant: names.get(w.merchant_id), coin: w.coin, chain: w.chain, address: w.address, created_at: w.created_at })),
       },
       operations: rows,
     },
