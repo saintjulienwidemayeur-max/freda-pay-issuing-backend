@@ -119,6 +119,13 @@ let registerIpCounter = 0;
 let clientIpCounter = 0;
 /** Each simulated visitor gets its own address, like real users: the suite makes far more calls than one address may. */
 const freshIp = () => ({ 'x-forwarded-for': `10.${Math.floor((clientIpCounter += 1) / 250) % 250}.${clientIpCounter % 250}.7` });
+/** The reference the partner was given for a payment or top-up (short, random: not derivable from the merchant reference). */
+function partnerRefOf(merchantId, ownReference) {
+  const row = mockTables.payments.find((p) => p.merchant_id === merchantId && p.own_reference === ownReference)
+    || mockTables.wallet_topups.find((t) => t.merchant_id === merchantId && t.own_reference === ownReference);
+  return row ? row.plopplop_reference : `fp_${merchantId}_${ownReference}`;
+}
+
 async function registerAndVerify(payload) {
   // A distinct client IP per signup, like real users: the suite creates far more accounts than one
   // address is allowed to (60/hour), and that limit is not what these tests are about.
@@ -327,7 +334,7 @@ test('after provider confirms, verify credits the gateway ledger with fee deduct
   await fetch('http://localhost:4501/__control/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refference_id: `fp_${merchantId}_${paymentReference}` }),
+    body: JSON.stringify({ refference_id: partnerRefOf(merchantId, paymentReference) }),
   });
 
   const r = await api('GET', `/v1/payments/${paymentId}`, { token: testApiKeySecret });
@@ -478,7 +485,7 @@ test('wallet topup: automatic MonCash top-up credits Master Wallet with correct 
   await fetch('http://localhost:4501/__control/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refference_id: `fp_${merchantId}_${reference}` }),
+    body: JSON.stringify({ refference_id: partnerRefOf(merchantId, reference) }),
   });
 
   const check = await api('GET', `/dashboard/wallet/topups/${create.data.id}`, { token: sessionToken });
@@ -634,7 +641,7 @@ test('billing: changing the Gateway plan debits the Master Wallet, converted fro
   await fetch('http://localhost:4501/__control/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refference_id: `fp_${individualId}_${reference}` }),
+    body: JSON.stringify({ refference_id: partnerRefOf(individualId, reference) }),
   });
   await api('GET', `/dashboard/wallet/topups/${topup.data.id}`, { token: individualToken }); // triggers credit
 
@@ -669,7 +676,7 @@ test('billing: changing the Issuing plan charges its USD price directly (no conv
   await fetch('http://localhost:4501/__control/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refference_id: `fp_${individualId}_${reference}` }),
+    body: JSON.stringify({ refference_id: partnerRefOf(individualId, reference) }),
   });
   await api('GET', `/dashboard/wallet/topups/${topup.data.id}`, { token: individualToken });
 
@@ -928,7 +935,7 @@ test('a funded Master Wallet allows creating an individual card, confirmed via w
   await fetch('http://localhost:4501/__control/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refference_id: `fp_${merchantId}_${reference}` }),
+    body: JSON.stringify({ refference_id: partnerRefOf(merchantId, reference) }),
   });
   await api('GET', `/dashboard/wallet/topups/${topup.data.id}`, { token: sessionToken });
   const balAfterTopup = await api('GET', '/dashboard/balance', { token: sessionToken });
@@ -1212,7 +1219,7 @@ test('a real event (payment.succeeded) is delivered to the registered webhook, c
     const create = await api('POST', '/v1/payments', { token: apiKeySecret, body: { amount: 1000, method: 'moncash', reference } });
     await fetch('http://localhost:4501/__control/confirm-payment', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refference_id: `fp_${reg.data.merchant.id}_${reference}` }),
+      body: JSON.stringify({ refference_id: partnerRefOf(reg.data.merchant.id, reference) }),
     });
     await api('GET', `/v1/payments/${create.data.id}`, { token: apiKeySecret }); // triggers the status refresh that fires the webhook
 
@@ -1248,7 +1255,7 @@ test('a failing webhook endpoint is retried and eventually gives up without cras
     const create = await api('POST', '/v1/payments', { token: apiKeySecret, body: { amount: 500, method: 'moncash', reference } });
     await fetch('http://localhost:4501/__control/confirm-payment', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refference_id: `fp_${reg.data.merchant.id}_${reference}` }),
+      body: JSON.stringify({ refference_id: partnerRefOf(reg.data.merchant.id, reference) }),
     });
     await api('GET', `/v1/payments/${create.data.id}`, { token: apiKeySecret });
 
@@ -2291,7 +2298,7 @@ test('a merchant can open a dispute on a succeeded payment, and an admin can res
   const create = await api('POST', '/dashboard/payments', { token, body: { amount: 1000, method: 'moncash', reference: 'DISPUTE-PAY-1' } });
   await fetch('http://localhost:4501/__control/confirm-payment', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refference_id: `fp_${reg.data.merchant.id}_DISPUTE-PAY-1` }),
+    body: JSON.stringify({ refference_id: partnerRefOf(reg.data.merchant.id, 'DISPUTE-PAY-1') }),
   });
   await api('GET', `/dashboard/payments/${create.data.id}`, { token }); // trigger status refresh
 
@@ -2331,7 +2338,7 @@ test('the Gateway summary reflects real money in and fees paid, and CSV export w
   const create = await api('POST', '/dashboard/payments', { token, body: { amount: 2000, method: 'moncash', reference: 'SUMMARY-PAY-1' } });
   await fetch('http://localhost:4501/__control/confirm-payment', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refference_id: `fp_${reg.data.merchant.id}_SUMMARY-PAY-1` }),
+    body: JSON.stringify({ refference_id: partnerRefOf(reg.data.merchant.id, 'SUMMARY-PAY-1') }),
   });
   await api('GET', `/dashboard/payments/${create.data.id}`, { token });
 
@@ -3872,7 +3879,7 @@ test('overview: profit per day, partner fees, online card spending and the Gatew
   const other = await makeLiveMerchant('overviewother', { fundUsd: 0 });
   const pay = async (m, ref, amount) => {
     const p = await api('POST', '/dashboard/payments', { token: m.token, body: { amount, method: 'moncash', reference: ref } });
-    await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${m.merchantId}_${ref}` }) });
+    await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(m.merchantId, ref) }) });
     await api('GET', `/dashboard/payments/${p.data.id}`, { token: m.token });
   };
   await pay(live, 'OV-PAY-A', 2000);
@@ -3904,7 +3911,7 @@ test('the PlopPlop cost, once configured, shows up as a partner cost on Gateway 
   try {
     const live = await makeLiveMerchant('gwcost', { fundUsd: 0 });
     const p = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 3000, method: 'moncash', reference: 'GWCOST-1' } });
-    await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_GWCOST-1` }) });
+    await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(live.merchantId, 'GWCOST-1') }) });
     await api('GET', `/dashboard/payments/${p.data.id}`, { token: live.token });
     const rev = (await api('GET', `/admin/merchants/${live.merchantId}`, { token: live.adminToken })).data.revenue;
     // fee = 6 % of 3000 + 10 = 190 HTG; partner cost = 2 % of 3000 = 60 HTG; both converted to USD
@@ -3958,7 +3965,7 @@ test('the top-up quote shown in the dashboard equals what is really credited (pl
 
   // and it is exactly what the real top-up credits
   const t = await api('POST', '/dashboard/wallet/topups', { token, body: { method: 'moncash', amount_htg: 10000, reference: 'QUOTE-1' } });
-  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${reg.data.merchant.id}_QUOTE-1` }) });
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(reg.data.merchant.id, 'QUOTE-1') }) });
   const done = await api('GET', `/dashboard/wallet/topups/${t.data.id}`, { token });
   assert.equal(done.data.status, 'succeeded');
   assert.equal(done.data.credited_usd, custom.data.credited_usd);
@@ -4044,7 +4051,7 @@ test('profit uses the partner cost sheet exactly: creation 1.50, recharge 1.00, 
   const live = await makeLiveMerchant('costsheet', { fundUsd: 300 }); // enough to stay above the wallet's minimum reserve after the card
   // 1) a MonCash top-up of 10 000 HTG: fee 4.5 % = 450 HTG of revenue; cost = 2 % of the dollars credited
   const t = await api('POST', '/dashboard/wallet/topups', { token: live.token, body: { method: 'moncash', amount_htg: 10000, reference: 'COSTSHEET-1' } });
-  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_COSTSHEET-1` }) });
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(live.merchantId, 'COSTSHEET-1') }) });
   const done = await api('GET', `/dashboard/wallet/topups/${t.data.id}`, { token: live.token });
   assert.equal(done.data.status, 'succeeded');
   let rev = (await api('GET', `/admin/merchants/${live.merchantId}`, { token: live.adminToken })).data.revenue;
@@ -4073,7 +4080,7 @@ test('the PlopPlop 4 % is a cost of every MonCash/Natcash payment, even when the
   const live = await makeLiveMerchant('plop4', { fundUsd: 0 });
   await api('PUT', `/admin/merchants/${live.merchantId}/free-plan`, { token: live.adminToken, body: { grant: true } }); // no fee charged to the merchant
   const p = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 5000, method: 'moncash', reference: 'PLOP4-1' } });
-  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_PLOP4-1` }) });
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(live.merchantId, 'PLOP4-1') }) });
   await api('GET', `/dashboard/payments/${p.data.id}`, { token: live.token });
   const rev = (await api('GET', `/admin/merchants/${live.merchantId}`, { token: live.adminToken })).data.revenue;
   assert.equal(rev.total_revenue_usd, 0);                                         // free plan: nothing earned...
@@ -5444,7 +5451,7 @@ test('transactions summary: counters, monthly performance per currency, filters,
   await sendCardHook('payment.failed', pb);
   // and one succeeded HTG payment
   const mc = await api('POST', '/dashboard/payments', { token: m.token, body: { amount: 1000, currency: 'HTG', method: 'moncash', reference: 'PERF-HTG' } });
-  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${m.merchantId}_PERF-HTG` }) });
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(m.merchantId, 'PERF-HTG') }) });
   await api('GET', '/dashboard/payments', { token: m.token }); // (list does not poll) - poll the one payment
   const apiKey = (await api('POST', '/dashboard/api-keys', { token: m.token, body: { mode: 'test' } })).data.secret;
   await api('GET', `/v1/payments/${mc.data.id}`, { token: apiKey });
@@ -5799,7 +5806,7 @@ test('fixer2: concurrent status polls credit a confirmed MonCash payment once', 
   const live = await liveWithGateway('f2pay', 0);
   const create = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 1000, method: 'moncash', reference: 'F2-PAY-1' } });
   assert.equal(create.status, 201);
-  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_F2-PAY-1` }) });
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(live.merchantId, 'F2-PAY-1') }) });
   const polls = await Promise.all(Array.from({ length: 6 }, () => api('GET', `/dashboard/payments/${create.data.id}`, { token: live.token })));
   assert.ok(polls.every((p) => p.status === 200 && p.data.status === 'succeeded'));
   assert.equal(f2Entries(create.data.id, 'payment_credit').length, 1);
@@ -5810,7 +5817,7 @@ test('fixer2: concurrent status polls credit a confirmed automatic wallet top-up
   const live = await makeLiveMerchant('f2topup', { fundUsd: 0 });
   const create = await api('POST', '/dashboard/wallet/topups', { token: live.token, body: { method: 'moncash', amount_htg: 13300, reference: 'F2-TOPUP-1' } });
   assert.equal(create.status, 201);
-  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: `fp_${live.merchantId}_F2-TOPUP-1` }) });
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: partnerRefOf(live.merchantId, 'F2-TOPUP-1') }) });
   const polls = await Promise.all(Array.from({ length: 6 }, () => api('GET', `/dashboard/wallet/topups/${create.data.id}`, { token: live.token })));
   assert.ok(polls.every((p) => p.status === 200 && p.data.status === 'succeeded'));
   assert.equal(f2Entries(create.data.id, 'wallet_topup').length, 1);
@@ -7662,3 +7669,21 @@ test('PlopPlop webhook: a notification that names the payment differently is mat
   assert.equal(mockTables.payments.find((p) => p.id === row.id).status, 'succeeded');
 });
 
+
+test('the reference given to the MonCash/Natcash partner is short and plain (the partner could not find our long ones); card payments keep theirs', async () => {
+  const reg = await registerAndVerify({ business_name: 'Short Ref Co', email: 'shortref@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const mobile = await api('POST', '/dashboard/payments', { token, body: { amount: 500, currency: 'HTG', method: 'natcash', reference: 'A-VERY-LONG-MERCHANT-REFERENCE-WITH_UNDERSCORES-0123456789-0123456789' } });
+  assert.equal(mobile.status, 201);
+  const row = mockTables.payments.find((p) => p.id === mobile.data.id);
+  assert.match(row.plopplop_reference, /^fp[0-9a-f]{14}$/); // 16 characters, letters and digits only
+  assert.equal(row.own_reference, 'A-VERY-LONG-MERCHANT-REFERENCE-WITH_UNDERSCORES-0123456789-0123456789'); // the merchant's own reference is untouched
+  assert.equal(mobile.data.reference, row.own_reference);
+  // replaying the same merchant reference still returns the same payment (no second payment at the partner)
+  const again = await api('POST', '/dashboard/payments', { token, body: { amount: 500, currency: 'HTG', method: 'natcash', reference: row.own_reference } });
+  assert.equal(again.status, 200);
+  assert.equal(again.data.id, mobile.data.id);
+  // two payments with different references never share the partner reference
+  const second = await api('POST', '/dashboard/payments', { token, body: { amount: 500, currency: 'HTG', method: 'moncash', reference: 'SHORT-2' } });
+  assert.notEqual(mockTables.payments.find((p) => p.id === second.data.id).plopplop_reference, row.plopplop_reference);
+});

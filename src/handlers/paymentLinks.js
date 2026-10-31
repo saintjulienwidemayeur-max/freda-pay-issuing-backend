@@ -3,7 +3,7 @@ const config = require('../config');
 const links = require('../services/paymentLinks');
 const supabase = require('../lib/supabase');
 const paymentOrchestrator = require('../services/paymentOrchestrator');
-const { generatePaymentLinkId, generatePaymentId, namespaceReference, randomHex } = require('../utils/ids');
+const { generatePaymentLinkId, generatePaymentId, partnerReference, randomHex } = require('../utils/ids');
 const { fetchPage } = require('../utils/pagination');
 const { resolveMode } = require('../utils/mode');
 const { parseAmount } = require('../utils/money');
@@ -91,7 +91,7 @@ async function publicPay(ctx) {
 
   const ownReference = `paylink_${link.id}_${randomHex(6)}`;
   const id = generatePaymentId();
-  const plopplopReference = namespaceReference(link.merchant_id, ownReference);
+  const plopplopReference = partnerReference(link.merchant_id, ownReference, method);
 
   try {
     const payment = await paymentOrchestrator.createPayment({
