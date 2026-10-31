@@ -208,6 +208,7 @@ router.post('/dashboard/cards/:id/terminate', session.requireSession, cardHandle
 router.post('/webhooks/maplerad', webhookHandlers.receiveMaplerad);
 router.post('/webhooks/tranzak', webhookHandlers.receiveTranzak);
 router.post('/webhooks/plopplop', webhookHandlers.receivePlopplop);
+router.get('/pay/return', paymentHandlers.paymentReturn);
 router.post('/webhooks/inbound-email', adminInboxHandlers.receive);
 
 // ---- Outbound webhook management (register the URL Freda Pay notifies on events) ----
