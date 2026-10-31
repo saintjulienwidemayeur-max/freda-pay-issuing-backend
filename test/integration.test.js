@@ -7336,15 +7336,58 @@ test('crypto wallet: an address the partner already holds is taken back (listed 
   assert.equal(again.data.address, first.data.address);
 });
 
-test('crypto wallet: Sandbox accepts the partner\'s test addresses for a send, Live-style validation stays strict elsewhere', async () => {
+test('crypto wallet: a send needs a real address of the chain, and the webhook diagnostics show crypto deposits', async () => {
   const reg = await registerAndVerify({ business_name: 'Sandbox Addr Co', email: 'sandboxaddr@sandbox-test.example.com', password: 'password123' });
   const token = reg.data.session_token;
   const a = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } });
   await sendProviderEvent({ event: 'collection.successful', status: 'SUCCESS', address: a.data.address, amount: 10000, currency: 'USDT', reference: 'sbx-addr-1' }, MOCK_SANDBOX_WHSEC);
-  const ok = await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: '0x17piPebj971U6eZ83oBNVv2tS6A4V5738tg03aL1', amount: 1, reference: 'SBX1' } });
+  const ok = await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU', amount: 1, reference: 'SBX1' } });
   assert.equal(ok.status, 201);
+  const testAddr = await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: '0x17piPebj971U6eZ83oBNVv2tS6A4V5738tg03aL1', amount: 1, reference: 'SBX0' } });
+  assert.equal(testAddr.data.error.code, 'INVALID_ADDRESS'); // the partner's own Sandbox test address is refused by the partner: say so before sending
   assert.equal((await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: 'too short!', amount: 1, reference: 'SBX2' } })).data.error.code, 'INVALID_ADDRESS');
   const ev = await api('GET', '/admin/diagnostic/webhook-events', { token: (await adminLogin('owner')).token });
   const mine = ev.data.latest.find((e) => e.event === 'collection.successful');
   assert.ok(mine && mine.card_known === true && mine.stored === true); // the address is ours and the deposit was credited
+});
+
+test('public API: a merchant creates and uses crypto wallets with an API key (test key = Sandbox, Live closed)', async () => {
+  const reg = await registerAndVerify({ business_name: 'Crypto API Co', email: 'cryptoapi@sandbox-test.example.com', password: 'password123' });
+  const key = (await api('POST', '/dashboard/api-keys', { token: reg.data.session_token, body: { mode: 'test' } })).data.secret;
+  assert.equal((await api('GET', '/v1/crypto/wallets', {})).status, 401);
+
+  const list0 = await api('GET', '/v1/crypto/wallets', { token: key });
+  assert.equal(list0.status, 200);
+  assert.deepEqual(list0.data.wallets, []);
+  assert.ok(list0.data.supported.chains.some((c) => c.key === 'solana'));
+
+  const w = await api('POST', '/v1/crypto/wallets', { token: key, body: { coin: 'usdt', chain: 'solana' } });
+  assert.equal(w.status, 201);
+  assert.equal(w.data.object, 'crypto_wallet');
+  assert.equal(w.data.coin, 'USDT');
+  const again = await api('POST', '/v1/crypto/wallets', { token: key, body: { coin: 'USDT', chain: 'solana' } });
+  assert.equal(again.status, 200);
+  assert.equal(again.data.address, w.data.address);
+  assert.equal((await api('POST', '/v1/crypto/wallets', { token: key, body: { coin: 'BTC', chain: 'solana' } })).status, 400);
+  assert.equal((await api('GET', '/v1/crypto/wallets', { token: key })).data.wallets.length, 1);
+
+  await sendProviderEvent({ event: 'collection.successful', status: 'SUCCESS', address: w.data.address, amount: 50000, currency: 'USDT', reference: 'api-dep-1' }, MOCK_SANDBOX_WHSEC);
+  assert.equal((await api('GET', '/v1/crypto/balance', { token: key })).data.balances.USDT, 497.5); // 500 - 0.5 %
+
+  const q = await api('GET', '/v1/crypto/quote?action=convert&amount=100', { token: key }); // the rate may have been edited by an earlier test: the quote is the reference
+  assert.equal(q.data.usd_credited, Math.round((100 - q.data.conversion_fee - q.data.funding_fee) * 100) / 100);
+
+  const dest = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+  const s1 = await api('POST', '/v1/crypto/send', { token: key, headers: { 'Idempotency-Key': 'api-send-1' }, body: { coin: 'USDT', chain: 'solana', address: dest, amount: 100 } });
+  assert.equal(s1.status, 201);
+  await api('POST', '/v1/crypto/send', { token: key, headers: { 'Idempotency-Key': 'api-send-1' }, body: { coin: 'USDT', chain: 'solana', address: dest, amount: 100 } }); // same key: done once
+  assert.equal((await api('GET', '/v1/crypto/balance', { token: key })).data.balances.USDT, 395.5); // 497.5 - 100 - 2 fee
+
+  const c1 = await api('POST', '/v1/crypto/convert', { token: key, body: { coin: 'USDT', amount: 100, reference: 'api-conv-1' } });
+  assert.equal(c1.status, 201);
+  assert.equal(c1.data.usd_credited, q.data.usd_credited);
+  assert.equal((await api('GET', '/v1/master-wallet', { token: key })).data.balance >= q.data.usd_credited, true);
+  const tx = await api('GET', '/v1/crypto/transactions', { token: key });
+  assert.equal(tx.data.transactions.length, 3);
+  assert.equal((await api('POST', '/v1/crypto/send', { token: key, body: { coin: 'USDT', chain: 'solana', address: dest, amount: 5 } })).data.error.code, 'MISSING_FIELDS');
 });

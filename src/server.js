@@ -232,6 +232,13 @@ router.get('/v1/payouts/:id', apiKey.requireApiKey, payoutHandlers.get);
 
 router.get('/v1/balance', apiKey.requireApiKey, walletHandlers.getBalance);
 router.get('/v1/master-wallet', apiKey.requireApiKey, walletHandlers.getMasterWallet);
+router.get('/v1/crypto/balance', apiKey.requireApiKey, cryptoWalletHandlers.apiBalance);
+router.get('/v1/crypto/quote', apiKey.requireApiKey, cryptoWalletHandlers.apiQuote);
+router.get('/v1/crypto/wallets', apiKey.requireApiKey, cryptoWalletHandlers.apiListWallets);
+router.post('/v1/crypto/wallets', apiKey.requireApiKey, cryptoWalletHandlers.apiCreateWallet);
+router.get('/v1/crypto/transactions', apiKey.requireApiKey, cryptoWalletHandlers.apiTransactions);
+router.post('/v1/crypto/send', apiKey.requireApiKey, cryptoWalletHandlers.send);
+router.post('/v1/crypto/convert', apiKey.requireApiKey, cryptoWalletHandlers.convert);
 
 const handler = createHandler(router, {
   onLog: ({ method, path, status, ms }) => {

@@ -82,11 +82,19 @@ async function quote(ctx) {
 
 const publicTx = (t) => ({ id: t.id, type: t.type, coin: t.coin, chain: t.chain, address: t.address, amount: Number(t.amount), fee: Number(t.fee), usd_credited: t.usd_credited == null ? null : Number(t.usd_credited), tx_hash: t.tx_hash, status: t.status, created_at: t.created_at });
 
+/** The merchant's own key for a send or conversion: body.reference, or the Idempotency-Key header (public API). */
+function withReference(ctx) {
+  const body = Object.assign({}, ctx.body || {});
+  const header = ctx.req && ctx.req.headers && ctx.req.headers['idempotency-key'];
+  if (!body.reference && header) body.reference = String(header).slice(0, 64);
+  return body;
+}
+
 /** POST /dashboard/crypto/send { coin, chain, address, amount, reference } */
 async function send(ctx) {
   const mode = await resolveMode(ctx);
   const merchant = await loadMerchant(ctx, mode);
-  const row = await cryptoWallet.send(merchant, mode, ctx.body || {});
+  const row = await cryptoWallet.send(merchant, mode, withReference(ctx));
   return { status: 201, body: publicTx(row) };
 }
 
@@ -94,8 +102,53 @@ async function send(ctx) {
 async function convert(ctx) {
   const mode = await resolveMode(ctx);
   const merchant = await loadMerchant(ctx, mode);
-  const row = await cryptoWallet.convert(merchant, mode, ctx.body || {});
+  const row = await cryptoWallet.convert(merchant, mode, withReference(ctx));
   return { status: 201, body: publicTx(row) };
+}
+
+/* ===== Public API (/v1/crypto/...), authenticated by API key: the same wallet as the dashboard, in the key's mode ===== */
+const publicWallet = (a) => ({ id: a.id, object: 'crypto_wallet', coin: a.coin, chain: a.chain, address: a.address, mode: a.mode, created_at: a.created_at });
+const publicTransaction = (t) => ({ id: t.id, object: 'crypto_transaction', type: t.type, coin: t.coin, chain: t.chain || null, address: t.address || null, amount: Number(t.amount), fee: Number(t.fee), net: t.net == null ? null : Number(t.net), usd_credited: t.usd_credited == null ? null : Number(t.usd_credited), tx_hash: t.tx_hash || null, status: t.status, created_at: t.created_at });
+
+async function guardApi(ctx) {
+  const mode = await resolveMode(ctx);
+  const merchant = await loadMerchant(ctx, mode);
+  return { mode, merchant };
+}
+
+/** GET /v1/crypto/balance */
+async function apiBalance(ctx) {
+  const { mode } = await guardApi(ctx);
+  return { status: 200, body: { object: 'crypto_balance', mode, balances: await cryptoWallet.balances(ctx.merchantId, mode) } };
+}
+
+/** GET /v1/crypto/wallets */
+async function apiListWallets(ctx) {
+  const { mode } = await guardApi(ctx);
+  const rows = await supabase.select('crypto_addresses', { merchant_id: ctx.merchantId, mode }, { order: 'created_at.asc', limit: 200 });
+  return { status: 200, body: { object: 'list', mode, supported: cryptoWallet.catalog(), wallets: rows.map(publicWallet) } };
+}
+
+/** POST /v1/crypto/wallets { coin, chain } : creates the wallet (a deposit address) for a coin on a chain; asking again returns the same one. */
+async function apiCreateWallet(ctx) {
+  const { mode, merchant } = await guardApi(ctx);
+  const { chain, coin } = ctx.body || {};
+  const existing = await supabase.selectOne('crypto_addresses', { merchant_id: merchant.id, mode, chain: String(chain || '').toLowerCase(), coin: String(coin || '').toUpperCase() });
+  const addr = await cryptoWallet.getOrCreateAddress(merchant, mode, String(chain || '').toLowerCase(), String(coin || '').toUpperCase());
+  return { status: existing ? 200 : 201, body: publicWallet(addr) };
+}
+
+/** GET /v1/crypto/transactions */
+async function apiTransactions(ctx) {
+  const { mode } = await guardApi(ctx);
+  const limit = Math.min(100, Math.max(1, parseInt(ctx.query && ctx.query.limit, 10) || 50));
+  return { status: 200, body: { object: 'list', mode, transactions: (await cryptoWallet.history(ctx.merchantId, mode, limit)).map(publicTransaction) } };
+}
+
+/** GET /v1/crypto/quote?action=send|convert&amount=100 */
+async function apiQuote(ctx) {
+  await guardApi(ctx);
+  return quote(ctx);
 }
 
 /** Admin: GET /admin/settings/crypto-fees */
@@ -155,4 +208,4 @@ async function adminDeposits(ctx) {
   };
 }
 
-module.exports = { overview, createAddress, quote, send, convert, getFees, setFees, adminDeposits };
+module.exports = { overview, createAddress, quote, send, convert, apiBalance, apiListWallets, apiCreateWallet, apiTransactions, apiQuote, getFees, setFees, adminDeposits };
