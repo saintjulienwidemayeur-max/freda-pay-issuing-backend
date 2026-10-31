@@ -7480,3 +7480,47 @@ test('admin diagnostic: why a merchant cannot connect the payment service or the
   assert.equal((await api('GET', '/admin/merchants/mch_unknown/diagnostic', { token: admin.token })).status, 404);
   assert.equal((await api('GET', `/admin/merchants/${id2}/diagnostic`, { token: (await adminLogin('editor')).token })).status, 403);
 });
+
+test('admin payment problems: merchants with stuck or failing payments, every transaction, and a recheck that credits only what the partner confirms', async () => {
+  const admin = await adminLogin('owner');
+  const live = await liveWithGateway('stuckpay', 0);
+  const mk = async (ref) => { const r = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 470, currency: 'HTG', method: 'natcash', reference: ref } }); assert.equal(r.status, 201); return mockTables.payments.find((p) => p.id === r.data.id); };
+  const p1 = await mk('STUCK-1');
+  const p2 = await mk('STUCK-2');
+  for (const p of [p1, p2]) p.created_at = new Date(Date.now() - 3 * 3600 * 1000).toISOString(); // they have waited three hours
+  // a merchant API error on the payment route, as an integrating merchant would get
+  mockTables.api_call_log.push({ id: 9100, created_at: new Date().toISOString(), merchant_id: live.merchantId, method: 'POST', route: '/v1/payments', path: '/v1/payments', status: 400, code: 'INVALID_AMOUNT', message: 'Montant invalide', mode: 'live' });
+
+  const ov = await api('GET', '/admin/payments/problems?mode=live', { token: admin.token });
+  assert.equal(ov.status, 200);
+  const mine = ov.data.merchants.find((m) => m.merchant_id === live.merchantId);
+  assert.ok(mine);
+  assert.equal(mine.stuck, 2);
+  assert.equal(mine.stuck_amount.HTG, 940);
+  assert.equal(mine.integration_errors, 1);
+  assert.ok(mine.problems.some((x) => /en attente/.test(x)) && mine.problems.some((x) => /aucun webhook/.test(x)));
+
+  const det = await api('GET', `/admin/payments/problems/${live.merchantId}?mode=live`, { token: admin.token });
+  assert.equal(det.data.counts.pending, 2);
+  assert.equal(det.data.by_mode.live.pending, 2); // where the payments really went: Live here
+  assert.equal(det.data.transactions.length, 2);
+  assert.equal(det.data.integration_errors[0].code, 'INVALID_AMOUNT');
+
+  // the partner has not confirmed: nothing is credited
+  const first = await api('POST', `/admin/payments/${p1.id}/recheck`, { token: admin.token });
+  assert.equal(first.data.settled, false);
+  assert.equal(first.data.partner.kind, 'waiting');
+  assert.equal(mockTables.payments.find((p) => p.id === p1.id).status, 'pending');
+
+  // the customer pays at the partner: the recheck settles it and credits the merchant
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: p1.plopplop_reference }) });
+  const all = await api('POST', `/admin/payments/problems/${live.merchantId}/recheck`, { token: admin.token, body: { mode: 'live' } });
+  assert.equal(all.status, 200);
+  assert.equal(all.data.checked, 2);
+  assert.equal(all.data.settled, 1);
+  assert.equal(mockTables.payments.find((p) => p.id === p1.id).status, 'succeeded');
+  assert.equal(mockTables.payments.find((p) => p.id === p2.id).status, 'pending');
+  assert.equal((await api('POST', `/admin/payments/${p1.id}/recheck`, { token: admin.token })).data.note, 'Ce paiement est déjà réglé.');
+  assert.equal((await api('GET', '/admin/payments/problems/mch_unknown', { token: admin.token })).status, 404);
+  assert.equal((await api('GET', '/admin/payments/problems', { token: (await adminLogin('editor')).token })).status, 403);
+});

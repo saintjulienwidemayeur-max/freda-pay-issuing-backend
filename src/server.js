@@ -14,6 +14,7 @@ const payoutHandlers = require('./handlers/payouts');
 const walletHandlers = require('./handlers/wallet');
 const walletTopupHandlers = require('./handlers/walletTopup');
 const cryptoWalletHandlers = require('./handlers/cryptoWallet');
+const adminPaymentProblemHandlers = require('./handlers/adminPaymentProblems');
 const accountHandlers = require('./handlers/account');
 const billingHandlers = require('./handlers/billing');
 const paymentLinkHandlers = require('./handlers/paymentLinks');
@@ -319,6 +320,10 @@ router.get('/admin/api-calls/:merchantId', adminSession.requireAdminSession, api
 router.get('/admin/diagnostic/schema', adminSession.requireAdminSession, apiTrafficAdmin(() => adminSchemaHandlers.schemaCheck()));
 router.get('/admin/diagnostic/webhook-events', adminSession.requireAdminSession, apiTrafficAdmin(() => adminSchemaHandlers.webhookEvents()));
 router.post('/admin/cards/import-transactions', adminSession.requireAdminSession, apiTrafficAdmin(adminSchemaHandlers.importTransactions));
+router.get('/admin/payments/problems', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPaymentProblemHandlers.overview(ctx); });
+router.get('/admin/payments/problems/:merchantId', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPaymentProblemHandlers.detail(ctx); });
+router.post('/admin/payments/problems/:merchantId/recheck', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPaymentProblemHandlers.recheckMerchant(ctx); });
+router.post('/admin/payments/:id/recheck', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPaymentProblemHandlers.recheckPayment(ctx); });
 router.get('/admin/payments/diagnostic', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.paymentDiagnostic));
 router.post('/admin/payments/check', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.checkPayment));
 router.get('/admin/provider-errors', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.providerErrors));
