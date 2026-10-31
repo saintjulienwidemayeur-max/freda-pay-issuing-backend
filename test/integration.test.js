@@ -7335,3 +7335,16 @@ test('crypto wallet: an address the partner already holds is taken back (listed 
   assert.equal(again.status, 201);
   assert.equal(again.data.address, first.data.address);
 });
+
+test('crypto wallet: Sandbox accepts the partner\'s test addresses for a send, Live-style validation stays strict elsewhere', async () => {
+  const reg = await registerAndVerify({ business_name: 'Sandbox Addr Co', email: 'sandboxaddr@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const a = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'solana', coin: 'USDT' } });
+  await sendProviderEvent({ event: 'collection.successful', status: 'SUCCESS', address: a.data.address, amount: 10000, currency: 'USDT', reference: 'sbx-addr-1' }, MOCK_SANDBOX_WHSEC);
+  const ok = await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: '0x17piPebj971U6eZ83oBNVv2tS6A4V5738tg03aL1', amount: 1, reference: 'SBX1' } });
+  assert.equal(ok.status, 201);
+  assert.equal((await api('POST', '/dashboard/crypto/send', { token, body: { coin: 'USDT', chain: 'solana', address: 'too short!', amount: 1, reference: 'SBX2' } })).data.error.code, 'INVALID_ADDRESS');
+  const ev = await api('GET', '/admin/diagnostic/webhook-events', { token: (await adminLogin('owner')).token });
+  const mine = ev.data.latest.find((e) => e.event === 'collection.successful');
+  assert.ok(mine && mine.card_known === true && mine.stored === true); // the address is ours and the deposit was credited
+});

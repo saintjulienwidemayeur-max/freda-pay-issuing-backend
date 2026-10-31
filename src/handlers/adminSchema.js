@@ -55,7 +55,16 @@ async function webhookEvents() {
       const ref = p.reference ? String(p.reference) : `${p.card_id}:${String(p.type || '').toUpperCase()}:${p.amount}:${p.created_at || ''}`;
       stored = !!(await supabase.selectOne('card_transactions', { card_id: card.id, provider_reference: ref }).catch(() => null));
     }
-    latest.push({ at: r.created_at, event: r.event_type, type: p.type || null, direction: p.mode || null, status: p.status || null, amount_cents: p.amount == null ? null : p.amount, card_known: cardId ? !!card : null, stored });
+    // Crypto deposit notifications: is the address one of ours, and was the deposit read and credited?
+    let cryptoKnown = null; let cryptoStored = null; let cryptoNote = null;
+    const dep = require('../services/cryptoWallet').parseDepositEvent(p);
+    if (dep) {
+      const addr = dep.address ? await supabase.selectOne('crypto_addresses', { address: dep.address }).catch(() => null) : (dep.addressId ? await supabase.selectOne('crypto_addresses', { maplerad_address_id: dep.addressId }).catch(() => null) : null);
+      cryptoKnown = !!addr;
+      cryptoStored = dep.reference ? !!(await supabase.selectOne('crypto_deposits', { provider_reference: dep.reference }).catch(() => null)) : false;
+      cryptoNote = !dep.ok ? 'not a successful deposit' : (dep.amount == null ? 'amount not readable' : (!addr ? 'address unknown' : null));
+    }
+    latest.push({ at: r.created_at, event: r.event_type, type: p.type || null, direction: p.mode || null, status: p.status || null, amount_cents: p.amount == null ? null : p.amount, card_known: cardId ? !!card : (cryptoKnown !== null ? cryptoKnown : null), stored: stored !== null ? stored : cryptoStored, note: cryptoNote });
   }
   return { status: 200, body: { received: rows.length, counts, latest } };
 }
