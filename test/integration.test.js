@@ -7311,18 +7311,32 @@ test('crypto wallet: its own balance (separate from the Master Wallet), receive,
   assert.equal(noIssuing.status, 403);
   assert.equal(noIssuing.data.error.code, 'LIVE_NOT_ENABLED'); // no Issuing Live access yet
   mockTables.merchants.find((m) => m.id === live.merchantId).issuing_live_enabled = true;
-  // no card holder needed: the partner asks for Tier 1, so the merchant is asked for the identity details
+  // no card holder needed: the partner asks for Tier 1, so the merchant is asked ONLY for what we do not already know
+  const liveMerchant = mockTables.merchants.find((m) => m.id === live.merchantId);
+  liveMerchant.phone = '50937001234'; // known from the account: not asked
   const asked = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT' } });
   assert.equal(asked.status, 422);
   assert.equal(asked.data.error.code, 'PROFILE_REQUIRED');
   assert.ok(asked.data.error.required.includes('date_of_birth') && asked.data.error.required.includes('address.street'));
+  assert.ok(!asked.data.error.required.includes('phone')); // the account's phone is used
   const partial = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT', profile: { date_of_birth: '1990-05-17' } } });
-  assert.equal(partial.data.error.code, 'PROFILE_REQUIRED'); // still incomplete: asked again
-  const profile = { date_of_birth: '1990-05-17', identification_number: 'HT123456789', phone: '+50937001234', address: { street: '12 Rue Capois', city: 'Port-au-Prince', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } };
+  assert.equal(partial.data.error.code, 'PROFILE_REQUIRED'); // still incomplete: asked again, without the date of birth
+  assert.ok(!partial.data.error.required.includes('date_of_birth')); // and what was given is already kept
+  const profile = { identification_number: 'HT123456789', address: { street: '12 Rue Capois', city: 'Port-au-Prince', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } };
   const made = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT', profile } });
   assert.equal(made.status, 201);
   assert.ok(made.data.address);
+  const kept = mockTables.merchant_identity.find((r) => r.merchant_id === live.merchantId); // saved, so nobody is asked twice
+  assert.ok(kept && kept.identification_number === 'HT123456789' && kept.date_of_birth === '1990-05-17' && kept.address.street === '12 Rue Capois');
   assert.equal((await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDC' } })).status, 201); // the customer is Tier 1 now: no more questions
+
+  // a merchant whose card holder is already enrolled is not asked anything: the holder's details are used and kept
+  const live2 = await liveWithGateway('cryptolive2', 0);
+  mockTables.merchants.find((m) => m.id === live2.merchantId).issuing_live_enabled = true;
+  mockTables.maplerad_customers.push({ id: 'mpc_known1', merchant_id: live2.merchantId, status: 'enrolled', maplerad_customer_id: 'cus_known_holder', first_name: 'A', last_name: 'B', email: 'a@b.c', country: 'HT', dob: '1985-02-03', identification_number: 'HT999', phone_number: '37009999', phone_short_code: '+509', address: { street: '1 Rue X', city: 'Cap-Haïtien', state: 'Nord', postal_code: 'HT1000', country: 'HT' }, created_at: new Date().toISOString() });
+  const auto = await api('POST', '/dashboard/crypto/addresses', { token: live2.token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(auto.status, 201);
+  assert.equal(mockTables.merchant_identity.find((r) => r.merchant_id === live2.merchantId).identification_number, 'HT999');
 });
 
 test('crypto wallet: a partner customer left by an earlier failed attempt is taken back, not refused as "already exists"', async () => {

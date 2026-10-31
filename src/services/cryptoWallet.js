@@ -78,7 +78,8 @@ function readProfile(profile) {
   const missing = PROFILE_FIELDS.filter((k) => !String(get(k) == null ? '' : get(k)).trim());
   const dob = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(p.date_of_birth || ''));
   if (p.date_of_birth && !dob && !missing.includes('date_of_birth')) missing.push('date_of_birth');
-  const digits = String(p.phone || '').replace(/[^\d+]/g, '');
+  let digits = String(p.phone || '').replace(/[^\d+]/g, '');
+  if (digits && !digits.startsWith('+') && digits.length >= 9) digits = `+${digits}`; // a number saved with its country code but no plus
   const ph = /^\+(\d{1,3})(\d{6,12})$/.exec(digits);
   if (p.phone && !ph && !missing.includes('phone')) missing.push('phone');
   if (missing.length) return { missing };
@@ -106,10 +107,47 @@ function sandboxProfile(merchant) {
 
 const needsTierOne = (err) => /tier\s*1/i.test(String((err && (err.providerRawMessage || err.message)) || ''));
 
-function profileRequired(reason) {
-  const err = httpError(422, 'PROFILE_REQUIRED', reason || "Pour créer votre wallet crypto, le fournisseur demande les informations d'identité du titulaire du compte. Complétez-les et réessayez.");
-  err.details = { required: PROFILE_FIELDS };
+function profileRequired(missing, known) {
+  const err = httpError(422, 'PROFILE_REQUIRED', "Pour créer votre premier wallet crypto, le fournisseur demande quelques informations d'identité du propriétaire du compte. Complétez-les : elles ne sont demandées qu'une fois.");
+  err.details = { required: missing, known: Object.keys(known || {}) };
   return err;
+}
+
+/** Puts together what we already know about the person behind the account, so only what is missing is asked: saved details, a card holder already enrolled, the account's phone and country. */
+async function knownProfile(merchant) {
+  const out = { address: {} };
+  const take = (src) => {
+    if (!src) return;
+    if (src.date_of_birth && !out.date_of_birth) out.date_of_birth = String(src.date_of_birth);
+    if (src.identification_number && !out.identification_number) out.identification_number = String(src.identification_number);
+    if (src.phone && !out.phone) out.phone = String(src.phone);
+    const a = src.address && typeof src.address === 'object' ? src.address : {};
+    for (const k of ['street', 'city', 'state', 'postal_code', 'country']) if (a[k] && !out.address[k]) out.address[k] = String(a[k]);
+  };
+  take(await supabase.selectOne('merchant_identity', { merchant_id: merchant.id }).catch(() => null));
+  const holders = await supabase.select('maplerad_customers', { merchant_id: merchant.id }, { order: 'created_at.desc', limit: 10 }).catch(() => []);
+  const h = (holders || []).find((x) => x.status === 'enrolled' && x.dob && x.identification_number);
+  if (h) take({ date_of_birth: h.dob, identification_number: h.identification_number, phone: h.phone_number ? `${h.phone_short_code || ''}${h.phone_number}` : null, address: h.address });
+  take({ phone: merchant.phone, address: { country: merchant.onboarding && merchant.onboarding.country } });
+  return out;
+}
+
+/** What the merchant just typed wins over what we knew; empty fields never erase anything. */
+function mergeProfile(known, given) {
+  const g = given && typeof given === 'object' ? given : {};
+  const out = Object.assign({}, known, { address: Object.assign({}, known.address || {}) });
+  for (const k of ['date_of_birth', 'identification_number', 'phone']) if (String(g[k] || '').trim()) out[k] = String(g[k]).trim();
+  const a = g.address && typeof g.address === 'object' ? g.address : {};
+  for (const k of ['street', 'city', 'state', 'postal_code', 'country']) if (String(a[k] || '').trim()) out.address[k] = String(a[k]).trim();
+  return out;
+}
+
+/** Keeps the details we were given (kept for our records, never returned by the API) so nobody is asked twice. */
+async function saveIdentity(merchantId, p) {
+  const row = { date_of_birth: p.date_of_birth, identification_number: p.identification_number, phone: p.phone, address: p.address, source: 'merchant', updated_at: new Date().toISOString() };
+  const existing = await supabase.selectOne('merchant_identity', { merchant_id: merchantId }).catch(() => null);
+  if (existing) await supabase.update('merchant_identity', { merchant_id: merchantId }, row);
+  else await supabase.insert('merchant_identity', Object.assign({ merchant_id: merchantId }, row));
 }
 
 /** Makes the partner customer Tier 1. "already" means it is: that is the state we want. */
@@ -183,9 +221,13 @@ async function getOrCreateAddress(merchant, mode, chain, coin, profile) {
       let res;
       try { res = await generate(); } catch (err) {
         if (!needsTierOne(err)) throw err;
-        // The partner asks for Tier 1: the merchant gives the identity details it needs, and only then do we continue.
-        const read = readProfile(profile);
-        if (read.missing) throw profileRequired();
+        // The partner asks for Tier 1: we use what we already know about the account's owner and ask only for what is missing.
+        const merged = mergeProfile(await knownProfile(merchant), profile);
+        const read = readProfile(merged);
+        // What the merchant gave is kept even when something is still missing, so it is never typed twice.
+        if (profile && typeof profile === 'object') await saveIdentity(merchant.id, merged).catch(() => {});
+        if (read.missing) throw profileRequired(read.missing, merged);
+        await saveIdentity(merchant.id, merged);
         await upgradeToTierOne(provider, customerId, read.details);
         res = await generate();
       }

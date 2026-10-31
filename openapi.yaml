@@ -213,7 +213,7 @@ paths:
                       properties: { street: { type: string }, city: { type: string }, state: { type: string }, postal_code: { type: string }, country: { type: string, example: HT, description: "Code ISO à 2 lettres." } }
       responses:
         "201": { description: "Wallet créé : id, coin, chain, address." }
-        "422": { description: "PROFILE_REQUIRED : le fournisseur demande les informations d'identité du titulaire. La réponse contient `required`, la liste des champs à envoyer dans `profile`. Une fois acceptées, les wallets suivants ne les redemandent pas." }
+        "422": { description: "PROFILE_REQUIRED : le fournisseur demande les informations d'identité du propriétaire du compte. `required` ne liste que ce que nous ne connaissons pas encore (le téléphone et le pays du compte, ou un titulaire de carte déjà enregistré, sont réutilisés). Ce qui est envoyé est conservé : rien n'est demandé deux fois." }
         "200": { description: "Ce wallet existait déjà." }
         "400": { description: "INVALID_CRYPTO (coin ou chaîne non disponible)" }
         "403": { description: "LIVE_NOT_ENABLED : pas d'accès Issuing Live." }
