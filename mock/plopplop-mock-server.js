@@ -66,7 +66,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/__control/confirm-payment') {
     const p = payments.get(body.refference_id);
-    if (p) { p.status = body.trans_status || 'ok'; p.refAnswer = body.ref_answer || null; p.reference = body.refference_id; } // a test can make the partner answer "OK", "Ok "...
+    if (p) { p.status = body.trans_status || 'ok'; p.refAnswer = body.ref_answer || null; p.refMissing = !!body.ref_missing; p.reference = body.refference_id; } // a test can make the partner answer "OK", "Ok "...
     return send(res, 200, { ok: true });
   }
 
@@ -96,6 +96,7 @@ const server = http.createServer(async (req, res) => {
     if (client_id !== CLIENT_ID) return send(res, 404, { status: false, message: 'Client introuvable.' });
     // The partner accepts either the merchant reference or its own transaction id.
     const p = refference_id ? payments.get(refference_id) : [...payments.values()].find((x) => String(x.transaction_id) === String(transaction_id));
+    if (refference_id && p && p.refMissing) return send(res, 404, { status: false, message: 'Transaction not found' }); // the partner does not know our reference (as seen in production)
     if (!p) return send(res, 404, { status: false, message: 'Transaction introuvable.' });
     return send(res, 200, {
       status: true,

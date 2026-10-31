@@ -7616,24 +7616,49 @@ test('payment return page: the customer coming back from the MonCash/Natcash par
   assert.equal(res.status, 200);
 });
 
-test('a payment the partner shows as paid by its transaction id is settled even when the answer by reference says "not yet"', async () => {
+test('payments are read by the partner transaction id first: the partner may not know our reference (404) while it knows the transaction', async () => {
   const live = await liveWithGateway('bytx', 0);
   const orchestrator = require('../src/services/paymentOrchestrator');
-  const mk = async (ref) => { const r = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 470, currency: 'HTG', method: 'natcash', reference: ref } }); return mockTables.payments.find((p) => p.id === r.data.id); };
-  const split = (row) => fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference, trans_status: 'OK', ref_answer: 'no' }) });
+  const mk = async (ref, amount) => { const r = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: amount || 470, currency: 'HTG', method: 'natcash', reference: ref } }); return mockTables.payments.find((p) => p.id === r.data.id); };
+  const state = (row, trans_status, extra) => fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ refference_id: row.plopplop_reference, trans_status }, extra || {})) });
 
-  const old = await mk('BYTX-1');
-  await split(old);
-  // too fresh: only the answer by reference is read, which says no
-  assert.equal((await orchestrator.refreshStatus(live.merchantId, old)).status, 'pending');
-  // it has waited: the transaction id says paid for the same reference and amount, so it settles and credits once
-  old.created_at = new Date(Date.now() - 3600 * 1000).toISOString();
-  assert.equal((await orchestrator.refreshStatus(live.merchantId, old)).status, 'succeeded');
+  // as in production: lookup by reference = 404, lookup by transaction id = ok
+  const paid = await mk('BYTX-1');
+  await state(paid, 'ok', { ref_missing: true });
+  assert.equal((await orchestrator.refreshStatus(live.merchantId, paid)).status, 'succeeded'); // settled at once, credited once
+  const bal = await require('../src/services/ledger').getBalance(live.merchantId, 'gateway', 'HTG', 'live');
+  assert.ok(bal > 0);
+
+  // the transaction id says "no": it stays pending (and is not reported as "not found")
+  const waiting = await mk('BYTX-2');
+  await state(waiting, 'no', { ref_missing: true });
+  assert.equal((await orchestrator.refreshStatus(live.merchantId, waiting)).status, 'pending');
+  assert.equal(require('../src/services/paymentHealth').lastAnswer(waiting.id).kind, 'waiting');
 
   // a different amount at the partner is never trusted
-  const other = await mk('BYTX-2');
-  await split(other);
-  other.created_at = new Date(Date.now() - 3600 * 1000).toISOString();
+  const other = await mk('BYTX-3');
+  await state(other, 'ok', { ref_missing: true });
   other.amount = 999;
   assert.equal((await orchestrator.refreshStatus(live.merchantId, other)).status, 'pending');
+  // two payments of ours with the same transaction id: neither is trusted by it
+  const twin = await mk('BYTX-4');
+  await state(twin, 'ok', { ref_missing: true });
+  const twin2 = await mk('BYTX-5');
+  twin2.plopplop_transaction_id = twin.plopplop_transaction_id;
+  assert.equal((await orchestrator.refreshStatus(live.merchantId, twin)).status, 'pending');
 });
+
+test('PlopPlop webhook: a notification that names the payment differently is matched by its transaction id', async () => {
+  const crypto = require('crypto');
+  const config = require('../src/config');
+  const live = await liveWithGateway('plopbytx', 0);
+  const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 300, currency: 'HTG', method: 'natcash', reference: 'PLOPTX-1' } });
+  const row = mockTables.payments.find((p) => p.id === pay.data.id);
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference, trans_status: 'ok', ref_missing: true }) });
+  const body = JSON.stringify({ event: 'transaction.status_changed', timestamp: new Date().toISOString(), transaction: { transaction_id: row.plopplop_transaction_id, reference_id: 'SOMETHING-ELSE', amount: 300, new_status: 'ok' } });
+  const sig = 'sha256=' + crypto.createHmac('sha256', config.plopplop.clientSecret).update(body).digest('hex');
+  const res = await fetch(baseUrl + '/webhooks/plopplop', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Webhook-Signature': sig }, body });
+  assert.equal(res.status, 200);
+  assert.equal(mockTables.payments.find((p) => p.id === row.id).status, 'succeeded');
+});
+

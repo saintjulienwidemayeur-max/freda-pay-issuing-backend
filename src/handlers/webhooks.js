@@ -114,12 +114,15 @@ async function receivePlopplop(ctx) {
   await supabase.insert('webhook_events', { id: eventId, provider: 'plopplop', event_type: event.event, payload: event }).catch(() => {});
 
   const orchestrator = require('../services/paymentOrchestrator');
-  const payment = await supabase.selectOne('payments', { plopplop_reference: reference });
+  // The partner may name the payment differently from our reference: its transaction id is the second way to find it.
+  const payment = (await supabase.selectOne('payments', { plopplop_reference: reference }))
+    || (t.transaction_id ? await supabase.selectOne('payments', { plopplop_transaction_id: String(t.transaction_id) }) : null);
   if (payment) {
     if (event.event === 'transaction.status_changed' || payment.status === 'pending') await orchestrator.refreshStatus(payment.merchant_id, payment);
     return { status: 200, body: { received: true } };
   }
-  const topup = await supabase.selectOne('wallet_topups', { plopplop_reference: reference });
+  const topup = (await supabase.selectOne('wallet_topups', { plopplop_reference: reference }))
+    || (t.transaction_id ? await supabase.selectOne('wallet_topups', { plopplop_transaction_id: String(t.transaction_id) }) : null);
   if (topup) {
     await require('../services/walletTopupOrchestrator').refreshAutoTopup(topup.merchant_id, topup);
     return { status: 200, body: { received: true } };

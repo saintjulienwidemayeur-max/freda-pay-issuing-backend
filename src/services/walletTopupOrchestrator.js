@@ -61,7 +61,14 @@ async function createAutoTopup({ merchantId, id, ownReference, plopplopReference
 async function refreshAutoTopup(merchantId, topup) {
   if (topup.status === 'succeeded' || topup.status === 'failed') return topup;
 
-  const res = await plopplop.verifyPayment({ refferenceId: topup.plopplop_reference });
+  // By the partner's transaction id first (it may not know our reference), then by reference. The amount must match when it returns one.
+  let res = null;
+  if (topup.plopplop_transaction_id) {
+    const byTx = await plopplop.verifyPayment({ transactionId: topup.plopplop_transaction_id }).catch(() => null);
+    const kind = byTx ? require('./paymentHealth').classify(byTx) : 'unreadable';
+    if (byTx && byTx.data && !['not_found', 'unreadable', 'error'].includes(kind) && (byTx.data.montant == null || Number(byTx.data.montant) === Number(topup.amount_htg))) res = byTx;
+  }
+  if (!res) res = await plopplop.verifyPayment({ refferenceId: topup.plopplop_reference });
   const confirmed = require('./paymentHealth').isConfirmed(res.data);
   if (!res.data || (!res.data.status && !confirmed)) return topup;
 
