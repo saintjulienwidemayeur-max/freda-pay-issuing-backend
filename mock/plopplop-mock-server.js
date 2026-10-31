@@ -92,9 +92,10 @@ const server = http.createServer(async (req, res) => {
 
   // ---- api/paiement-verify ----
   if (url.pathname === '/api/paiement-verify' && req.method === 'POST') {
-    const { client_id, refference_id } = body;
+    const { client_id, refference_id, transaction_id } = body;
     if (client_id !== CLIENT_ID) return send(res, 404, { status: false, message: 'Client introuvable.' });
-    const p = payments.get(refference_id);
+    // The partner accepts either the merchant reference or its own transaction id.
+    const p = refference_id ? payments.get(refference_id) : [...payments.values()].find((x) => String(x.transaction_id) === String(transaction_id));
     if (!p) return send(res, 404, { status: false, message: 'Transaction introuvable.' });
     return send(res, 200, {
       status: true,

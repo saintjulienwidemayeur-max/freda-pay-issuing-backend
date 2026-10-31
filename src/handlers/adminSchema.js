@@ -66,7 +66,15 @@ async function webhookEvents() {
     }
     latest.push({ at: r.created_at, event: r.event_type, type: p.type || null, direction: p.mode || null, status: p.status || null, amount_cents: p.amount == null ? null : p.amount, card_known: cardId ? !!card : (cryptoKnown !== null ? cryptoKnown : null), stored: stored !== null ? stored : cryptoStored, note: cryptoNote });
   }
-  return { status: 200, body: { received: rows.length, counts, latest } };
+  // The MonCash / Natcash partner's own notifications (transaction.created / transaction.status_changed): is it really calling us?
+  let plop = [];
+  try { plop = await supabase.select('webhook_events', { provider: 'plopplop' }, { order: 'created_at.desc', limit: 50 }); } catch (err) { plop = []; }
+  const plopplop = {
+    received: plop.length,
+    last_at: plop[0] ? plop[0].created_at : null,
+    latest: plop.slice(0, 10).map((r) => { const t = (r.payload && r.payload.transaction) || {}; return { at: r.created_at, event: r.event_type, reference: t.reference_id || null, new_status: t.new_status || t.status || null, amount: t.amount == null ? null : t.amount, method: t.method || null }; }),
+  };
+  return { status: 200, body: { received: rows.length, counts, latest, plopplop } };
 }
 
 /**
