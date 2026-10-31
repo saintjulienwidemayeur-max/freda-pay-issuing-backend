@@ -66,7 +66,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/__control/confirm-payment') {
     const p = payments.get(body.refference_id);
-    if (p) p.status = 'ok';
+    if (p) p.status = body.trans_status || 'ok'; // a test can make the partner answer "OK", "Ok "...
     return send(res, 200, { ok: true });
   }
 

@@ -9,16 +9,25 @@ const supabase = require('../lib/supabase');
 const answers = new Map(); // payment id -> { at, http_status, trans_status, message, kind }
 const run = { lastRunAt: null, lastChecked: 0, lastSettled: 0, runs: 0, errors: 0, lastError: null, lastErrorAt: null };
 
+/**
+ * The partner's payment status word, normalised (case and spaces do not matter: "OK", "ok " and "Ok" are the same answer).
+ * Settling a payment and the admin diagnostic both read it through these two helpers, so they can never disagree.
+ */
+const CONFIRMED = new Set(['ok', 'success', 'successful', 'succeeded', 'completed', 'complete', 'paid', 'confirmed', 'approved']);
+const WAITING = new Set(['no', 'pending', '', 'waiting', 'processing', 'initiated', 'created']);
+function transStatusOf(d) { return String(d && d.trans_status != null ? d.trans_status : '').trim().toLowerCase(); }
+function isConfirmed(d) { return !!d && CONFIRMED.has(transStatusOf(d)); }
+function isWaiting(d) { return !!d && WAITING.has(transStatusOf(d)); }
+
 function classify(res) {
   const d = res && res.data;
   const httpStatus = (res && res.httpStatus) || null;
   const msg = d && d.message ? String(d.message) : '';
   if (!d) return 'unreadable';
+  if (isConfirmed(d)) return 'confirmed';
   if (!d.status && (httpStatus === 404 || /introuvable|not found/i.test(msg))) return 'not_found';
   if (!d.status) return 'error';
-  const ts = String(d.trans_status == null ? '' : d.trans_status).trim().toLowerCase();
-  if (ts === 'ok') return 'confirmed';
-  if (ts === 'no' || ts === 'pending' || ts === '') return 'waiting';
+  if (isWaiting(d)) return 'waiting';
   return 'unexpected';
 }
 
@@ -78,4 +87,4 @@ async function snapshot() {
   };
 }
 
-module.exports = { note, forget, lastAnswer, recordRun, snapshot, classify, LABEL };
+module.exports = { note, forget, lastAnswer, recordRun, snapshot, classify, isConfirmed, isWaiting, transStatusOf, LABEL };
