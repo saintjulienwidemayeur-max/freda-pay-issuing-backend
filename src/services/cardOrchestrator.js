@@ -743,6 +743,7 @@ async function applyCardCreationWebhook({ mapleradReference, mapleradCardId, mas
   if (refundAmount > 0) {
     await refundMasterWalletForFailedCard(card.merchant_id, refundAmount, card.own_reference, card.id, card.mode);
   }
+  notifyCardCreationFailed(card, failureReason, refundAmount, verificationLink, linkExpireAt);
   webhookDispatcher.dispatch(card.merchant_id, 'card.failed', {
     id: card.id, reference: card.own_reference, kind: card.kind, brand: card.brand,
     failure_reason: failureReason,
@@ -1167,11 +1168,19 @@ async function applyCardTerminationWebhook(event, webhookMode) {
  */
 /**
  * A card that stays "pending" WITHOUT a partner reference never reached the partner: the server restarted between saving the card and
- * sending the request, or the request did not get through. Nothing can ever confirm it, so after 15 minutes it is closed as failed and what
+ * sending the request, or the request did not get through. Nothing can ever confirm it, so after 3 minutes it is closed as failed and what
  * the merchant was debited (preload + creation fee) is given back, once (markCardFailed is the claim). The team is told, in case the
  * partner did create a card whose answer was lost (it then shows at the partner without a match here).
  */
-const UNSENT_AFTER_MS = 15 * 60 * 1000;
+// The partner request holds the merchant's call and stops after 30 s, so a card still without a partner reference after 3 minutes is dead.
+/** Emails the merchant that a card was not created (best effort: a failed e-mail never undoes the refund). */
+function notifyCardCreationFailed(card, reason, refunded, verificationLink, linkExpiresAt) {
+  getMerchant(card.merchant_id)
+    .then((m) => require('./notify').cardCreationFailed(m, { reference: card.own_reference, reason, refunded, mode: card.mode, verificationLink, linkExpiresAt }))
+    .catch((e) => console.error(`Card failure e-mail not sent for ${card.id}: ${e.message}`)); // eslint-disable-line no-console
+}
+
+const UNSENT_AFTER_MS = 3 * 60 * 1000;
 async function failUnsentPendingCards() {
   const now = Date.now();
   const rows = (await supabase.select('cards', { status: 'pending', maplerad_reference: supabase.isNull(), created_at: supabase.gt(new Date(now - 14 * 24 * 3600 * 1000).toISOString()) }, { order: 'created_at.asc', limit: 100 }))
@@ -1183,6 +1192,7 @@ async function failUnsentPendingCards() {
     const refund = fromCents(c.initial_amount || 0) + Number(c.creation_fee || 0);
     if (refund > 0) await refundMasterWalletForFailedCard(c.merchant_id, refund, c.own_reference, c.id, c.mode);
     webhookDispatcher.dispatch(c.merchant_id, 'card.failed', { id: c.id, reference: c.own_reference, kind: c.kind, brand: c.brand, failure_reason: reason });
+    notifyCardCreationFailed(c, reason, refund);
     require('./adminAlerts').cardCreationStuck({ card: c, why: "Aucune référence du fournisseur : la demande n'est jamais partie. La carte a été fermée et le marchand remboursé. Vérifiez chez le fournisseur qu'aucune carte orpheline n'a été créée." }).catch(() => {});
     failed += 1;
   }

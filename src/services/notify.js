@@ -89,6 +89,27 @@ function cardRemovedByAdmin(merchant, { reference, refunded }) {
   }), 'card-removed-by-admin');
 }
 
+/** A card the merchant asked for did not get created: what happened, the refund, and (when the partner gave one) the link to redo the identity check. */
+function cardCreationFailed(merchant, { reference, reason, refunded, mode, verificationLink, linkExpiresAt }) {
+  const sandbox = mode === 'live' ? '' : ' (Sandbox, argent de test)';
+  const paragraphs = [
+    hello(merchant),
+    `La création de la carte **${reference}** n'a pas abouti${sandbox}.`,
+    `Raison : ${String(reason || "la demande n'a pas pu être traitée").replace(/\s*Les montants débités ont été remboursés\.?$/, '')}`,
+    refunded > 0 ? `Les montants débités (**${Number(refunded).toFixed(2)} $**) ont été remboursés sur votre Master Wallet.` : 'Aucun montant ne reste débité.',
+  ];
+  if (verificationLink) paragraphs.push(`Le titulaire peut refaire sa vérification d'identité avec ce lien${linkExpiresAt ? ` (valable jusqu'au ${new Date(linkExpiresAt).toLocaleString('fr-FR')})` : ''} : ${verificationLink}`);
+  paragraphs.push('Vous pouvez réessayer la création. Si cela se répète, répondez à cet email ou écrivez-nous à issuing@fredapay.com.');
+  return dispatch(merchant, buildEmail({
+    subject: `La création de la carte ${reference} a échoué : Freda Pay Issuing`,
+    eyebrow: 'Création de carte',
+    tone: 'warning',
+    heading: "Une carte n'a pas pu être créée",
+    paragraphs,
+    button: { label: 'Ouvrir mon tableau de bord', url: String(DASHBOARD) },
+  }), 'card-creation-failed');
+}
+
 function accountRestored(merchant) {
   return dispatch(merchant, buildEmail({
     subject: 'Votre compte Freda Pay Issuing est de nouveau actif',
@@ -340,4 +361,4 @@ function passwordChanged(to, name) {
   }), 'password-changed');
 }
 
-module.exports = { cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited, guaranteeChanged };
+module.exports = { cardCreationFailed, cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited, guaranteeChanged };
