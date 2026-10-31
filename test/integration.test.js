@@ -7311,10 +7311,18 @@ test('crypto wallet: its own balance (separate from the Master Wallet), receive,
   assert.equal(noIssuing.status, 403);
   assert.equal(noIssuing.data.error.code, 'LIVE_NOT_ENABLED'); // no Issuing Live access yet
   mockTables.merchants.find((m) => m.id === live.merchantId).issuing_live_enabled = true;
-  mockTables.maplerad_customers = mockTables.maplerad_customers.filter((h) => h.merchant_id !== live.merchantId);
-  const noHolder = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT' } });
-  assert.equal(noHolder.status, 400);
-  assert.equal(noHolder.data.error.code, 'IDENTITY_REQUIRED'); // Live needs a verified holder: the partner requires a Tier 1 customer
+  // no card holder needed: the partner asks for Tier 1, so the merchant is asked for the identity details
+  const asked = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT' } });
+  assert.equal(asked.status, 422);
+  assert.equal(asked.data.error.code, 'PROFILE_REQUIRED');
+  assert.ok(asked.data.error.required.includes('date_of_birth') && asked.data.error.required.includes('address.street'));
+  const partial = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT', profile: { date_of_birth: '1990-05-17' } } });
+  assert.equal(partial.data.error.code, 'PROFILE_REQUIRED'); // still incomplete: asked again
+  const profile = { date_of_birth: '1990-05-17', identification_number: 'HT123456789', phone: '+50937001234', address: { street: '12 Rue Capois', city: 'Port-au-Prince', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } };
+  const made = await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDT', profile } });
+  assert.equal(made.status, 201);
+  assert.ok(made.data.address);
+  assert.equal((await api('POST', '/dashboard/crypto/addresses', { token: live.token, body: { chain: 'solana', coin: 'USDC' } })).status, 201); // the customer is Tier 1 now: no more questions
 });
 
 test('crypto wallet: a partner customer left by an earlier failed attempt is taken back, not refused as "already exists"', async () => {

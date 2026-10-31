@@ -57,10 +57,10 @@ async function overview(ctx) {
 
 /** POST /dashboard/crypto/addresses { chain, coin } : the deposit address for this coin on this chain (created the first time). */
 async function createAddress(ctx) {
-  const { chain, coin } = ctx.body || {};
+  const { chain, coin, profile } = ctx.body || {};
   const mode = await resolveMode(ctx);
   const merchant = await loadMerchant(ctx, mode);
-  const addr = await cryptoWallet.getOrCreateAddress(merchant, mode, String(chain || '').toLowerCase(), String(coin || '').toUpperCase());
+  const addr = await cryptoWallet.getOrCreateAddress(merchant, mode, String(chain || '').toLowerCase(), String(coin || '').toUpperCase(), profile);
   return { status: 201, body: cryptoWallet.toPublicAddress(addr) };
 }
 
@@ -132,9 +132,9 @@ async function apiListWallets(ctx) {
 /** POST /v1/crypto/wallets { coin, chain } : creates the wallet (a deposit address) for a coin on a chain; asking again returns the same one. */
 async function apiCreateWallet(ctx) {
   const { mode, merchant } = await guardApi(ctx);
-  const { chain, coin } = ctx.body || {};
+  const { chain, coin, profile } = ctx.body || {};
   const existing = await supabase.selectOne('crypto_addresses', { merchant_id: merchant.id, mode, chain: String(chain || '').toLowerCase(), coin: String(coin || '').toUpperCase() });
-  const addr = await cryptoWallet.getOrCreateAddress(merchant, mode, String(chain || '').toLowerCase(), String(coin || '').toUpperCase());
+  const addr = await cryptoWallet.getOrCreateAddress(merchant, mode, String(chain || '').toLowerCase(), String(coin || '').toUpperCase(), profile);
   return { status: existing ? 200 : 201, body: publicWallet(addr) };
 }
 

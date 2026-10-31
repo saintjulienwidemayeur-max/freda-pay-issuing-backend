@@ -184,7 +184,7 @@ paths:
       description: |
         Chaque wallet est une adresse de dépôt pour une cryptomonnaie (USDT ou USDC) sur une chaîne (solana, ethereum, polygon, bsc, tron).
         Le wallet crypto garde son propre solde, séparé du Master Wallet. Disponible en Sandbox (clé `sk_test_...`) et en Live (clé `sk_live_...`).
-        Le Live demande l'accès Issuing Live approuvé (`403 LIVE_NOT_ENABLED` sinon) et un titulaire de carte vérifié (`400 IDENTITY_REQUIRED` sinon).
+        Le Live demande l'accès Issuing Live approuvé (`403 LIVE_NOT_ENABLED` sinon). Aucun titulaire de carte n'est nécessaire pour créer un wallet.
       responses:
         "200": { description: "Les wallets, et les cryptomonnaies et chaînes disponibles (supported)." }
     post:
@@ -195,12 +195,28 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [coin, chain], properties: { coin: { type: string, enum: [USDT, USDC], example: USDT }, chain: { type: string, enum: [solana, ethereum, polygon, bsc, tron], example: solana } } }
+            schema:
+              type: object
+              required: [coin, chain]
+              properties:
+                coin: { type: string, enum: [USDT, USDC], example: USDT }
+                chain: { type: string, enum: [solana, ethereum, polygon, bsc, tron], example: solana }
+                profile:
+                  type: object
+                  description: "Informations d'identité du titulaire du compte, à envoyer seulement quand l'API répond 422 PROFILE_REQUIRED (le fournisseur les demande une fois, pour le premier wallet)."
+                  properties:
+                    date_of_birth: { type: string, example: "1990-05-17", description: "YYYY-MM-DD" }
+                    identification_number: { type: string, example: "HT123456789" }
+                    phone: { type: string, example: "+50937001234", description: "Avec l'indicatif du pays." }
+                    address:
+                      type: object
+                      properties: { street: { type: string }, city: { type: string }, state: { type: string }, postal_code: { type: string }, country: { type: string, example: HT, description: "Code ISO à 2 lettres." } }
       responses:
         "201": { description: "Wallet créé : id, coin, chain, address." }
+        "422": { description: "PROFILE_REQUIRED : le fournisseur demande les informations d'identité du titulaire. La réponse contient `required`, la liste des champs à envoyer dans `profile`. Une fois acceptées, les wallets suivants ne les redemandent pas." }
         "200": { description: "Ce wallet existait déjà." }
         "400": { description: "INVALID_CRYPTO (coin ou chaîne non disponible)" }
-        "403": { description: "LIVE_NOT_ENABLED : pas d'accès Issuing Live. 400 IDENTITY_REQUIRED en Live sans titulaire vérifié." }
+        "403": { description: "LIVE_NOT_ENABLED : pas d'accès Issuing Live." }
 
   /crypto/balance:
     get:
