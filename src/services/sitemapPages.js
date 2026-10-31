@@ -33,6 +33,9 @@ const PAGES = [
   { path: '/a-propos', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
   { path: '/paiement-par-carte-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-26', alternates: [{ lang: 'fr', path: '/paiement-par-carte-haiti' }, { lang: 'en', path: '/en/card-payments-haiti' }, { lang: 'x-default', path: '/paiement-par-carte-haiti' }] },
   { path: '/cartes-virtuelles-haiti', changefreq: 'monthly', priority: '0.9', updated: '2026-10-26' },
+  { path: '/wallet-crypto-api', changefreq: 'monthly', priority: '0.9', updated: '2026-10-31', alternates: [{ lang: 'fr', path: '/wallet-crypto-api' }, { lang: 'en', path: '/en/crypto-wallet-api' }] },
+  { path: '/en/crypto-wallet-api', changefreq: 'monthly', priority: '0.8', updated: '2026-10-31', alternates: [{ lang: 'fr', path: '/wallet-crypto-api' }, { lang: 'en', path: '/en/crypto-wallet-api' }] },
+  { path: '/docs/portefeuille-crypto', changefreq: 'monthly', priority: '0.7', updated: '2026-10-31' },
   { path: '/docs', changefreq: 'weekly', priority: '0.9', updated: '2026-10-26' },
   // `images`: pictures that belong to the page, so Google Images finds every one of them (both team portraits).
   { path: '/notre-equipe', changefreq: 'monthly', priority: '0.6', updated: '2026-10-04', images: ['/team/widemayeur-saint-julien.jpg', '/team/loudjina-tanis.jpg'] },

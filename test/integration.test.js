@@ -7687,3 +7687,14 @@ test('the reference given to the MonCash/Natcash partner is short and plain (the
   const second = await api('POST', '/dashboard/payments', { token, body: { amount: 500, currency: 'HTG', method: 'moncash', reference: 'SHORT-2' } });
   assert.notEqual(mockTables.payments.find((p) => p.id === second.data.id).plopplop_reference, row.plopplop_reference);
 });
+
+test('the sitemap lists the crypto wallet pages with their French/English alternates', async () => {
+  const res = await fetch(baseUrl + '/sitemap.xml');
+  assert.equal(res.status, 200);
+  const xml = await res.text();
+  // the site address depends on the environment: only the paths are checked
+  assert.match(xml, /<loc>[^<]*\/wallet-crypto-api<\/loc>/);
+  assert.match(xml, /<loc>[^<]*\/en\/crypto-wallet-api<\/loc>/);
+  assert.match(xml, /<loc>[^<]*\/docs\/portefeuille-crypto<\/loc>/);
+  assert.match(xml, /hreflang="en" href="[^"]*\/en\/crypto-wallet-api"/);
+});
