@@ -1089,7 +1089,32 @@ async function applyCardTerminationWebhook(event, webhookMode) {
  * "pending" for ever (money debited, no card shown). Pending cards older than 10 minutes are looked up at the partner by their
  * reference: if the card exists it is activated exactly like the notification would do; one still unknown after 30 minutes alerts the team.
  */
+/**
+ * A card that stays "pending" WITHOUT a partner reference never reached the partner: the server restarted between saving the card and
+ * sending the request, or the request did not get through. Nothing can ever confirm it, so after 15 minutes it is closed as failed and what
+ * the merchant was debited (preload + creation fee) is given back, once (markCardFailed is the claim). The team is told, in case the
+ * partner did create a card whose answer was lost (it then shows at the partner without a match here).
+ */
+const UNSENT_AFTER_MS = 15 * 60 * 1000;
+async function failUnsentPendingCards() {
+  const now = Date.now();
+  const rows = (await supabase.select('cards', { status: 'pending', maplerad_reference: supabase.isNull(), created_at: supabase.gt(new Date(now - 14 * 24 * 3600 * 1000).toISOString()) }, { order: 'created_at.asc', limit: 100 }))
+    .filter((c) => !c.deleted_at && now - new Date(c.created_at).getTime() > UNSENT_AFTER_MS);
+  let failed = 0;
+  for (const c of rows) {
+    const reason = "La demande de création n'a pas pu être envoyée au fournisseur de cartes. Les montants débités ont été remboursés : vous pouvez réessayer.";
+    if (!(await markCardFailed(c.id, reason))) continue;
+    const refund = fromCents(c.initial_amount || 0) + Number(c.creation_fee || 0);
+    if (refund > 0) await refundMasterWalletForFailedCard(c.merchant_id, refund, c.own_reference, c.id, c.mode);
+    webhookDispatcher.dispatch(c.merchant_id, 'card.failed', { id: c.id, reference: c.own_reference, kind: c.kind, brand: c.brand, failure_reason: reason });
+    require('./adminAlerts').cardCreationStuck({ card: c, why: "Aucune référence du fournisseur : la demande n'est jamais partie. La carte a été fermée et le marchand remboursé. Vérifiez chez le fournisseur qu'aucune carte orpheline n'a été créée." }).catch(() => {});
+    failed += 1;
+  }
+  return { failed };
+}
+
 async function reconcilePendingCardCreations(limit) {
+  await failUnsentPendingCards().catch((e) => console.error('Unsent card clean-up:', e.message)); // eslint-disable-line no-console
   const now = Date.now();
   const rows = (await supabase.select('cards', { status: 'pending', created_at: supabase.gt(new Date(now - 3 * 24 * 3600 * 1000).toISOString()) }, { order: 'created_at.asc', limit: 100 }))
     .filter((c) => c.maplerad_reference && now - new Date(c.created_at).getTime() > 10 * 60 * 1000)
@@ -1282,6 +1307,7 @@ function transactionWebhookData(card, t) {
 }
 
 module.exports = {
+  failUnsentPendingCards,
   lookupProviderCustomerId,
   isAlreadyEnrolledError,
   transactionWebhookData,

@@ -117,6 +117,10 @@ async function diagnose(merchantId) {
   else checks.push((holders || []).length ? ok('holders', 'Cartes', 'Titulaires de cartes', `${enrolled} enregistré(s).`) : ok('holders', 'Cartes', 'Titulaires de cartes', 'Aucun (pas nécessaire pour une carte entreprise).'));
   const failedCards = (cards || []).filter((c) => c.status === 'failed');
   if (failedCards.length) checks.push(warn('cards_failed', 'Cartes', 'Créations de cartes échouées', `${failedCards.length} carte(s) échouée(s). Dernière : ${failedCards[0].failure_reason || 'raison inconnue'}.`, 'Voyez les erreurs du fournisseur ci-dessous.'));
+  const unsent = (cards || []).filter((c) => c.status === 'pending' && !c.maplerad_reference && Date.now() - new Date(c.created_at).getTime() > 10 * 60 * 1000);
+  const slow = (cards || []).filter((c) => c.status === 'pending' && c.maplerad_reference && Date.now() - new Date(c.created_at).getTime() > 30 * 60 * 1000);
+  if (unsent.length) checks.push(fail('cards_unsent', 'Cartes', 'Cartes restées en création', `${unsent.length} carte(s) en création sans référence du fournisseur : la demande n'est jamais partie. Elles sont fermées et remboursées automatiquement après 15 minutes.`, "Si cela se répète, voyez « Erreurs cartes » : le service des cartes n'est peut-être pas joignable (clé, adresse IP autorisée, secret de webhook)."));
+  if (slow.length) checks.push(warn('cards_slow', 'Cartes', 'Cartes en attente de confirmation', `${slow.length} carte(s) envoyée(s) au fournisseur mais pas encore confirmée(s) depuis plus de 30 minutes.`, "Vérifiez que le webhook du fournisseur arrive (admin > diagnostic des notifications)."));
   for (const mode of ['sandbox', 'live']) {
     if (mode === 'live' && !m.issuing_live_enabled) continue;
     const bal = await safe(() => ledger.getBalance(m.id, 'master_wallet', 'USD', mode), 0);
