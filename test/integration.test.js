@@ -7504,6 +7504,7 @@ test('admin payment problems: merchants with stuck or failing payments, every tr
   assert.equal(det.data.counts.pending, 2);
   assert.equal(det.data.by_mode.live.pending, 2); // where the payments really went: Live here
   assert.equal(det.data.transactions.length, 2);
+  assert.ok(det.data.transactions[0].partner_reference); // what to look up at the partner
   assert.equal(det.data.integration_errors[0].code, 'INVALID_AMOUNT');
 
   // the partner has not confirmed: nothing is credited
@@ -7545,4 +7546,42 @@ test('a payment the partner confirms is settled whatever the case of its status 
   const rowX = mockTables.payments.find((p) => p.id === unknown.data.id);
   await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: rowX.plopplop_reference, trans_status: 'refused' }) });
   assert.equal((await orchestrator.refreshStatus(live.merchantId, rowX)).status, 'pending'); // an unknown word never settles
+});
+
+test('PlopPlop webhook: a signed status change makes us read the payment at the partner and settle it; a forged one credits nothing', async () => {
+  const crypto = require('crypto');
+  const config = require('../src/config');
+  const live = await liveWithGateway('plopwebhook', 0);
+  const pay = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 600, currency: 'HTG', method: 'natcash', reference: 'PLOPHOOK-1' } });
+  const row = mockTables.payments.find((p) => p.id === pay.data.id);
+  const send = async (body, secret) => {
+    const raw = JSON.stringify(body);
+    const headers = { 'Content-Type': 'application/json' };
+    if (secret !== null) headers['X-Webhook-Signature'] = 'sha256=' + crypto.createHmac('sha256', secret == null ? config.plopplop.clientSecret : secret).update(raw).digest('hex');
+    const res = await fetch(baseUrl + '/webhooks/plopplop', { method: 'POST', headers, body: raw });
+    return { status: res.status, data: await res.json().catch(() => null) };
+  };
+  const evt = (status) => ({ event: 'transaction.status_changed', timestamp: new Date().toISOString(), transaction: { transaction_id: row.plopplop_transaction_id || 't1', reference_id: row.plopplop_reference, amount: 600, method: 'natcash', old_status: 'no', new_status: status }, merchant: { id: 1, client_id: 'X' } });
+
+  // the partner finds the same payment by the transaction id it returned (a second way to ask)
+  const plop = require('../src/services/plopplop');
+  const byTx = await plop.verifyPayment({ transactionId: row.plopplop_transaction_id });
+  assert.equal(byTx.data.trans_status, 'no');
+  assert.equal((await send(evt('ok'), 'a-wrong-secret')).status, 401); // a wrong signature is refused
+  // a notification says ok but the partner has NOT confirmed: nothing is credited (we always read it again at the partner)
+  assert.equal((await send(evt('ok'))).status, 200);
+  assert.equal(mockTables.payments.find((p) => p.id === row.id).status, 'pending');
+  // the partner confirms; its next notification settles the payment at once
+  await fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference, trans_status: 'OK' }) });
+  const second = { ...evt('ok'), timestamp: new Date(Date.now() + 1000).toISOString() };
+  assert.equal((await send(second)).status, 200);
+  assert.equal(mockTables.payments.find((p) => p.id === row.id).status, 'succeeded');
+  assert.equal((await send(second)).data.duplicate, true); // the same notification twice is read once
+  // not one of ours, and not JSON
+  assert.equal((await send({ event: 'transaction.created', transaction: { reference_id: 'UNKNOWN-REF' } })).data.ignored, true);
+  const bad = await fetch(baseUrl + '/webhooks/plopplop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: 'nope' });
+  assert.equal(bad.status, 400);
+  // the admin sees the partner's notifications
+  const ev = await api('GET', '/admin/diagnostic/webhook-events', { token: (await adminLogin('owner')).token });
+  assert.ok(ev.data.plopplop.received >= 2 && ev.data.plopplop.latest[0].reference);
 });

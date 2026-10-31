@@ -207,6 +207,7 @@ router.post('/dashboard/cards/:id/terminate', session.requireSession, cardHandle
 // ---- Webhooks (PUBLIC - called by providers, authenticated via signature, not session/API key) ----
 router.post('/webhooks/maplerad', webhookHandlers.receiveMaplerad);
 router.post('/webhooks/tranzak', webhookHandlers.receiveTranzak);
+router.post('/webhooks/plopplop', webhookHandlers.receivePlopplop);
 router.post('/webhooks/inbound-email', adminInboxHandlers.receive);
 
 // ---- Outbound webhook management (register the URL Freda Pay notifies on events) ----

@@ -90,12 +90,15 @@ async function createPayment({ refferenceId, montant, paymentMethod, phoneNumber
   return postJson('/api/paiement-marchand', body);
 }
 
-/** Check the status of a previously created payment. */
-async function verifyPayment({ refferenceId }) {
-  return postJson('/api/paiement-verify', {
-    client_id: config.plopplop.clientId,
-    refference_id: refferenceId,
-  });
+/**
+ * Check the status of a previously created payment. The partner accepts either identifier (its documentation: "refference_id" OR
+ * "transaction_id"): our own reference, or the transaction id it returned at creation.
+ */
+async function verifyPayment({ refferenceId, transactionId }) {
+  const body = { client_id: config.plopplop.clientId };
+  if (refferenceId) body.refference_id = refferenceId;
+  else if (transactionId) body.transaction_id = String(transactionId);
+  return postJson('/api/paiement-verify', body);
 }
 
 /** Step 1 of the withdrawal flow: authenticate as the (single) Freda merchant on PlopPlop. */

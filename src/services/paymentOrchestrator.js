@@ -293,7 +293,12 @@ async function refreshStatus(merchantId, payment) {
   if (payment.status === 'succeeded' || payment.status === 'failed') return payment;
   if (payment.provider === 'tranzak') return refreshCardStatus(payment);
 
-  const res = await plopplop.verifyPayment({ refferenceId: payment.plopplop_reference });
+  let res = await plopplop.verifyPayment({ refferenceId: payment.plopplop_reference });
+  // The partner also finds a payment by the transaction id it returned: when it does not know our reference, ask that way before giving up.
+  if (payment.plopplop_transaction_id && ['not_found', 'error', 'unreadable'].includes(paymentHealth.classify(res))) {
+    const second = await plopplop.verifyPayment({ transactionId: payment.plopplop_transaction_id }).catch(() => null);
+    if (second && paymentHealth.classify(second) !== 'not_found' && paymentHealth.classify(second) !== 'unreadable') res = second;
+  }
   const heard = paymentHealth.note(payment, res);
   if (heard.kind === 'not_found' || heard.kind === 'unexpected' || heard.kind === 'error') alertIfStuck(payment, heard);
   const confirmed = paymentHealth.isConfirmed(res.data);

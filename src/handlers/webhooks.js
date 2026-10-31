@@ -86,6 +86,47 @@ async function receiveMaplerad(ctx) {
  * environment sent it. The event is only a signal: the payment is read again from the partner before anything is
  * credited, so a replayed or doctored body can never create money.
  */
+/**
+ * POST /webhooks/plopplop : the MonCash / Natcash partner tells us a transaction was created or changed status
+ * (events transaction.created and transaction.status_changed; its documentation, section Webhooks). The partner's URL is set on its side
+ * (webhook_url of our merchant account). The signature header X-Webhook-Signature is "sha256=" + HMAC-SHA256 of the raw body with our
+ * client_secret (present when a secret is configured there). The notification is only a signal: the payment is read again at the partner
+ * (paiement-verify) before anything is credited, so a forged or best-effort notification can never credit by itself.
+ */
+async function receivePlopplop(ctx) {
+  const secret = config.plopplop.clientSecret;
+  const given = String(ctx.req.headers['x-webhook-signature'] || '');
+  if (given && secret) {
+    const expected = 'sha256=' + require('crypto').createHmac('sha256', secret).update(ctx.rawBody || '').digest('hex');
+    const a = Buffer.from(expected);
+    const b = Buffer.from(given);
+    if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) throw httpError(401, 'INVALID_SIGNATURE', 'Signature de webhook invalide.');
+  }
+  let event;
+  try { event = JSON.parse(ctx.rawBody || ''); } catch (e) { throw httpError(400, 'INVALID_JSON', 'Corps du webhook invalide.'); }
+  const t = (event && event.transaction) || {};
+  const reference = String(t.reference_id || t.refference_id || '');
+  if (!reference || !['transaction.created', 'transaction.status_changed'].includes(event.event)) return { status: 200, body: { received: true, ignored: true } };
+
+  // Kept for the admin (is the partner really notifying us?), one record per notification.
+  const eventId = `plopplop:${t.transaction_id || reference}:${event.event}:${t.new_status || t.status || ''}:${event.timestamp || ''}`.slice(0, 200);
+  if (await supabase.selectOne('webhook_events', { id: eventId })) return { status: 200, body: { received: true, duplicate: true } };
+  await supabase.insert('webhook_events', { id: eventId, provider: 'plopplop', event_type: event.event, payload: event }).catch(() => {});
+
+  const orchestrator = require('../services/paymentOrchestrator');
+  const payment = await supabase.selectOne('payments', { plopplop_reference: reference });
+  if (payment) {
+    if (event.event === 'transaction.status_changed' || payment.status === 'pending') await orchestrator.refreshStatus(payment.merchant_id, payment);
+    return { status: 200, body: { received: true } };
+  }
+  const topup = await supabase.selectOne('wallet_topups', { plopplop_reference: reference });
+  if (topup) {
+    await require('../services/walletTopupOrchestrator').refreshAutoTopup(topup.merchant_id, topup);
+    return { status: 200, body: { received: true } };
+  }
+  return { status: 200, body: { received: true, ignored: true } }; // not one of ours (or not saved yet: the background pass covers it)
+}
+
 async function receiveTranzak(ctx) {
   const mode = tranzak.verifyWebhook(ctx.rawBody || '', ctx.req.headers['x-tranzak-signature']);
   if (!mode) throw httpError(403, 'INVALID_SIGNATURE', 'Signature de webhook invalide.');
@@ -195,4 +236,5 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { receiveMaplerad, receiveTranzak };
+module.exports = {
+  receivePlopplop, receiveMaplerad, receiveTranzak };
