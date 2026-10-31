@@ -7724,3 +7724,35 @@ test('a card left "creating" without a partner reference (the request never left
   const d = await api('GET', `/admin/merchants/${merchantId}/diagnostic`, { token: (await adminLogin('owner')).token });
   assert.equal(d.data.checks.find((c) => c.id === 'cards_unsent').status, 'fail');
 });
+
+test('a holder the partner keeps below Tier 2: the merchant is told before any money moves, and the partner refusal has its own code', async () => {
+  const reg = await registerAndVerify({ business_name: 'Tier Co', email: 'tierco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const merchantId = mockTables.merchants.find((m) => m.email === 'tierco@sandbox-test.example.com').id;
+  const maplerad = require('../src/services/maplerad');
+  // a customer upgraded to Tier 1 only (the identity check never completed), saved here as "enrolled"
+  const made = await maplerad.createCustomer({ firstName: 'Tier', lastName: 'One', email: 'tierone@example.com', country: 'HT' });
+  const customerId = made.data.id;
+  await maplerad.upgradeCustomerTier1({ customerId, dob: '01-01-1990', phone: { phone_country_code: '+509', phone_number: '37001234' }, address: { street: '1 Rue X', city: 'PAP', state: 'Ouest', postal_code: 'HT6110', country: 'HT' }, identificationNumber: 'HT1' });
+  mockTables.maplerad_customers.push({ id: 'mpc_tierone', merchant_id: merchantId, status: 'enrolled', maplerad_customer_id: customerId, first_name: 'Tier', last_name: 'One', email: 'tierone@example.com', country: 'HT', mode: 'sandbox', created_at: new Date().toISOString() });
+
+  const state = await require('../src/services/cardOrchestrator').partnerCustomerState('sandbox', 'tierone@example.com', customerId);
+  assert.equal(state.tier, 1);
+  const holder = await api('GET', '/dashboard/cards/holders/mpc_tierone', { token });
+  assert.equal(holder.data.verification.tier, 1);
+  assert.equal(holder.data.verification.ready_for_cards, false);
+
+  const before = await api('GET', '/dashboard/balance', { token });
+  const r = await api('POST', '/dashboard/cards', { token, body: { reference: 'TIER-1', kind: 'individual', brand: 'VISA', amount: 10, holder_id: 'mpc_tierone' } });
+  assert.equal(r.status, 409);
+  assert.equal(r.data.error.code, 'HOLDER_NOT_VERIFIED');
+  assert.match(r.data.error.message, /niveau 1 sur 2/);
+  assert.equal((await api('GET', '/dashboard/balance', { token })).data.master_wallet.available, before.data.master_wallet.available); // nothing debited
+
+  // the partner's own refusal (when its state is not readable) gets the same precise code instead of a generic card error
+  let thrown = null;
+  try { await maplerad.createCard({ customerId, currency: 'USD', type: 'VIRTUAL', autoApprove: true, brand: 'VISA', amount: 1000 }); } catch (e) { thrown = e; }
+  assert.ok(thrown);
+  assert.equal(thrown.code, 'HOLDER_NOT_VERIFIED');
+  assert.equal(thrown.httpStatus, 409);
+});

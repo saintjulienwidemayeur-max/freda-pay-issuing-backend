@@ -117,6 +117,32 @@ async function lookupProviderCustomerId(email, mode) {
   return null;
 }
 
+/**
+ * What the card partner really holds for a customer: its tier (0, 1 or 2) and status. A holder is saved as "enrolled" here as soon as the
+ * identity upgrade call is accepted, but the partner can keep the customer below Tier 2 (identity check not finished or refused), and a
+ * card is only created for a Tier 2 customer. Best effort: returns null when the partner does not say (never throws).
+ */
+async function partnerCustomerState(mode, email, customerId) {
+  const provider = maplerad.forMode(mode);
+  for (const status of [undefined, 'COMPLETED', 'PENDING']) {
+    try {
+      const res = await provider.findCustomersByEmail(String(email || '').trim(), status);
+      const lists = [res, res && res.data, res && res.data && res.data.data, res && res.data && res.data.customers, res && res.customers, res && res.result];
+      const list = lists.find((v) => Array.isArray(v)) || [];
+      const hit = list.find((c) => c && c.id === customerId);
+      if (hit) return { tier: Number.isFinite(Number(hit.tier)) && hit.tier !== null && hit.tier !== undefined ? Number(hit.tier) : null, status: hit.status ? String(hit.status) : null };
+    } catch (e) { /* try the next filter */ }
+  }
+  return null;
+}
+
+function holderNotVerified(tier) {
+  const err = new Error(`La vérification d'identité du titulaire n'est pas terminée chez le fournisseur${tier != null ? ` (niveau ${tier} sur 2)` : ''}. Renvoyez le titulaire (POST /v1/cards/holders avec le même e-mail) avec un document d'identité lisible, recto et verso si la pièce en a deux, puis réessayez dans quelques minutes.`);
+  err.code = 'HOLDER_NOT_VERIFIED';
+  err.httpStatus = 409;
+  return err;
+}
+
 function isAlreadyEnrolledError(err) {
   return /already (enrolled|exist|registered)|customer.*exist/i.test((err && err.providerRawMessage) || '');
 }
@@ -444,6 +470,11 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
       throw err;
     }
   }
+
+  // The partner only creates a card for a customer at Tier 2. When it says this one is lower (the identity check did not finish or was refused),
+  // say so now, before any money moves, instead of letting the creation fail at the partner.
+  const state = await partnerCustomerState(effMode, profile.email, profile.maplerad_customer_id);
+  if (state && state.tier != null && state.tier < 2) throw holderNotVerified(state.tier);
 
   const merchant = await getMerchant(merchantId);
   const issuingPlanKey = planKeyFor(merchant, 'issuing', mode);
@@ -1307,6 +1338,7 @@ function transactionWebhookData(card, t) {
 }
 
 module.exports = {
+  partnerCustomerState,
   failUnsentPendingCards,
   lookupProviderCustomerId,
   isAlreadyEnrolledError,
