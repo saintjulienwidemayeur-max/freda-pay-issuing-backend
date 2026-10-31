@@ -370,6 +370,7 @@ router.post('/admin/account/password', adminSession.requireAdminSession, adminAu
 router.get('/admin/overview', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.overview(ctx); });
 router.get('/admin/visits', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return trackHandlers.adminVisits(ctx); });
 router.get('/admin/merchants', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.list(ctx); });
+router.get('/admin/merchants/:id/diagnostic', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.diagnostic(ctx); });
 router.get('/admin/merchants/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.get(ctx); });
 router.get('/admin/issuers', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.issuers(ctx); });
 router.get('/admin/merchants/:id/guarantee', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.getGuarantee(ctx); });
