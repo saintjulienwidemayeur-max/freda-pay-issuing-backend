@@ -31,3 +31,10 @@ test('no user-facing message ever names the provider or its own vocabulary', () 
     assert.doesNotMatch(maplerad.translateStatus(code), /maplerad|fournisseur|clé/i);
   }
 });
+
+test('a document refused before maps to the restart_verification advice, not the generic KYC sentence', () => {
+  const m = maplerad.translateKnownMessage('customer KYC request failed: documentDeclinedBefore');
+  assert.match(m, /restart_verification/);
+  assert.match(m, /déjà été refusé/);
+});
+

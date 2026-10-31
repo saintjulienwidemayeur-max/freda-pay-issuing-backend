@@ -78,8 +78,11 @@ async function createHolder(ctx) {
     }
   }
   try {
-    const profile = await cardOrchestrator.createHolder(ctx.merchantId, b, await resolveMode(ctx));
+    const restart = b.restart_verification === true || b.restartVerification === true;
+    const profile = await cardOrchestrator.createHolder(ctx.merchantId, b, await resolveMode(ctx), { restartVerification: restart });
     const pub = toPublicProfile(profile);
+    // The identity check was started again with a fresh customer at the partner: same holder id, 200 + restarted.
+    if (profile.restarted) return { status: 200, body: { id: pub.id, already_existed: true, restarted: true, profile: pub, holder: pub } };
     // 200 + already_existed when this email was already enrolled (no duplicate is created).
     if (profile.alreadyExisted) return { status: 200, body: { id: pub.id, already_existed: true, profile: pub, holder: pub } };
     return { status: 201, body: { id: pub.id, already_existed: false, profile: pub, holder: pub } };

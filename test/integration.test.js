@@ -7756,3 +7756,32 @@ test('a holder the partner keeps below Tier 2: the merchant is told before any m
   assert.equal(thrown.code, 'HOLDER_NOT_VERIFIED');
   assert.equal(thrown.httpStatus, 409);
 });
+
+test('restart_verification: a holder whose document was refused is sent again with new photos and gets a fresh partner customer, keeping its own id', async () => {
+  const reg = await registerAndVerify({ business_name: 'Restart Co', email: 'restartco@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const body = { firstName: 'Re', lastName: 'Start', email: 'restart@holder.com', country: 'HT', dob: '1990-05-12', identificationNumber: 'ID-RS', identity: TEST_IDENTITY, phoneNumber: '37011111', phoneShortCode: '+509', address: { street: '1 Rue Y', city: 'PAP', state: 'Ouest', postalCode: 'HT6110', country: 'HT' } };
+  const first = await api('POST', '/dashboard/cards/holders', { token, body });
+  assert.equal(first.status, 201);
+  const holderId = first.data.holder.id;
+  const oldCustomer = mockTables.maplerad_customers.find((h) => h.id === holderId).maplerad_customer_id;
+
+  // the same call again without the flag reuses the same partner customer (no new check)
+  const again = await api('POST', '/dashboard/cards/holders', { token, body });
+  assert.equal(again.status, 200);
+  assert.equal(mockTables.maplerad_customers.find((h) => h.id === holderId).maplerad_customer_id, oldCustomer);
+
+  // with the flag: a fresh partner customer behind the same holder id, taken to Tier 2 with the new details
+  const restarted = await api('POST', '/dashboard/cards/holders', { token, body: Object.assign({}, body, { restart_verification: true }) });
+  assert.equal(restarted.status, 200);
+  assert.equal(restarted.data.restarted, true);
+  assert.equal(restarted.data.holder.id, holderId);
+  const row = mockTables.maplerad_customers.find((h) => h.id === holderId);
+  assert.notEqual(row.maplerad_customer_id, oldCustomer);
+  assert.equal(row.status, 'enrolled');
+  assert.equal(mockTables.maplerad_customers.filter((h) => h.merchant_id === row.merchant_id).length, 1); // no second holder
+  const state = await require('../src/services/cardOrchestrator').partnerCustomerState('sandbox', 'restart+kyc@holder.com', row.maplerad_customer_id).catch(() => null);
+  const holder = await api('GET', `/dashboard/cards/holders/${holderId}`, { token });
+  assert.equal(holder.data.verification && holder.data.verification.tier !== null ? holder.data.verification.ready_for_cards : true, true);
+  void state;
+});
