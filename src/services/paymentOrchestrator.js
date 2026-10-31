@@ -64,6 +64,7 @@ async function createPayment({ merchantId, id, ownReference, plopplopReference, 
     currency: currency || 'HTG',
     method,
     checkout_url: res.data.url || null,
+    return_url: returnUrl || null, // where /pay/return sends the customer back after he paid at the partner
     ...payerFields(customer, phoneNumber),
     status: 'pending',
     mode: mode || 'sandbox',

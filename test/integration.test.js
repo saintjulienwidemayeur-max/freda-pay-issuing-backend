@@ -7585,3 +7585,31 @@ test('PlopPlop webhook: a signed status change makes us read the payment at the 
   const ev = await api('GET', '/admin/diagnostic/webhook-events', { token: (await adminLogin('owner')).token });
   assert.ok(ev.data.plopplop.received >= 2 && ev.data.plopplop.latest[0].reference);
 });
+
+test('payment return page: the customer coming back from the MonCash/Natcash partner is sent to the merchant page and the payment is settled at once', async () => {
+  const live = await liveWithGateway('payreturn', 0);
+  const make = async (ref, extra) => { const r = await api('POST', '/dashboard/payments', { token: live.token, body: Object.assign({ amount: 700, currency: 'HTG', method: 'natcash', reference: ref }, extra || {}) }); assert.equal(r.status, 201); return mockTables.payments.find((p) => p.id === r.data.id); };
+  const withUrl = await make('RET-1', { return_url: 'https://boutique.example.com/commande/9' });
+  assert.equal(withUrl.return_url, 'https://boutique.example.com/commande/9');
+  const confirm = (row) => fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference, trans_status: 'ok' }) });
+
+  // back from the partner before it has confirmed: the customer is still sent back, with status=pending
+  let res = await fetch(`${baseUrl}/pay/return?statut=ok&id_transaction=${withUrl.plopplop_transaction_id}&refference_id=${encodeURIComponent(withUrl.plopplop_reference)}`, { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /^https:\/\/boutique\.example\.com\/commande\/9\?.*status=pending/);
+  // once the partner confirms, the same return settles the payment and says so
+  await confirm(withUrl);
+  res = await fetch(`${baseUrl}/pay/return?refference_id=${encodeURIComponent(withUrl.plopplop_reference)}`, { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /status=succeeded/);
+  assert.match(res.headers.get('location'), new RegExp('reference=RET-1'));
+  assert.equal(mockTables.payments.find((p) => p.id === withUrl.id).status, 'succeeded');
+
+  // no return_url (or an unknown payment): a short page, never an error
+  const plain = await make('RET-2');
+  res = await fetch(`${baseUrl}/pay/return?refference_id=${encodeURIComponent(plain.plopplop_reference)}`, { redirect: 'manual' });
+  assert.equal(res.status, 200);
+  assert.match(await res.text(), /confirmation/);
+  res = await fetch(`${baseUrl}/pay/return?refference_id=NOPE`, { redirect: 'manual' });
+  assert.equal(res.status, 200);
+});

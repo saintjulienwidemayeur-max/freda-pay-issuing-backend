@@ -1,4 +1,5 @@
 'use strict';
+const supabase = require('../lib/supabase');
 const paymentOrchestrator = require('../services/paymentOrchestrator');
 const { generatePaymentId, namespaceReference } = require('../utils/ids');
 const { fetchPage } = require('../utils/pagination');
@@ -47,6 +48,42 @@ async function create(ctx) {
   } catch (err) {
     throw httpError(err.httpStatus || (err.code === 'PROVIDER_ERROR' ? 502 : 400), err.code || 'PAYMENT_ERROR', err.message);
   }
+}
+
+/**
+ * GET /pay/return : where the customer lands after paying at the MonCash / Natcash partner. The partner is given this address as the
+ * return URL of our merchant account, and adds ?statut=...&id_transaction=...&refference_id=... . The payment is read again at the partner
+ * at once (so it is credited without waiting for the next background pass), then the customer is sent back to the merchant's own page
+ * (the return_url given when the payment was created, with payment_id, reference and status added) or sees a short confirmation page.
+ */
+async function paymentReturn(ctx) {
+  const q = ctx.query || {};
+  const ref = String(q.refference_id || q.reference_id || '').slice(0, 200);
+  const tx = String(q.id_transaction || q.transaction_id || '').slice(0, 100);
+  let payment = null;
+  if (ref) payment = await supabase.selectOne('payments', { plopplop_reference: ref });
+  if (!payment && tx) payment = await supabase.selectOne('payments', { plopplop_transaction_id: tx });
+  if (payment && payment.status === 'pending') {
+    try { payment = (await paymentOrchestrator.refreshStatus(payment.merchant_id, payment)) || payment; } catch (e) { /* the background pass will settle it */ }
+  }
+  const status = payment ? payment.status : 'unknown';
+  if (payment && payment.return_url) {
+    try {
+      const u = new URL(payment.return_url);
+      if (u.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(u.hostname)) {
+        u.searchParams.set('payment_id', payment.id);
+        u.searchParams.set('reference', payment.own_reference);
+        u.searchParams.set('status', status);
+        ctx.res.writeHead(302, { Location: u.toString() });
+        return ctx.res.end();
+      }
+    } catch (e) { /* not a valid address: the confirmation page below */ }
+  }
+  const text = { succeeded: ['Paiement reçu', 'Merci ! Votre paiement a été confirmé.'], failed: ['Paiement non abouti', "Votre paiement n'a pas abouti. Vous pouvez réessayer."], pending: ['Paiement en cours de confirmation', "Nous n'avons pas encore reçu la confirmation. Elle arrive en général en quelques instants : vous pouvez fermer cette page."], unknown: ['Paiement', 'Vous pouvez fermer cette page et retourner sur le site du marchand.'] }[status] || ['Paiement', 'Vous pouvez fermer cette page.'];
+  const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(text[0])}</title><style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f7f7f8;color:#1a1216;display:grid;place-items:center;min-height:100vh;margin:0}.c{background:#fff;border-radius:16px;padding:32px;max-width:420px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.08)}h1{font-size:1.3rem;margin:0 0 10px}p{color:#6b5f66;margin:0}</style></head><body><div class="c"><h1>${esc(text[0])}</h1><p>${esc(text[1])}</p></div></body></html>`;
+  ctx.res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  return ctx.res.end(html);
 }
 
 async function get(ctx) {
@@ -140,4 +177,5 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { create, get, list, exportCsv };
+module.exports = {
+  paymentReturn, create, get, list, exportCsv };
