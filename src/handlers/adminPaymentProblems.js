@@ -136,7 +136,16 @@ async function recheckOne(payment) {
   let after = payment;
   let error = null;
   try { after = (await paymentOrchestrator.refreshStatus(payment.merchant_id, payment)) || payment; } catch (err) { error = err.message; }
-  return { id: payment.id, reference: payment.own_reference, amount: Number(payment.amount), currency: payment.currency, before, after: after.status, settled: before === 'pending' && after.status !== 'pending', partner: answerOf(payment), error };
+  // What the partner says, word for word, asked BOTH ways (by our reference and by its transaction id), to compare with its own dashboard.
+  const raw = async (args) => {
+    try {
+      const r = await require('../services/plopplop').verifyPayment(args);
+      const d = r.data || {};
+      return { http_status: r.httpStatus || null, status: d.status == null ? null : d.status, trans_status: d.trans_status == null ? null : d.trans_status, message: d.message || null, montant: d.montant == null ? null : d.montant, refference_id: d.refference_id || null, transaction_id: d.transaction_id || null };
+    } catch (e) { return { error: e.message }; }
+  };
+  const answers = payment.provider === 'tranzak' ? null : { by_reference: await raw({ refferenceId: payment.plopplop_reference }), by_transaction: payment.plopplop_transaction_id ? await raw({ transactionId: payment.plopplop_transaction_id }) : null };
+  return { id: payment.id, reference: payment.own_reference, amount: Number(payment.amount), currency: payment.currency, before, after: after.status, settled: before === 'pending' && after.status !== 'pending', partner: answerOf(payment), partner_raw: answers, error };
 }
 
 /** POST /admin/payments/:id/recheck */

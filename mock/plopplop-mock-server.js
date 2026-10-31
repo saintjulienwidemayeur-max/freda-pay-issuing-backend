@@ -66,7 +66,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/__control/confirm-payment') {
     const p = payments.get(body.refference_id);
-    if (p) p.status = body.trans_status || 'ok'; // a test can make the partner answer "OK", "Ok "...
+    if (p) { p.status = body.trans_status || 'ok'; p.refAnswer = body.ref_answer || null; p.reference = body.refference_id; } // a test can make the partner answer "OK", "Ok "...
     return send(res, 200, { ok: true });
   }
 
@@ -101,7 +101,10 @@ const server = http.createServer(async (req, res) => {
       status: true,
       message: 'success',
       montant: p.montant,
-      trans_status: p.status,
+      // a test can make the answer by REFERENCE differ from the answer by transaction id (refAnswer)
+      trans_status: refference_id && p.refAnswer ? p.refAnswer : p.status,
+      refference_id: refference_id || p.reference || null,
+      transaction_id: p.transaction_id,
       id_transaction: p.transaction_id,
       date: '2026-01-01',
       heure: '12:00:00',

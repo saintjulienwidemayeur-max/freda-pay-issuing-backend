@@ -7511,6 +7511,8 @@ test('admin payment problems: merchants with stuck or failing payments, every tr
   const first = await api('POST', `/admin/payments/${p1.id}/recheck`, { token: admin.token });
   assert.equal(first.data.settled, false);
   assert.equal(first.data.partner.kind, 'waiting');
+  assert.equal(first.data.partner_raw.by_reference.trans_status, 'no'); // the partner's answer word for word, both ways
+  assert.equal(first.data.partner_raw.by_transaction.trans_status, 'no');
   assert.equal(mockTables.payments.find((p) => p.id === p1.id).status, 'pending');
 
   // the customer pays at the partner: the recheck settles it and credits the merchant
@@ -7612,4 +7614,26 @@ test('payment return page: the customer coming back from the MonCash/Natcash par
   assert.match(await res.text(), /confirmation/);
   res = await fetch(`${baseUrl}/pay/return?refference_id=NOPE`, { redirect: 'manual' });
   assert.equal(res.status, 200);
+});
+
+test('a payment the partner shows as paid by its transaction id is settled even when the answer by reference says "not yet"', async () => {
+  const live = await liveWithGateway('bytx', 0);
+  const orchestrator = require('../src/services/paymentOrchestrator');
+  const mk = async (ref) => { const r = await api('POST', '/dashboard/payments', { token: live.token, body: { amount: 470, currency: 'HTG', method: 'natcash', reference: ref } }); return mockTables.payments.find((p) => p.id === r.data.id); };
+  const split = (row) => fetch('http://localhost:4501/__control/confirm-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refference_id: row.plopplop_reference, trans_status: 'OK', ref_answer: 'no' }) });
+
+  const old = await mk('BYTX-1');
+  await split(old);
+  // too fresh: only the answer by reference is read, which says no
+  assert.equal((await orchestrator.refreshStatus(live.merchantId, old)).status, 'pending');
+  // it has waited: the transaction id says paid for the same reference and amount, so it settles and credits once
+  old.created_at = new Date(Date.now() - 3600 * 1000).toISOString();
+  assert.equal((await orchestrator.refreshStatus(live.merchantId, old)).status, 'succeeded');
+
+  // a different amount at the partner is never trusted
+  const other = await mk('BYTX-2');
+  await split(other);
+  other.created_at = new Date(Date.now() - 3600 * 1000).toISOString();
+  other.amount = 999;
+  assert.equal((await orchestrator.refreshStatus(live.merchantId, other)).status, 'pending');
 });
