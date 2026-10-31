@@ -300,6 +300,19 @@ async function refreshStatus(merchantId, payment) {
     const second = await plopplop.verifyPayment({ transactionId: payment.plopplop_transaction_id }).catch(() => null);
     if (second && paymentHealth.classify(second) !== 'not_found' && paymentHealth.classify(second) !== 'unreadable') res = second;
   }
+  // The partner's own transaction id is the surest identifier. When the answer by reference is "not paid yet" for a payment that has waited
+  // a while, ask by transaction id as well: if THAT says confirmed and it is clearly the same payment (same reference and same amount when
+  // the partner returns them), it is trusted. (A payment the partner shows as paid in its dashboard must not stay pending here.)
+  const waitedMin = (Date.now() - new Date(payment.created_at || Date.now()).getTime()) / 60000;
+  if (payment.plopplop_transaction_id && !paymentHealth.isConfirmed(res.data) && waitedMin >= 20) {
+    const byTx = await plopplop.verifyPayment({ transactionId: payment.plopplop_transaction_id }).catch(() => null);
+    const d = byTx && byTx.data;
+    if (d && paymentHealth.isConfirmed(d)
+      && (d.refference_id == null || String(d.refference_id) === String(payment.plopplop_reference))
+      && (d.montant == null || Number(d.montant) === Number(payment.amount))) {
+      res = byTx;
+    }
+  }
   const heard = paymentHealth.note(payment, res);
   if (heard.kind === 'not_found' || heard.kind === 'unexpected' || heard.kind === 'error') alertIfStuck(payment, heard);
   const confirmed = paymentHealth.isConfirmed(res.data);
