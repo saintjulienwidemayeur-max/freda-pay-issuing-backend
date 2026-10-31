@@ -7429,3 +7429,47 @@ test('public API: a merchant creates and uses crypto wallets with an API key (te
   assert.equal(tx.data.transactions.length, 3);
   assert.equal((await api('POST', '/v1/crypto/send', { token: key, body: { coin: 'USDT', chain: 'solana', address: dest, amount: 5 } })).data.error.code, 'MISSING_FIELDS');
 });
+
+test('signup: the owner identity (for a Tier 1 customer) and an optional website are asked and kept', async () => {
+  const owner = { date_of_birth: '1990-05-17', identification_number: 'HT123456789', address: { street: '12 Rue Capois', city: 'Port-au-Prince', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } };
+  const base = { business_name: 'Owner Co', email: 'ownerco@sandbox-test.example.com', password: 'password123', phone: '50937001234', onboarding: { country: 'HT', website: 'ownerco.com' } };
+  const ok = await api('POST', '/auth/register', { headers: freshIp(), body: Object.assign({}, base, { owner }) });
+  assert.equal(ok.status, 201);
+  const row = mockTables.merchant_identity.find((r) => r.merchant_id === ok.data.merchant_id);
+  assert.ok(row && row.identification_number === 'HT123456789' && row.address.street === '12 Rue Capois' && row.phone === '50937001234' && row.source === 'signup');
+  assert.equal(mockTables.merchants.find((m) => m.id === ok.data.merchant_id).onboarding.website, 'https://ownerco.com'); // a bare domain gets https://
+
+  const bad = (over, code, email) => api('POST', '/auth/register', { headers: freshIp(), body: Object.assign({}, base, { email, owner }, over) }).then((r) => { assert.equal(r.data.error.code, code); });
+  await bad({ onboarding: { country: 'HT', website: 'not a site' } }, 'INVALID_WEBSITE', 'own1@sandbox-test.example.com');
+  await bad({ owner: Object.assign({}, owner, { date_of_birth: new Date(Date.now() - 10 * 365.25 * 24 * 3600 * 1000).toISOString().slice(0, 10) }) }, 'OWNER_UNDERAGE', 'own2@sandbox-test.example.com');
+  await bad({ owner: Object.assign({}, owner, { identification_number: '' }) }, 'INVALID_OWNER', 'own3@sandbox-test.example.com');
+  // an account created by API without the owner block still works, and the website stays optional
+  const plain = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Api Co', email: 'apico@sandbox-test.example.com', password: 'password123' } });
+  assert.equal(plain.status, 201);
+});
+
+test('admin diagnostic: why a merchant cannot connect the payment service or the cards', async () => {
+  const admin = await adminLogin('owner');
+  const unverified = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Diag Co', email: 'diagco@sandbox-test.example.com', password: 'password123' } });
+  const d1 = await api('GET', `/admin/merchants/${unverified.data.merchant_id}/diagnostic`, { token: admin.token });
+  assert.equal(d1.status, 200);
+  const byId = (d, id) => d.data.checks.find((c) => c.id === id);
+  assert.equal(byId(d1, 'email_verified').status, 'fail');
+  assert.equal(byId(d1, 'verification').status, 'fail');
+  assert.equal(byId(d1, 'gateway_live').status, 'warn');
+  assert.ok(d1.data.summary.fail >= 2);
+  assert.ok(byId(d1, 'identity').status === 'warn' && byId(d1, 'webhook').status === 'warn');
+
+  // a verified merchant whose calls are refused (wrong key): the diagnostic says it, with the codes
+  const reg = await registerAndVerify({ business_name: 'Diag Two', email: 'diagtwo@sandbox-test.example.com', password: 'password123' });
+  const id2 = mockTables.merchants.find((m) => m.email === 'diagtwo@sandbox-test.example.com').id;
+  for (let i = 0; i < 3; i += 1) mockTables.api_call_log.push({ id: 9000 + i, created_at: new Date().toISOString(), merchant_id: id2, method: 'POST', route: '/v1/payments', path: '/v1/payments', status: 401, code: 'INVALID_API_KEY', message: 'Clé invalide', mode: 'test' });
+  const d2 = await api('GET', `/admin/merchants/${id2}/diagnostic`, { token: admin.token });
+  assert.equal(byId(d2, 'email_verified').status, 'ok');
+  assert.equal(byId(d2, 'api_calls').status, 'fail');
+  assert.equal(d2.data.api_errors_by_code.INVALID_API_KEY, 3);
+  assert.equal(d2.data.recent_api_errors[0].code, 'INVALID_API_KEY');
+  assert.ok(byId(d2, 'wallet_sandbox'));
+  assert.equal((await api('GET', '/admin/merchants/mch_unknown/diagnostic', { token: admin.token })).status, 404);
+  assert.equal((await api('GET', `/admin/merchants/${id2}/diagnostic`, { token: (await adminLogin('editor')).token })).status, 403);
+});

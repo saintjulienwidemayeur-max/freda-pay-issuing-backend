@@ -52,7 +52,7 @@ function issueSession(merchantId, role, userId) {
   return jwt.sign(payload, config.sessionSecret, 60 * 60 * 24 * 7); // 7 days
 }
 
-const ONBOARDING_KEYS = ['country', 'product', 'business_description', 'monthly_volume', 'monthly_cards', 'card_use_case', 'source_of_funds'];
+const ONBOARDING_KEYS = ['website', 'country', 'product', 'business_description', 'monthly_volume', 'monthly_cards', 'card_use_case', 'source_of_funds'];
 
 /**
  * Keeps only the known onboarding answers, as short strings. Everything is
@@ -68,8 +68,42 @@ function sanitizeOnboarding(raw) {
   return Object.keys(out).length ? out : null;
 }
 
+
+/** A website the merchant typed: keeps http(s) addresses, adds https:// to a bare domain. Returns null when it is not one. */
+function normalizeWebsite(raw) {
+  let v = String(raw || '').trim();
+  if (!v) return null;
+  if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
+  try {
+    const u = new URL(v);
+    if (!/^https?:$/.test(u.protocol) || !u.hostname.includes('.') || u.hostname.length > 120) return null;
+    return u.toString().replace(/\/$/, '').slice(0, 200);
+  } catch (e) { return null; }
+}
+
+/** The owner's date of birth, ID number and address, as the partner's Tier 1 needs them. Throws a clear 400 when something is wrong. */
+function readOwner(o, signupCountry) {
+  const a = o.address && typeof o.address === 'object' ? o.address : {};
+  const text = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
+  const dob = text(o.date_of_birth, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dob);
+  const date = m ? new Date(`${dob}T00:00:00Z`) : null;
+  if (!date || Number.isNaN(date.getTime()) || date > new Date()) throw httpError(400, 'INVALID_OWNER', 'La date de naissance est invalide (format AAAA-MM-JJ).');
+  const age = (Date.now() - date.getTime()) / (365.25 * 24 * 3600 * 1000);
+  if (age < 18) throw httpError(400, 'OWNER_UNDERAGE', 'Le propriétaire du compte doit avoir au moins 18 ans.');
+  const out = {
+    date_of_birth: dob,
+    identification_number: text(o.identification_number, 60),
+    address: { street: text(a.street, 120), city: text(a.city, 80), state: text(a.state, 80), postal_code: text(a.postal_code, 20), country: text(a.country || signupCountry, 2).toUpperCase() },
+  };
+  if (!out.identification_number || !out.address.street || !out.address.city || !out.address.state || !out.address.postal_code) {
+    throw httpError(400, 'INVALID_OWNER', "Les informations du propriétaire sont incomplètes : date de naissance, pièce d'identité et adresse (rue, ville, département, code postal).");
+  }
+  return out;
+}
+
 async function register(ctx) {
-  const { business_name, entity_type, account_type, email, phone, password, onboarding } = ctx.body || {};
+  const { business_name, entity_type, account_type, email, phone, password, onboarding, owner } = ctx.body || {};
 
   if (!business_name || !email || !password) {
     throw httpError(400, 'MISSING_FIELDS', 'business_name, email et password sont requis.');
@@ -90,6 +124,16 @@ async function register(ctx) {
   if (country && config.restrictedCountries.includes(country)) {
     throw httpError(403, 'COUNTRY_NOT_SUPPORTED', "Nos services ne sont pas disponibles dans ce pays, qui fait l'objet de sanctions économiques des États-Unis.");
   }
+
+  // The website is optional; when given it must look like one (a bare domain gets https://).
+  const sanitizedOnboarding = sanitizeOnboarding(onboarding);
+  if (sanitizedOnboarding && sanitizedOnboarding.website) {
+    const site = normalizeWebsite(sanitizedOnboarding.website);
+    if (!site) throw httpError(400, 'INVALID_WEBSITE', "Le site web n'est pas valide (ex. https://monsite.com). Laissez-le vide si vous n'en avez pas.");
+    sanitizedOnboarding.website = site;
+  }
+  // The owner's identity (asked at signup so a Tier 1 customer can be created later): optional for accounts created by API, validated when given.
+  const identity = owner && typeof owner === 'object' ? readOwner(owner, country) : null;
 
   const normalizedEmail = email.trim().toLowerCase();
   // An address already invited to someone's team counts as taken too (otherwise login would resolve to the wrong account).
@@ -119,8 +163,12 @@ async function register(ctx) {
     gateway_live_enabled: false,
     issuing_live_enabled: false,
     active_mode: 'sandbox',
-    onboarding: sanitizeOnboarding(onboarding),
+    onboarding: sanitizedOnboarding,
   });
+  if (identity) {
+    // Kept for our records (never returned by the API); a failure here must not block the signup, the details are asked again when needed.
+    await supabase.insert('merchant_identity', Object.assign({ merchant_id: id, phone: phone || null, source: 'signup' }, identity)).catch((e) => console.error(`Owner identity not saved for ${id}: ${e.message}`)); // eslint-disable-line no-console
+  }
 
   // Sandbox play money: every new account starts as sandbox (live_enabled=false),
   // so merchants can test billing, card issuance, payouts, etc. right away.

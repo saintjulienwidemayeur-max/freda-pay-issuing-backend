@@ -373,4 +373,11 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit, getGuarantee, setGuarantee, issuers };
+/** GET /admin/merchants/:id/diagnostic : why a merchant cannot connect the payment service or the cards (read only). */
+async function diagnostic(ctx) {
+  const result = await require('../services/merchantDiagnostic').diagnose(ctx.params.id);
+  if (!result) throw httpError(404, 'NOT_FOUND', 'Marchand introuvable.');
+  return { status: 200, body: result };
+}
+
+module.exports = { diagnostic, list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit, getGuarantee, setGuarantee, issuers };
