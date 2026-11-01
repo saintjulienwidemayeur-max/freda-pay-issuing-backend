@@ -1,6 +1,8 @@
 'use strict';
 const { planKeyFor } = require('../services/plans');
 const loginOtp = require('../services/loginOtp');
+const twoFactor = require('../services/twoFactor');
+const config0 = require('../config');
 const supabase = require('../lib/supabase');
 const { hashPassword, verifyPassword } = require('../utils/password');
 const { generateMerchantId } = require('../utils/ids');
@@ -273,8 +275,11 @@ async function login(ctx) {
       err.details = { merchant_id: owner.id };
       throw err;
     }
-    // Correct password is only step one: the session is issued after the emailed code.
+    // Correct password is only step one: the session is issued after the authenticator code (2FA) or, until the
+    // person has enrolled, the emailed code.
     rateLimit.reset(lockKey);
+    const tf = await twoFactorStep({ type: 'merchant', id: owner.id, merchantId: owner.id, role: 'owner', email: owner.email });
+    if (tf) return { status: 200, body: tf };
     const challenge = await loginOtp.create({ subjectType: 'merchant', subjectId: owner.id, merchantId: owner.id, email: owner.email });
     return { status: 200, body: { otp_required: true, ...challenge } };
   }
@@ -285,6 +290,8 @@ async function login(ctx) {
     const teamMerchant = await supabase.selectOne('merchants', { id: member.merchant_id });
     if (teamMerchant && !teamMerchant.deleted_at) {
       rateLimit.reset(lockKey);
+      const tf = await twoFactorStep({ type: 'member', id: member.id, merchantId: teamMerchant.id, role: member.role, email: member.email });
+      if (tf) return { status: 200, body: tf };
       const challenge = await loginOtp.create({ subjectType: 'member', subjectId: member.id, merchantId: teamMerchant.id, role: member.role, email: member.email });
       return { status: 200, body: { otp_required: true, ...challenge } };
     }
@@ -294,22 +301,49 @@ async function login(ctx) {
   throw httpError(401, 'INVALID_CREDENTIALS', 'Email ou mot de passe incorrect.');
 }
 
-/** Step two of login: the emailed code turns a verified password into a session. */
-async function verifyLogin(ctx) {
-  const { challenge_id, code } = ctx.body || {};
-  const row = await loginOtp.verify(challenge_id, code);
+/** Enrolled people are asked for their authenticator code instead of an emailed one. */
+async function twoFactorStep(sub) {
+  if (!config0.twoFactor.enforce) return null;
+  const st = await twoFactor.status(sub);
+  if (!st.available || !st.enabled) return null;
+  return { twofa_required: true, challenge_token: twoFactor.issueToken(sub, 'login') };
+}
+
+/** The session for someone whose login was fully verified; refuses accounts or team access that are gone. */
+async function sessionFor(row) {
   if (row.subject_type === 'merchant') {
     const owner = await supabase.selectOne('merchants', { id: row.subject_id });
     if (!owner || owner.deleted_at) throw httpError(403, 'ACCOUNT_DEACTIVATED', 'Ce compte a été désactivé. Contactez-nous à issuing@fredapay.com.');
-    return { status: 200, body: { merchant: publicMerchant(owner), session_token: issueSession(owner.id), role: 'owner' } };
+    return { merchant: publicMerchant(owner), session_token: issueSession(owner.id), role: 'owner' };
   }
   if (row.subject_type === 'member') {
     const member = await supabase.selectOne('team_members', { id: row.subject_id });
     const teamMerchant = member && member.status === 'active' ? await supabase.selectOne('merchants', { id: row.merchant_id }) : null;
     if (!teamMerchant || teamMerchant.deleted_at) throw httpError(401, 'INVALID_CREDENTIALS', "Votre accès à ce compte n'est plus actif.");
-    return { status: 200, body: { merchant: publicMerchant(teamMerchant), session_token: issueSession(teamMerchant.id, member.role, member.id), role: member.role } };
+    return { merchant: publicMerchant(teamMerchant), session_token: issueSession(teamMerchant.id, member.role, member.id), role: member.role };
   }
   throw httpError(400, 'LOGIN_CHALLENGE_INVALID', 'Demande de connexion invalide. Reconnectez-vous.');
+}
+
+/** Step two of login: the emailed code turns a verified password into a session - or, if 2FA is not set up yet, into the mandatory enrolment. */
+async function verifyLogin(ctx) {
+  const { challenge_id, code } = ctx.body || {};
+  const row = await loginOtp.verify(challenge_id, code);
+  const session = await sessionFor(row);
+  if (config0.twoFactor.enforce) {
+    const sub = { type: row.subject_type, id: row.subject_id, merchantId: row.merchant_id || row.subject_id, role: session.role, email: row.email };
+    const st = await twoFactor.status(sub);
+    if (st.available && !st.enabled) return { status: 200, body: { twofa_setup_required: true, setup_token: twoFactor.issueToken(sub, 'setup') } };
+  }
+  return { status: 200, body: session };
+}
+
+/** Step two for enrolled people: authenticator (or recovery) code. */
+async function loginTwoFactor(ctx) {
+  const { challenge_token, code } = ctx.body || {};
+  const sub = twoFactor.readToken(challenge_token, 'login');
+  await twoFactor.check(sub, code);
+  return { status: 200, body: await sessionFor({ subject_type: sub.type, subject_id: sub.id, merchant_id: sub.merchantId }) };
 }
 
 async function resendLoginOtp(ctx) {
@@ -335,4 +369,4 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { register, login, verifyLogin, resendLoginOtp, verifyEmailOtp, resendEmailOtp, me, publicMerchant, issueSession };
+module.exports = { register, login, verifyLogin, loginTwoFactor, sessionFor, resendLoginOtp, verifyEmailOtp, resendEmailOtp, me, publicMerchant, issueSession };

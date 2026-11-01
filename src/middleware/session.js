@@ -84,7 +84,7 @@ async function requireSession(ctx) {
     if (openedBeforeReset(payload.iat, await memberSessionsValidAfter(ctx.userId))) {
       throw httpError(401, 'SESSION_ENDED', 'Votre mot de passe a été modifié : reconnectez-vous.');
     }
-    const ownPasswordChange = ctx.req.method === 'POST' && (ctx.req.url || '').split('?')[0] === '/dashboard/account/password';
+    const ownPasswordChange = ctx.req.method === 'POST' && ['/dashboard/account/password', '/dashboard/security/2fa/setup', '/dashboard/security/2fa/enable', '/dashboard/security/2fa/recovery-codes'].includes((ctx.req.url || '').split('?')[0]);
     if (ctx.role === 'viewer' && ctx.req.method !== 'GET' && !ownPasswordChange) {
       throw httpError(403, 'READ_ONLY', "Votre accès est en lecture seule : cette action n'est pas autorisée.");
     }

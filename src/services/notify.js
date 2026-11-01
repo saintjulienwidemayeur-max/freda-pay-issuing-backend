@@ -110,6 +110,23 @@ function cardCreationFailed(merchant, { reference, reason, refunded, mode, verif
   }), 'card-creation-failed');
 }
 
+/** Reminder to anyone who has not activated the authenticator app yet. */
+function twoFactorReminder(merchant, { role } = {}) {
+  return dispatch(merchant, buildEmail({
+    subject: 'Activez la double authentification : Freda Pay Issuing',
+    eyebrow: 'Sécurité',
+    tone: 'warning',
+    heading: 'Activez la double authentification (2FA)',
+    paragraphs: [
+      hello(merchant),
+      "Ce site ne fonctionne qu'avec la 2FA, car les outils peuvent déplacer de l'argent. Votre code d'authentification sera demandé à chaque connexion.",
+      "Cela prend 2 minutes : installez Google Authenticator, Authy ou 1Password sur votre téléphone, puis connectez-vous. L'activation vous sera proposée automatiquement.",
+      'Gardez précieusement les codes de secours affichés à la fin de la configuration : ils servent si vous perdez votre téléphone.',
+    ],
+    button: { label: 'Me connecter et activer la 2FA', url: String(DASHBOARD) },
+  }), 'two-factor-reminder');
+}
+
 function accountRestored(merchant) {
   return dispatch(merchant, buildEmail({
     subject: 'Votre compte Freda Pay Issuing est de nouveau actif',
@@ -361,4 +378,4 @@ function passwordChanged(to, name) {
   }), 'password-changed');
 }
 
-module.exports = { cardCreationFailed, cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited, guaranteeChanged };
+module.exports = { twoFactorReminder, cardCreationFailed, cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited, guaranteeChanged };
