@@ -68,10 +68,12 @@ function verify(secret, token, now) {
   return null;
 }
 
-function otpauthUri({ secret, account, issuer }) {
+function otpauthUri({ secret, account, issuer, site }) {
   // Kept SHORT on purpose (SHA-1, 6 digits, 30 s are the defaults every app assumes): a long link overflows the QR code.
-  // The label is "Issuer:account" with a LITERAL colon (some authenticator apps drop the entry when it is percent-encoded).
-  return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(account)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}`;
+  // Label = "Name:account" with a LITERAL colon and an unescaped "@" (some apps drop the entry or leave title/username empty otherwise).
+  // The issuer parameter is the site's domain when known: password managers (iPhone Passwords...) use it as the website of the entry.
+  const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(account).replace(/%40/g, '@')}`;
+  return `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(site || issuer)}`;
 }
 
 /** The secret is stored encrypted (AES-256-GCM), so a leaked table alone is not enough to generate codes. */
