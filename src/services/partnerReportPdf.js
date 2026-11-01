@@ -153,7 +153,8 @@ async function build(report, company) {
   const legal = [
     [company.legal_name, company.legal_form].filter(Boolean).join(' - '),
     company.address,
-    [company.registration && `Immatriculation : ${company.registration}`, company.tax_id && `N° fiscal : ${company.tax_id}`].filter(Boolean).join('   '),
+    company.registration,
+    company.tax_id && `N° fiscal : ${company.tax_id}`,
     [company.email, company.phone, company.website].filter(Boolean).join('   '),
   ].filter(Boolean);
   const pages = doc.getPages();
