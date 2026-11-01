@@ -98,6 +98,9 @@ router.get('/admin/partner-reports/preview', adminSession.requireAdminSession, (
 router.get('/admin/partner-reports', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.list(ctx); });
 router.post('/admin/partner-reports', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.create(ctx); });
 router.get('/admin/partner-reports/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.get(ctx); });
+router.get('/admin/company-profile', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.getCompany(ctx); });
+router.put('/admin/company-profile', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.putCompany(ctx); });
+router.get('/admin/partner-reports/:id/pdf', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.pdf(ctx); });
 router.post('/admin/partner-reports/:id/send', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.send(ctx); });
 router.del('/admin/partner-reports/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.remove(ctx); });
 router.get('/admin/security/2fa', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.overview(ctx); });

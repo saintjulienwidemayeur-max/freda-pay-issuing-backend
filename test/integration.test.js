@@ -8024,11 +8024,29 @@ test('partner reports: profit is filled from the real fees, expenses reduce it, 
 
   const list = await api('GET', '/admin/partner-reports', { token: admin.token });
   assert.ok(list.data.reports.find((x) => x.id === rep.id));
+  // No official PDF without the company identity and the CEO's signature.
+  const early = await api('POST', `/admin/partner-reports/${rep.id}/send`, { token: admin.token, body: { to: 'partenaire@example.com' } });
+  assert.equal(early.status, 409);
+  assert.equal(early.data.error.code, 'COMPANY_PROFILE_INCOMPLETE');
+  const alpha = Buffer.alloc(100 * 40);
+  for (let i = 0; i < 700; i += 1) alpha[(i * 5) % alpha.length] = 255; // some ink
+  const saveCo = await api('PUT', '/admin/company-profile', { token: admin.token, body: {
+    legal_name: 'Freda Pay SA', legal_form: 'Société anonyme', address: '1 rue Exemple, Port-au-Prince', registration: 'RC 123', ceo_name: 'Jean Dupont', ceo_title: 'CEO',
+    signature: { type: 'drawn', image: { w: 100, h: 40, alpha: alpha.toString('base64') } },
+  } });
+  assert.equal(saveCo.status, 200);
+  assert.deepEqual(saveCo.data.missing, []);
   const sent = await api('POST', `/admin/partner-reports/${rep.id}/send`, { token: admin.token, body: { to: 'partenaire@example.com' } });
   assert.equal(sent.status, 200);
   const mail = await waitForEmail('partenaire@example.com', /Rapport/);
   assert.match(mail.text, /Publicité/);
   assert.match(mail.text, /13 %/);
+  assert.equal(mail.attachments.length, 1);
+  assert.match(mail.attachments[0].name, /^rapport-partenaire-x-.*\.pdf$/);
+  assert.equal(Buffer.from(mail.attachments[0].content, 'base64').subarray(0, 5).toString(), '%PDF-');
+  const dl = await api('GET', `/admin/partner-reports/${rep.id}/pdf`, { token: admin.token });
+  assert.equal(dl.status, 200);
+  assert.equal(Buffer.from(dl.data.base64, 'base64').subarray(0, 5).toString(), '%PDF-');
   const badTo = await api('POST', `/admin/partner-reports/${rep.id}/send`, { token: admin.token, body: { to: 'pas-un-email' } });
   assert.equal(badTo.status, 400);
   assert.equal((await api('DELETE', `/admin/partner-reports/${rep.id}`, { token: admin.token })).status, 200);

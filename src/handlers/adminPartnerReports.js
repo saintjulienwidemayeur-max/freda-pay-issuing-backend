@@ -4,6 +4,8 @@ const brevo = require('../services/brevo');
 const config = require('../config');
 const adminStats = require('../services/adminStats');
 const { buildEmail } = require('../templates/notificationEmail');
+const companyProfile = require('../services/companyProfile');
+const partnerReportPdf = require('../services/partnerReportPdf');
 const { randomHex } = require('../utils/ids');
 
 /**
@@ -121,18 +123,51 @@ function reportEmail(r) {
   lines.push(`Part de ${r.partner_name} (${Number(r.profit_pct)} %) : **${usd(r.partner_share_usd)}**`);
   lines.push(`Part Freda Pay Issuing : **${usd(r.our_share_usd)}**`);
   if (r.notes) lines.push(`Note : ${r.notes}`);
-  return buildEmail({ subject: `${r.title} : Freda Pay Issuing`, eyebrow: 'Rapport', heading: r.title, paragraphs: lines, tone: 'info' });
+  return buildEmail({ subject: `${r.title} : Freda Pay Issuing`, eyebrow: 'Rapport', heading: r.title, paragraphs: [...lines, 'Le rapport officiel (PDF, avec les mentions légales et la signature du CEO) est joint à cet email.'], tone: 'info' });
 }
 
-/** POST /admin/partner-reports/:id/send { to } : emailed to an address typed in by hand, nobody else. */
+/** The official PDF. Refused while the company identity or the CEO's signature is missing: an unsigned report is not official. */
+async function pdfFor(report) {
+  const company = await companyProfile.get();
+  const lacking = companyProfile.missing(company);
+  if (lacking.length) throw httpError(409, 'COMPANY_PROFILE_INCOMPLETE', `Complétez d'abord l'identité légale : il manque ${lacking.join(', ')}.`);
+  const buf = await partnerReportPdf.build(report, company);
+  const slug = String(report.partner_name).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'partenaire';
+  return { buf, filename: `rapport-${slug}-${report.period_from}-${report.period_to}.pdf` };
+}
+
+/** GET /admin/partner-reports/:id/pdf : the PDF as base64 (the admin page turns it into a download). */
+async function pdf(ctx) {
+  const { buf, filename } = await pdfFor(await getOr404(ctx.params.id));
+  return { status: 200, body: { filename, base64: buf.toString('base64') } };
+}
+
+/** POST /admin/partner-reports/:id/send { to } : the PDF emailed to an address typed in by hand, nobody else. */
 async function send(ctx) {
   const to = String((ctx.body && ctx.body.to) || '').trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) throw httpError(400, 'INVALID_EMAIL', 'Adresse email invalide.');
   const r = await getOr404(ctx.params.id);
+  const { buf, filename } = await pdfFor(r);
   const built = reportEmail(r);
-  await brevo.sendEmail({ to, toName: to, subject: built.subject, html: built.html, text: built.text, senderEmail: config.brevo.adminSenderEmail, senderName: config.brevo.adminSenderName });
+  await brevo.sendEmail({
+    to, toName: to, subject: built.subject, html: built.html, text: built.text,
+    senderEmail: config.brevo.adminSenderEmail, senderName: config.brevo.adminSenderName,
+    attachments: [{ name: filename, content: buf.toString('base64') }],
+  });
   await supabase.update('partner_reports', { id: r.id }, { last_sent_to: to, last_sent_at: new Date().toISOString() });
-  return { status: 200, body: { sent: true, to } };
+  return { status: 200, body: { sent: true, to, filename } };
+}
+
+/** GET / PUT /admin/company-profile : legal identity + the CEO's signature used on official documents. */
+async function getCompany() {
+  const p = await companyProfile.get();
+  return { status: 200, body: { profile: Object.assign({}, p, { signature: p.signature ? { type: p.signature.type, image: p.signature.image } : null }), missing: companyProfile.missing(p) } };
+}
+async function putCompany(ctx) {
+  const body = ctx.body || {};
+  const signature = body.signature ? require('./contracts').cleanSignature(body.signature) : null;
+  const saved = await companyProfile.save(body, signature, ctx.admin && ctx.admin.email);
+  return { status: 200, body: { profile: Object.assign({}, saved, { signature: saved.signature ? { type: saved.signature.type, image: saved.signature.image } : null }), missing: companyProfile.missing(saved) } };
 }
 
 async function remove(ctx) {
@@ -141,4 +176,4 @@ async function remove(ctx) {
   return { status: 200, body: { deleted: true } };
 }
 
-module.exports = { preview, create, list, get, send, remove };
+module.exports = { preview, create, list, get, pdf, send, remove, getCompany, putCompany };
