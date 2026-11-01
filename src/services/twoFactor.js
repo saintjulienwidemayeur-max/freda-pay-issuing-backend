@@ -5,6 +5,12 @@ const supabase = require('../lib/supabase');
 const jwt = require('../utils/jwt');
 const totp = require('../utils/totp');
 const rateLimit = require('../utils/rateLimit');
+const siteUrl = require('./siteUrl');
+
+/** The dashboard's domain (e.g. issuing.fredapay.com), shown as the website of the authenticator entry. */
+function siteHost() {
+  try { return new URL(siteUrl.get()).hostname; } catch (e) { return ''; }
+}
 const { randomHex } = require('../utils/ids');
 
 /**
@@ -87,7 +93,7 @@ async function beginSetup(sub) {
   const patch = { secret_enc: totp.encrypt(secret, encKey()), updated_at: new Date().toISOString() };
   if (row) await supabase.update('user_2fa', { id: rowId(sub) }, patch);
   else await supabase.insert('user_2fa', Object.assign({ id: rowId(sub), subject_type: sub.type, subject_id: sub.id, merchant_id: sub.merchantId, recovery_hashes: [] }, patch));
-  return { secret, otpauth_uri: totp.otpauthUri({ secret, account: sub.email || sub.id, issuer: config.twoFactor.issuer }), issuer: config.twoFactor.issuer, account: sub.email || sub.id };
+  return { secret, otpauth_uri: totp.otpauthUri({ secret, account: sub.email || sub.id, issuer: config.twoFactor.issuer, site: siteHost() }), issuer: config.twoFactor.issuer, account: sub.email || sub.id };
 }
 
 /** Confirms enrolment with a first valid code; returns the one-time recovery codes. */

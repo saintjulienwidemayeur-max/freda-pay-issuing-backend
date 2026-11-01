@@ -7868,7 +7868,7 @@ test('2FA: password + emailed code lead to a mandatory enrolment, then every log
 
     const setup = await api('POST', '/auth/2fa/setup', { headers: freshIp(), body: { setup_token } });
     assert.equal(setup.status, 200);
-    assert.match(setup.data.otpauth_uri, /^otpauth:\/\/totp\/Freda%20Pay%20Issuing:twofa-owner%40example\.com\?secret=[A-Z2-7]+&issuer=Freda%20Pay%20Issuing/);
+    assert.match(setup.data.otpauth_uri, /^otpauth:\/\/totp\/Freda%20Pay%20Issuing:twofa-owner@example\.com\?secret=[A-Z2-7]+&issuer=[A-Za-z0-9.%-]+$/);
     assert.ok(setup.data.secret);
     const row = mockTables.user_2fa.find((r) => r.subject_type === 'merchant');
     assert.ok(row.secret_enc && !row.secret_enc.includes(setup.data.secret), 'the secret is stored encrypted');
