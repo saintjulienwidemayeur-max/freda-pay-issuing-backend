@@ -8,6 +8,8 @@ const apiKey = require('./middleware/apiKey');
 const rateLimit = require('./utils/rateLimit');
 
 const authHandlers = require('./handlers/auth');
+const twoFactorHandlers = require('./handlers/twoFactor');
+const adminTwoFactorHandlers = require('./handlers/adminTwoFactor');
 const apiKeyHandlers = require('./handlers/apiKeys');
 const paymentHandlers = require('./handlers/payments');
 const payoutHandlers = require('./handlers/payouts');
@@ -84,6 +86,16 @@ router.post('/auth/forgot-password', rateLimit.middleware('forgot-ip', 10, 15 * 
 router.get('/auth/reset-info', rateLimit.middleware('reset-info', 30, 15 * 60 * 1000), passwordResetHandlers.info);
 router.post('/auth/reset-password', rateLimit.middleware('reset', 15, 15 * 60 * 1000), passwordResetHandlers.reset);
 router.post('/auth/login/verify', rateLimit.middleware('login-verify', 40, 15 * 60 * 1000), authHandlers.verifyLogin);
+router.post('/auth/login/2fa', rateLimit.middleware('login-2fa', 40, 15 * 60 * 1000), authHandlers.loginTwoFactor);
+router.post('/auth/2fa/setup', rateLimit.middleware('2fa-setup', 30, 15 * 60 * 1000), twoFactorHandlers.loginSetup);
+router.post('/auth/2fa/enable', rateLimit.middleware('2fa-enable', 40, 15 * 60 * 1000), twoFactorHandlers.loginEnable);
+router.get('/dashboard/security/2fa', session.requireSession, twoFactorHandlers.status);
+router.post('/dashboard/security/2fa/setup', session.requireSession, twoFactorHandlers.setup);
+router.post('/dashboard/security/2fa/enable', session.requireSession, twoFactorHandlers.enable);
+router.post('/dashboard/security/2fa/recovery-codes', session.requireSession, twoFactorHandlers.newRecoveryCodes);
+router.get('/admin/security/2fa', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.overview(ctx); });
+router.post('/admin/security/2fa/remind', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.remind(ctx); });
+router.post('/admin/security/2fa/reset', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.reset(ctx); });
 router.post('/auth/login/resend', rateLimit.middleware('login-resend', 10, 15 * 60 * 1000), authHandlers.resendLoginOtp);
 router.post('/auth/verify-otp', rateLimit.middleware('verify-otp', 100, 15 * 60 * 1000), authHandlers.verifyEmailOtp);
 router.post('/auth/resend-otp', rateLimit.middleware('resend-otp', 3, 5 * 60 * 1000), authHandlers.resendEmailOtp);

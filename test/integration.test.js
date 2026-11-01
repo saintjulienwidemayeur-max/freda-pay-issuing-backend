@@ -42,6 +42,7 @@ process.env.MOCK_BREVO_PORT = '4506';
 process.env.MOCK_BREVO_API_KEY = 'mock-brevo-key';
 
 process.env.MASTER_WALLET_MINIMUM_USD = '50';
+process.env.TWO_FACTOR_ENFORCE = 'false'; // the rest of the suite logs in with the emailed code only; 2FA has its own tests (they switch it on)
 
 process.env.TRANZAK_BASE_URL = 'http://localhost:4530';
 process.env.TRANZAK_TEST_KEY = 'tk_test_mock';
@@ -7833,4 +7834,96 @@ test('a card purchase notification with a Go-format timestamp is recorded (it us
   assert.ok(tx);
   assert.equal(tx.occurred_at, '2026-10-30T17:39:24.664Z'); // stored as an ISO date, not the partner's raw text
   assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 13); // 20 - 7
+});
+
+// ---------------- Mandatory two-factor authentication (authenticator app) ----------------
+test('2FA: unit - base32/TOTP follow RFC 6238 and secrets are encrypted', () => {
+  const totp = require('../src/utils/totp');
+  const secret = totp.base32Encode(Buffer.from('12345678901234567890')); // RFC 6238 test key
+  assert.equal(totp.code(secret, 59 * 1000), '287082'); // RFC: T=59 -> 94287082 (last 6)
+  assert.equal(totp.code(secret, 1111111109 * 1000), '081804');
+  assert.equal(totp.verify(secret, '287082', 59 * 1000), 1);
+  assert.equal(totp.verify(secret, '000000', 59 * 1000), null);
+  const blob = totp.encrypt('SECRET', 'k');
+  assert.equal(totp.decrypt(blob, 'k'), 'SECRET');
+  assert.throws(() => totp.decrypt(blob, 'other'));
+});
+
+test('2FA: password + emailed code lead to a mandatory enrolment, then every login asks the authenticator code', async () => {
+  const config = require('../src/config');
+  const totp = require('../src/utils/totp');
+  config.twoFactor.enforce = true;
+  try {
+    const email = 'twofa-owner@example.com';
+    await registerAndVerify({ business_name: 'TwoFa Co', email, password: 'CorrectHorse9!' });
+    const step1 = await api('POST', '/auth/login', { headers: freshIp(), body: { email, password: 'CorrectHorse9!' } });
+    assert.equal(step1.data.otp_required, true);
+    const step2 = await api('POST', '/auth/login/verify', { headers: freshIp(), body: { challenge_id: step1.data.challenge_id, code: extractLoginCode(email) } });
+    assert.equal(step2.data.twofa_setup_required, true);
+    assert.equal(step2.data.session_token, undefined, 'no session until 2FA is enrolled');
+    const setup_token = step2.data.setup_token;
+    // The setup token is not a session.
+    const asSession = await api('GET', '/auth/me', { token: setup_token });
+    assert.equal(asSession.status, 401);
+
+    const setup = await api('POST', '/auth/2fa/setup', { headers: freshIp(), body: { setup_token } });
+    assert.equal(setup.status, 200);
+    assert.match(setup.data.otpauth_uri, /^otpauth:\/\/totp\//);
+    assert.ok(setup.data.secret);
+    const row = mockTables.user_2fa.find((r) => r.subject_type === 'merchant');
+    assert.ok(row.secret_enc && !row.secret_enc.includes(setup.data.secret), 'the secret is stored encrypted');
+
+    const bad = await api('POST', '/auth/2fa/enable', { headers: freshIp(), body: { setup_token, code: '000000' } });
+    assert.equal(bad.status, 401);
+    const enabled = await api('POST', '/auth/2fa/enable', { headers: freshIp(), body: { setup_token, code: totp.code(setup.data.secret) } });
+    assert.equal(enabled.status, 200);
+    assert.ok(enabled.data.session_token);
+    assert.equal(enabled.data.recovery_codes.length, 10);
+    const st = await api('GET', '/dashboard/security/2fa', { token: enabled.data.session_token });
+    assert.equal(st.data.enabled, true);
+    assert.match(st.data.message, /ne fonctionne qu'avec la 2FA/);
+
+    // Next login: password -> authenticator code (no email code any more).
+    const login2 = await api('POST', '/auth/login', { headers: freshIp(), body: { email, password: 'CorrectHorse9!' } });
+    assert.equal(login2.data.twofa_required, true);
+    assert.equal(login2.data.otp_required, undefined);
+    assert.equal(login2.data.session_token, undefined);
+    const wrong = await api('POST', '/auth/login/2fa', { headers: freshIp(), body: { challenge_token: login2.data.challenge_token, code: '123456' === totp.code(setup.data.secret) ? '654321' : '123456' } });
+    assert.equal(wrong.status, 401);
+    // The code used at enrolment can't be replayed.
+    const replay = await api('POST', '/auth/login/2fa', { headers: freshIp(), body: { challenge_token: login2.data.challenge_token, code: totp.code(setup.data.secret) } });
+    assert.equal(replay.status, 401);
+    // A recovery code works once.
+    const rec = enabled.data.recovery_codes[0];
+    const ok = await api('POST', '/auth/login/2fa', { headers: freshIp(), body: { challenge_token: login2.data.challenge_token, code: rec } });
+    assert.equal(ok.status, 200);
+    assert.ok(ok.data.session_token);
+    const again = await api('POST', '/auth/login/2fa', { headers: freshIp(), body: { challenge_token: login2.data.challenge_token, code: rec } });
+    assert.equal(again.status, 401);
+  } finally {
+    config.twoFactor.enforce = false;
+  }
+});
+
+test('2FA: the admin sees who has not activated it, reminds them by email, and can reset a locked-out user', async () => {
+  const admin = await adminLogin('owner');
+  const auth = { authorization: `Bearer ${admin.token}` };
+  const email = 'twofa-remind@example.com';
+  await registerAndVerify({ business_name: 'Remind Co', email, password: 'CorrectHorse9!' });
+  const before = await api('GET', '/admin/security/2fa', { token: admin.token });
+  assert.equal(before.status, 200);
+  const me = before.data.users.find((u) => u.email === email);
+  assert.equal(me.enabled, false);
+  assert.ok(before.data.missing >= 1);
+
+  const r = await api('POST', '/admin/security/2fa/remind', { token: admin.token, body: { only: [me.id] } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.sent, 1);
+  await waitForEmail(email, /double authentification/i);
+  const after = await api('GET', '/admin/security/2fa', { token: admin.token });
+  assert.ok(after.data.users.find((u) => u.email === email).reminded_at);
+
+  const rs = await api('POST', '/admin/security/2fa/reset', { token: admin.token, body: { type: 'merchant', id: me.id } });
+  assert.equal(rs.status, 200);
+  assert.equal(mockTables.user_2fa.find((x) => x.id === `merchant:${me.id}`), undefined);
 });

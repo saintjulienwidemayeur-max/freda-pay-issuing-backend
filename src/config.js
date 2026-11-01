@@ -136,6 +136,13 @@ const config = {
     inboundReplyAddress: process.env.INBOUND_REPLY_ADDRESS || '',
   },
 
+  // Authenticator-app 2FA: mandatory for merchant dashboards (the tools can move money). TWO_FACTOR_ENFORCE=false is an emergency switch only.
+  twoFactor: {
+    enforce: String(process.env.TWO_FACTOR_ENFORCE || 'true').toLowerCase() !== 'false',
+    issuer: 'Freda Pay Issuing',
+    key: process.env.TWO_FACTOR_KEY || '',
+  },
+
   // Email OTP verification, required before a new account can log in.
   otp: {
     codeLength: 6,
