@@ -483,6 +483,7 @@ async function publicPdf(ctx) {
 }
 
 module.exports = {
+  cleanSignature,
   adminList, adminGet, adminCreate, adminCancel, adminResend, adminPdf, adminAddSigner, adminResendSigner, adminRemoveSigner,
   merchantList, merchantGet, merchantSign, merchantPdf,
   publicGet, publicSign, publicPdf,
