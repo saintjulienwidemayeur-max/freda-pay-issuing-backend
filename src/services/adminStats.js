@@ -229,4 +229,20 @@ async function platformStats(mode, days = 14) {
   };
 }
 
-module.exports = { merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };
+/**
+ * Money in for a period (inclusive UTC dates): fees collected, what the partners charged us, and the profit left.
+ * Same rules as the overview (phantom card fees ignored).
+ */
+async function profitBetween(mode, fromDate, toDate) {
+  const from = new Date(`${fromDate}T00:00:00.000Z`).getTime();
+  const to = new Date(`${toDate}T23:59:59.999Z`).getTime();
+  const [{ byId }, feeRows] = await Promise.all([
+    cardsFor({ mode }),
+    supabase.select('fee_revenue', { mode }, { limit: 50000 }),
+  ]);
+  const norm = normalizeRevenue(feeRows, byId).filter((r) => { const t = new Date(r.at).getTime(); return t >= from && t <= to; });
+  const sum = summarizeRevenue(norm);
+  return { revenue_usd: sum.total_revenue_usd, partner_cost_usd: sum.total_partner_cost_usd, profit_usd: sum.total_profit_usd, by_kind_usd: sum.by_kind_usd, operations: norm.length };
+}
+
+module.exports = { profitBetween, merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };
