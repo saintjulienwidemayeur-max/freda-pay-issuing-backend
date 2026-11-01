@@ -8024,7 +8024,12 @@ test('partner reports: profit is filled from the real fees, expenses reduce it, 
 
   const list = await api('GET', '/admin/partner-reports', { token: admin.token });
   assert.ok(list.data.reports.find((x) => x.id === rep.id));
-  // No official PDF without the company identity and the CEO's signature.
+  // The public identity is prefilled (Freda Pay LLC, CEO name); only the signature is still missing.
+  const co0 = await api('GET', '/admin/company-profile', { token: admin.token });
+  assert.equal(co0.data.profile.legal_name, 'Freda Pay LLC');
+  assert.equal(co0.data.profile.ceo_name, 'Saint-Julien Widemayeur');
+  assert.deepEqual(co0.data.missing, ['la signature du CEO']);
+  // No official PDF without the CEO's signature.
   const early = await api('POST', `/admin/partner-reports/${rep.id}/send`, { token: admin.token, body: { to: 'partenaire@example.com' } });
   assert.equal(early.status, 409);
   assert.equal(early.data.error.code, 'COMPANY_PROFILE_INCOMPLETE');
