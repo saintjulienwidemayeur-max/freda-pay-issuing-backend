@@ -37,7 +37,7 @@ function normalizeRevenue(rows, cardsById) {
     const cost = r.partner_cost_usd != null
       ? Number(r.partner_cost_usd)
       : (KNOWN_COST[r.kind] ? config.issuingProviderCostsUSD[KNOWN_COST[r.kind]] : 0); // older rows: the known price list
-    out.push({ at: r.created_at, kind: r.kind, merchant_id: r.merchant_id, revenue_usd: revenue, partner_cost_usd: cost });
+    out.push({ id: r.id, related_id: r.related_id || null, at: r.created_at, kind: r.kind, merchant_id: r.merchant_id, currency: r.currency, amount: Number(r.amount), revenue_usd: revenue, partner_cost_usd: cost });
   }
   return out;
 }
@@ -245,4 +245,30 @@ async function profitBetween(mode, fromDate, toDate) {
   return { revenue_usd: sum.total_revenue_usd, partner_cost_usd: sum.total_partner_cost_usd, profit_usd: sum.total_profit_usd, by_kind_usd: sum.by_kind_usd, operations: norm.length };
 }
 
-module.exports = { profitBetween, merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };
+/**
+ * Profit per kind of operation (card creation, recharge, withdrawal, deposits, payments...) for a period, and the operations themselves.
+ * Same rules as everywhere else: HTG converted at the current rate, phantom card fees ignored.
+ */
+async function profitBreakdown(mode, fromDate, toDate, { kind, limit = 200 } = {}) {
+  const from = new Date(`${fromDate}T00:00:00.000Z`).getTime();
+  const to = new Date(`${toDate}T23:59:59.999Z`).getTime();
+  const [{ byId }, feeRows, merchants] = await Promise.all([
+    cardsFor({ mode }),
+    supabase.select('fee_revenue', { mode }, { limit: 50000 }),
+    supabase.select('merchants', {}, { limit: 5000 }),
+  ]);
+  const names = new Map(merchants.map((m) => [m.id, m.business_name || m.email]));
+  const inPeriod = normalizeRevenue(feeRows, byId).filter((r) => { const t = new Date(r.at).getTime(); return t >= from && t <= to; });
+  const kinds = {};
+  for (const r of inPeriod) {
+    const k = kinds[r.kind] || (kinds[r.kind] = { kind: r.kind, count: 0, revenue_usd: 0, partner_cost_usd: 0 });
+    k.count += 1; k.revenue_usd += r.revenue_usd; k.partner_cost_usd += r.partner_cost_usd;
+  }
+  const byKind = Object.values(kinds).map((k) => ({ ...k, revenue_usd: round2(k.revenue_usd), partner_cost_usd: round2(k.partner_cost_usd), profit_usd: round2(k.revenue_usd - k.partner_cost_usd) })).sort((a, b) => b.profit_usd - a.profit_usd);
+  const total = byKind.reduce((t, k) => ({ count: t.count + k.count, revenue_usd: t.revenue_usd + k.revenue_usd, partner_cost_usd: t.partner_cost_usd + k.partner_cost_usd, profit_usd: t.profit_usd + k.profit_usd }), { count: 0, revenue_usd: 0, partner_cost_usd: 0, profit_usd: 0 });
+  const rows = inPeriod.filter((r) => !kind || r.kind === kind).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, limit)
+    .map((r) => ({ id: r.id, at: r.at, kind: r.kind, merchant_id: r.merchant_id, merchant_name: names.get(r.merchant_id) || r.merchant_id, related_id: r.related_id, amount: r.amount, currency: r.currency, revenue_usd: round2(r.revenue_usd), partner_cost_usd: round2(r.partner_cost_usd), profit_usd: round2(r.revenue_usd - r.partner_cost_usd) }));
+  return { by_kind: byKind, total: { count: total.count, revenue_usd: round2(total.revenue_usd), partner_cost_usd: round2(total.partner_cost_usd), profit_usd: round2(total.profit_usd) }, rows };
+}
+
+module.exports = { profitBreakdown, profitBetween, merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };
