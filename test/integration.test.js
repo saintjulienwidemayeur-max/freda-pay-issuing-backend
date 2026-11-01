@@ -8051,3 +8051,28 @@ test('partner reports: profit is filled from the real fees, expenses reduce it, 
   assert.equal(badTo.status, 400);
   assert.equal((await api('DELETE', `/admin/partner-reports/${rep.id}`, { token: admin.token })).status, 200);
 });
+
+test('admin profit by operation: creation / recharge / withdrawal / deposit are listed with their revenue, partner cost and profit', async () => {
+  const admin = await adminLogin('owner');
+  const day = '2031-05-05'; // a day no other test uses
+  const at = `${day}T10:00:00.000Z`;
+  mockTables.fee_revenue.push(
+    { id: 'fp1', merchant_id: 'mch_p', kind: 'card_recharge', amount: 3, currency: 'USD', partner_cost_usd: 1, mode: 'live', created_at: at, related_id: 'card_x' },
+    { id: 'fp2', merchant_id: 'mch_p', kind: 'card_recharge', amount: 3, currency: 'USD', partner_cost_usd: 1, mode: 'live', created_at: at, related_id: 'card_y' },
+    { id: 'fp3', merchant_id: 'mch_p', kind: 'card_withdrawal', amount: 2, currency: 'USD', partner_cost_usd: 0.5, mode: 'live', created_at: at, related_id: 'card_x' },
+    { id: 'fp4', merchant_id: 'mch_p', kind: 'wallet_deposit', amount: 5, currency: 'USD', partner_cost_usd: 1, mode: 'live', created_at: at, related_id: 'top_1' },
+    { id: 'fp5', merchant_id: 'mch_p', kind: 'card_recharge', amount: 9, currency: 'USD', partner_cost_usd: 1, mode: 'sandbox', created_at: at }, // other environment
+  );
+  const r = await api('GET', `/admin/profit?mode=live&from=${day}&to=${day}`, { token: admin.token });
+  assert.equal(r.status, 200);
+  const rec = r.data.by_kind.find((k) => k.kind === 'card_recharge');
+  assert.deepEqual([rec.count, rec.revenue_usd, rec.partner_cost_usd, rec.profit_usd], [2, 6, 2, 4]);
+  assert.equal(r.data.by_kind.find((k) => k.kind === 'card_withdrawal').profit_usd, 1.5);
+  assert.equal(r.data.by_kind.find((k) => k.kind === 'wallet_deposit').profit_usd, 4);
+  assert.equal(r.data.total.profit_usd, 9.5); // 4 + 1.5 + 4
+  assert.equal(r.data.rows.length, 4);
+  const only = await api('GET', `/admin/profit?mode=live&from=${day}&to=${day}&kind=card_withdrawal`, { token: admin.token });
+  assert.deepEqual(only.data.rows.map((x) => x.kind), ['card_withdrawal']);
+  assert.equal(only.data.total.profit_usd, 9.5); // the summary always covers the whole period
+  assert.equal((await api('GET', '/admin/profit?from=2031-05-06&to=2031-05-05', { token: admin.token })).status, 400);
+});
