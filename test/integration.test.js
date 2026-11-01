@@ -7951,3 +7951,85 @@ test('admin email audience "unverified": only merchants who never sent their KYC
   assert.equal(emailsTo('unv-sub@example.com', /Vérification requise/).length, 0);
   assert.equal(emailsTo('unv-ok@example.com', /Vérification requise/).length, 0);
 });
+
+test('admin emails: every audience reaches ONLY its own recipients (one / live / sandbox / unverified)', async () => {
+  const admin = await adminLogin('owner');
+  const mk = async (email, patch) => {
+    await registerAndVerify({ business_name: `Aud ${email.split('@')[0]}`, email, password: 'CorrectHorse9!' });
+    Object.assign(mockTables.merchants.find((m) => m.email === email), patch);
+  };
+  await mk('aud-live@example.com', { gateway_live_enabled: true, kyc_status: 'verified' });
+  await mk('aud-sand@example.com', { gateway_live_enabled: false, issuing_live_enabled: false, kyc_status: 'not_started' });
+  await mk('aud-sand2@example.com', { gateway_live_enabled: false, issuing_live_enabled: false, kyc_status: 'submitted' });
+  const sentTo = async (audience, extra, subject) => {
+    const r = await api('POST', '/admin/messages', { token: admin.token, body: Object.assign({ audience, subject, message: 'Bonjour' }, extra || {}) });
+    assert.equal(r.status, 201, JSON.stringify(r.data));
+    await new Promise((x) => setTimeout(x, 150));
+    return ['aud-live', 'aud-sand', 'aud-sand2'].filter((n) => emailsTo(`${n}@example.com`, new RegExp(subject)).length > 0);
+  };
+  const oneId = mockTables.merchants.find((m) => m.email === 'aud-sand2@example.com').id;
+  assert.deepEqual(await sentTo('one', { merchant_id: oneId }, 'AUD-ONE'), ['aud-sand2']);
+  assert.deepEqual(await sentTo('live', {}, 'AUD-LIVE'), ['aud-live']);
+  assert.deepEqual(await sentTo('sandbox', {}, 'AUD-SAND'), ['aud-sand', 'aud-sand2']);
+  assert.deepEqual(await sentTo('unverified', {}, 'AUD-UNV'), ['aud-sand']);
+  // An unknown audience is refused, never treated as "everyone".
+  const bad = await api('POST', '/admin/messages', { token: admin.token, body: { audience: 'nimportequoi', subject: 'AUD-BAD', message: 'x' } });
+  assert.equal(bad.status, 400);
+});
+
+test('admin emails: the audience endpoint lists who will receive it, and a changed count sends nothing', async () => {
+  const admin = await adminLogin('owner');
+  await registerAndVerify({ business_name: 'Guard Co', email: 'guard-co@example.com', password: 'CorrectHorse9!' });
+  const id = mockTables.merchants.find((m) => m.email === 'guard-co@example.com').id;
+  const a = await api('GET', `/admin/messages/audience?audience=one&merchant_id=${id}`, { token: admin.token });
+  assert.equal(a.data.count, 1);
+  assert.deepEqual(a.data.recipients.map((r) => r.email), ['guard-co@example.com']);
+  const before = emailsTo('guard-co@example.com', /GUARD-MSG/).length;
+  const bad = await api('POST', '/admin/messages', { token: admin.token, body: { audience: 'one', merchant_id: id, subject: 'GUARD-MSG', message: 'x', expected_count: 99 } });
+  assert.equal(bad.status, 409);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(emailsTo('guard-co@example.com', /GUARD-MSG/).length, before);
+  const ok = await api('POST', '/admin/messages', { token: admin.token, body: { audience: 'one', merchant_id: id, subject: 'GUARD-MSG', message: 'x', expected_count: 1 } });
+  assert.equal(ok.status, 201);
+});
+
+test('partner reports: profit is filled from the real fees, expenses reduce it, the percentage gives the partner share; saved and emailed by hand', async () => {
+  const admin = await adminLogin('owner');
+  const today = new Date().toISOString().slice(0, 10);
+  const merchantId = 'mch_rpt_test';
+  // Other tests of the suite also earned fees today: the test checks what ITS rows add.
+  const base = (await api('GET', `/admin/partner-reports/preview?from=${today}&to=${today}&mode=live`, { token: admin.token })).data;
+  mockTables.fee_revenue.push(
+    { id: 'fr_rpt1', merchant_id: merchantId, mode: 'live', kind: 'card_recharge', amount: 20, currency: 'USD', partner_cost_usd: 5, created_at: new Date().toISOString() },
+    { id: 'fr_rpt2', merchant_id: merchantId, mode: 'live', kind: 'card_recharge', amount: 30, currency: 'USD', partner_cost_usd: 5, created_at: new Date().toISOString() },
+    { id: 'fr_rpt3', merchant_id: merchantId, mode: 'live', kind: 'card_recharge', amount: 99, currency: 'USD', partner_cost_usd: 0, created_at: '2020-01-01T00:00:00.000Z' }, // outside the period
+  );
+  const pv = await api('GET', `/admin/partner-reports/preview?from=${today}&to=${today}&mode=live`, { token: admin.token });
+  assert.equal(pv.status, 200);
+  assert.equal(Math.round((pv.data.revenue_usd - base.revenue_usd) * 100) / 100, 50);
+  assert.equal(Math.round((pv.data.partner_cost_usd - base.partner_cost_usd) * 100) / 100, 10);
+  assert.equal(Math.round((pv.data.profit_usd - base.profit_usd) * 100) / 100, 40);
+
+  const bad = await api('POST', '/admin/partner-reports', { token: admin.token, body: { partner_name: 'P', from: today, to: today, profit_pct: 13, expenses: [{ amount_usd: 5, label: '' }] } });
+  assert.equal(bad.status, 400); // an expense needs its reason
+  // The profit is typed by hand here (the real one depends on the rest of the suite); it can always be overridden.
+  const r = await api('POST', '/admin/partner-reports', { token: admin.token, body: { partner_name: 'Partenaire X', from: today, to: today, profit_pct: 13, profit_usd: 40, expenses: [{ amount_usd: 10, label: 'Publicité' }] } });
+  assert.equal(r.status, 201);
+  const rep = r.data.report;
+  assert.equal(rep.profit_usd, 40);
+  assert.equal(rep.expenses_total_usd, 10);
+  assert.equal(rep.net_usd, 30);
+  assert.equal(rep.partner_share_usd, 3.9); // 13 % of 30
+  assert.equal(rep.our_share_usd, 26.1);
+
+  const list = await api('GET', '/admin/partner-reports', { token: admin.token });
+  assert.ok(list.data.reports.find((x) => x.id === rep.id));
+  const sent = await api('POST', `/admin/partner-reports/${rep.id}/send`, { token: admin.token, body: { to: 'partenaire@example.com' } });
+  assert.equal(sent.status, 200);
+  const mail = await waitForEmail('partenaire@example.com', /Rapport/);
+  assert.match(mail.text, /Publicité/);
+  assert.match(mail.text, /13 %/);
+  const badTo = await api('POST', `/admin/partner-reports/${rep.id}/send`, { token: admin.token, body: { to: 'pas-un-email' } });
+  assert.equal(badTo.status, 400);
+  assert.equal((await api('DELETE', `/admin/partner-reports/${rep.id}`, { token: admin.token })).status, 200);
+});

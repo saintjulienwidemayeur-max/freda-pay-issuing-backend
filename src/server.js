@@ -9,6 +9,7 @@ const rateLimit = require('./utils/rateLimit');
 
 const authHandlers = require('./handlers/auth');
 const twoFactorHandlers = require('./handlers/twoFactor');
+const adminPartnerReportHandlers = require('./handlers/adminPartnerReports');
 const adminTwoFactorHandlers = require('./handlers/adminTwoFactor');
 const apiKeyHandlers = require('./handlers/apiKeys');
 const paymentHandlers = require('./handlers/payments');
@@ -93,6 +94,12 @@ router.get('/dashboard/security/2fa', session.requireSession, twoFactorHandlers.
 router.post('/dashboard/security/2fa/setup', session.requireSession, twoFactorHandlers.setup);
 router.post('/dashboard/security/2fa/enable', session.requireSession, twoFactorHandlers.enable);
 router.post('/dashboard/security/2fa/recovery-codes', session.requireSession, twoFactorHandlers.newRecoveryCodes);
+router.get('/admin/partner-reports/preview', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.preview(ctx); });
+router.get('/admin/partner-reports', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.list(ctx); });
+router.post('/admin/partner-reports', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.create(ctx); });
+router.get('/admin/partner-reports/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.get(ctx); });
+router.post('/admin/partner-reports/:id/send', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.send(ctx); });
+router.del('/admin/partner-reports/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.remove(ctx); });
 router.get('/admin/security/2fa', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.overview(ctx); });
 router.post('/admin/security/2fa/remind', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.remind(ctx); });
 router.post('/admin/security/2fa/reset', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.reset(ctx); });

@@ -54,6 +54,7 @@ const tables = {
   crypto_transactions: [],
   merchant_identity: [],
   user_2fa: [],
+  partner_reports: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();

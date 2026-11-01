@@ -41,7 +41,8 @@ async function resolveRecipients(audience, merchantId) {
 async function audience(ctx) {
   const a = ctx.query && ctx.query.audience;
   const list = await resolveRecipients(a, ctx.query && ctx.query.merchant_id);
-  return { status: 200, body: { audience: a, count: list.length } };
+  // The names and addresses themselves: the admin sees WHO will receive the email before sending it.
+  return { status: 200, body: { audience: a, count: list.length, recipients: list.slice(0, 500).map((m) => ({ name: m.business_name || '', email: m.email })) } };
 }
 
 function buildMessage(merchant, subject, message) {
@@ -72,7 +73,7 @@ function sendOne(merchant, subject, message) {
 }
 
 async function send(ctx) {
-  const { audience: a, merchant_id: merchantId, subject, message, test } = ctx.body || {};
+  const { audience: a, merchant_id: merchantId, subject, message, test, expected_count: expectedCount } = ctx.body || {};
   const subj = String(subject || '').trim();
   const msg = String(message || '').trim();
   if (!subj || !msg) throw httpError(400, 'MISSING_FIELDS', "L'objet et le message sont requis.");
@@ -89,6 +90,10 @@ async function send(ctx) {
 
   const recipients = await resolveRecipients(a, merchantId);
   if (!recipients.length) throw httpError(400, 'NO_RECIPIENTS', "Aucun destinataire pour cette audience.");
+  // The count the admin saw and confirmed must be the count about to be emailed: a mismatch (stale page, wrong audience) sends nothing.
+  if (expectedCount !== undefined && Number(expectedCount) !== recipients.length) {
+    throw httpError(409, 'RECIPIENTS_CHANGED', `Le nombre de destinataires a changé (${recipients.length} au lieu de ${Number(expectedCount)}). Rien n'a été envoyé : vérifiez la liste et recommencez.`);
+  }
 
   let sent = 0;
   let failed = 0;
