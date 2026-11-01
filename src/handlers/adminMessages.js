@@ -5,7 +5,7 @@ const config = require('../config');
 const { buildEmail } = require('../templates/notificationEmail');
 const { randomHex } = require('../utils/ids');
 
-const AUDIENCES = ['one', 'all', 'live', 'sandbox'];
+const AUDIENCES = ['one', 'all', 'live', 'sandbox', 'unverified'];
 const MAX_RECIPIENTS = 2000;
 const CONCURRENCY = 5;
 
@@ -18,7 +18,7 @@ function httpError(status, code, message) {
 
 /** Merchants an audience resolves to. Bulk sends skip suspended accounts and unverified emails. */
 async function resolveRecipients(audience, merchantId) {
-  if (!AUDIENCES.includes(audience)) throw httpError(400, 'INVALID_AUDIENCE', 'Audience invalide (one, all, live, sandbox).');
+  if (!AUDIENCES.includes(audience)) throw httpError(400, 'INVALID_AUDIENCE', 'Audience invalide (one, all, live, sandbox, unverified).');
   if (audience === 'one') {
     if (!merchantId) throw httpError(400, 'MISSING_FIELDS', 'merchant_id est requis pour un envoi individuel.');
     const m = await supabase.selectOne('merchants', { id: merchantId });
@@ -32,6 +32,8 @@ async function resolveRecipients(audience, merchantId) {
     const live = !!(m.gateway_live_enabled || m.issuing_live_enabled);
     if (audience === 'live') return live;
     if (audience === 'sandbox') return !live;
+    // Never sent identity documents (a submitted file waiting for review is not "late"): KYC for individuals, KYB for businesses.
+    if (audience === 'unverified') return (m.account_type === 'business' ? m.kyb_status : m.kyc_status) === 'not_started';
     return true;
   });
 }
