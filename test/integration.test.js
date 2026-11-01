@@ -6555,14 +6555,17 @@ test('provider "service is not available" shows the temporary-unavailable senten
   assert.match(providerErrors.hintFor({ message: 'service is not available at the moment', http_status: 400 }), /indisponible/);
 });
 
-test('low-balance email warns before the floor (alert at 150 $) and keeps the 50 $ reserve wording', async () => {
+test('low-balance email warns before the floor (alert at 400 $, once a day) and keeps the 50 $ reserve wording', async () => {
   const { lowBalanceEmail } = require('../src/templates/lowBalanceEmail');
   const config = require('../src/config');
-  assert.equal(config.masterWallet.alertBalanceUsd, 150);
+  assert.equal(config.masterWallet.alertBalanceUsd, 400);
+  assert.equal(config.masterWallet.alertIntervalMs, 24 * 3600 * 1000);
   assert.equal(config.masterWallet.minimumBalanceUsd, 50);
   const warn = lowBalanceEmail({ businessName: 'X', balance: 140, minimumBalance: 50 });
   assert.match(warn.subject, /approche/);
   assert.match(warn.html, /50,00 \$ restent toujours bloqu/);
+  assert.match(warn.html, /Chaque opération .* a un coût/);
+  assert.match(warn.text, /Chaque opération .* a un coût/);
   const floor = lowBalanceEmail({ businessName: 'X', balance: 50, minimumBalance: 50 });
   assert.match(floor.html, /a atteint le solde minimum/);
 });
