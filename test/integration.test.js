@@ -7927,3 +7927,24 @@ test('2FA: the admin sees who has not activated it, reminds them by email, and c
   assert.equal(rs.status, 200);
   assert.equal(mockTables.user_2fa.find((x) => x.id === `merchant:${me.id}`), undefined);
 });
+
+test('admin email audience "unverified": only merchants who never sent their KYC/KYB documents', async () => {
+  const admin = await adminLogin('owner');
+  const mk = async (email, kyc, name) => {
+    const r = await registerAndVerify({ business_name: name, email, password: 'CorrectHorse9!' });
+    const id = mockTables.merchants.find((m) => m.email === email).id;
+    mockTables.merchants.find((m) => m.id === id).kyc_status = kyc;
+    return id;
+  };
+  await mk('unv-none@example.com', 'not_started', 'Unv None');
+  await mk('unv-sub@example.com', 'submitted', 'Unv Submitted');
+  await mk('unv-ok@example.com', 'verified', 'Unv Verified');
+  const r = await api('GET', '/admin/messages/audience?audience=unverified', { token: admin.token });
+  assert.equal(r.status, 200);
+  const send = await api('POST', '/admin/messages', { token: admin.token, body: { audience: 'unverified', subject: 'Vérification requise', message: 'Bonjour {{name}}' } });
+  assert.equal(send.status, 201);
+  assert.equal(send.data.recipients, r.data.count);
+  await waitForEmail('unv-none@example.com', /Vérification requise/);
+  assert.equal(emailsTo('unv-sub@example.com', /Vérification requise/).length, 0);
+  assert.equal(emailsTo('unv-ok@example.com', /Vérification requise/).length, 0);
+});
