@@ -269,9 +269,11 @@ function parseDepositEvent(event) {
   const name = String(event.event || event.type || '');
   if (!/^(collection|crypto|deposit)[._]/i.test(name)) return null;
   const d = Object.assign({}, event, event.data && typeof event.data === 'object' ? event.data : {});
+  // Some notifications (collection.successful) carry no address at all - just { id, status, reference } - and need
+  // a separate partner lookup for the real deposit details (see fetchCryptoDepositDetails). Not having one here is
+  // not a reason to give up: a reference to look up with is enough to keep going.
   const address = d.address || d.to_address || d.wallet_address || d.deposit_address || null;
   const addressId = d.address_id || d.crypto_id || null;
-  if (!address && !addressId) return null;
   const status = String(d.status || name).toLowerCase();
   const failed = /fail|reject|cancel/.test(status) || /fail/i.test(name);
   const ok = !failed && /success|complete|confirm|credited/.test(`${status} ${name}`.toLowerCase());
@@ -284,10 +286,33 @@ function parseDepositEvent(event) {
   };
 }
 
+/**
+ * Some notifications (collection.successful) carry nothing but { id, status, reference } - no amount, no address.
+ * Reads the real transaction back from the partner. Returns null when it isn't actually a crypto deposit (so a
+ * non-crypto collection, or a reversal, is correctly left alone) - never when the read itself fails: a network
+ * hiccup must throw, so the webhook handler answers 500 and the partner redelivers instead of the deposit vanishing.
+ * IMPORTANT: the webhook's own "address" (when one is present) and the transaction's "source" are the SENDER's
+ * wallet, not ours - only "destination" is the deposit address a crypto_addresses row can match.
+ */
+async function fetchCryptoDepositDetails(reference, webhookMode) {
+  const res = await maplerad.forMode(webhookMode).getTransaction(reference);
+  const d = (res && res.data) || {};
+  if (String(d.channel || '').toUpperCase() !== 'CRYPTO' || String(d.entry || '').toUpperCase() !== 'CREDIT') return null;
+  const address = d.destination && d.destination.address;
+  if (!address) return null;
+  const cents = Number(d.amount);
+  return { address, amount: Number.isFinite(cents) && cents > 0 ? Math.round(cents) / 100 : null, txHash: d.reference || null };
+}
+
 /** A stablecoin deposit: the crypto balance is credited once (the partner's reference is the key), after our deposit rate. */
 async function applyDepositEvent(event, webhookMode) {
-  const dep = parseDepositEvent(event);
+  let dep = parseDepositEvent(event);
   if (!dep || !dep.ok || !dep.reference) return null;
+  if (!dep.address && !dep.addressId) {
+    const full = await fetchCryptoDepositDetails(dep.reference, webhookMode);
+    if (!full) return null; // not a crypto deposit (or no destination on it): nothing for this function to do
+    dep = Object.assign({}, dep, full);
+  }
   const addr = dep.address
     ? await supabase.selectOne('crypto_addresses', { address: normalizeAddress(dep.address) })
     : await supabase.selectOne('crypto_addresses', { maplerad_address_id: dep.addressId });

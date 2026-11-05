@@ -25,6 +25,7 @@ const customers = new Map(); // maplerad_customer_id -> record
 const cards = new Map(); // maplerad_card_id -> record
 
 const cryptoAddresses = []; // addresses generated through POST /crypto
+const transactions = new Map(); // reference -> full transaction record, seeded via /__control/mock-transaction
 const behavior = {
   failNextCardCreation: false,
   softErrorNextCard: false,
@@ -111,9 +112,18 @@ async function handle(req, res) {
     customers.clear();
     cards.clear();
     cryptoAddresses.length = 0;
+    transactions.clear();
     calls.length = 0;
     behavior.failNextCardCreation = false;
     behavior.failCryptoCustomer = false;
+    return send(res, 200, { ok: true });
+  }
+  // Seeds a transaction GET /transactions/:reference can return - for webhooks (like collection.successful) that
+  // carry only { id, status, reference } and need the real deposit details read back separately.
+  if (url.pathname === '/__control/mock-transaction' && req.method === 'POST') {
+    const body = await readJson(req);
+    if (!body.reference) return send(res, 400, { message: 'reference is required' });
+    transactions.set(body.reference, body);
     return send(res, 200, { ok: true });
   }
   if (url.pathname === '/__control/fail-crypto-customer') {
@@ -171,6 +181,14 @@ async function handle(req, res) {
     if (!body.address || !body.amount || !body.chain || !body.coin) return send(res, 400, { status: false, message: 'amount, address, chain and coin are required' });
     if (String(body.address).startsWith('FAIL')) return send(res, 400, { status: false, message: 'invalid destination address' });
     return send(res, 200, { status: true, message: 'transfer successful', data: { id: randomId('trf'), amount: body.amount, fee: 0, address: body.address, chain: body.chain, hash: `0xmockhash${Date.now()}`, coin: body.coin, currency: 'USD', status: 'SUCCESS' } });
+  }
+
+  // ---- GET /transactions/:reference (full details for a webhook that only carried an id/reference) ----
+  const txMatch = url.pathname.match(/^\/transactions\/([^/]+)$/);
+  if (txMatch && req.method === 'GET') {
+    const t = transactions.get(decodeURIComponent(txMatch[1]));
+    if (!t) return send(res, 404, { status: false, message: 'transaction not found' });
+    return send(res, 200, { status: true, message: 'Fetched transaction', data: t });
   }
 
   // ---- POST /customers (Tier 0: first_name, last_name, email, country) ----
