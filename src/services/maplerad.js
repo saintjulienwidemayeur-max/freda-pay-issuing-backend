@@ -449,9 +449,17 @@ async function createMerchantCryptoAddress(mode, { coin, chain, offramp }) {
   return res;
 }
 
+/**
+ * Full details of one transaction/collection by its id or reference. Needed because some webhooks (collection.successful) only carry a
+ * bare { id, status, reference } - no amount, address or customer - so the real deposit details must be read back from the partner.
+ */
+async function getTransaction(mode, idOrReference) {
+  return request(mode, 'GET', `/transactions/${encodeURIComponent(idOrReference)}`);
+}
+
 const IMPL = {
   createMerchantCryptoAddress,
-  cryptoTransfer,
+  cryptoTransfer, getTransaction,
   createCryptoAddress, getCryptoAddresses, updateCryptoOfframp,
   enrollCustomer, createCustomer, findCustomersByEmail, listCustomers, upgradeCustomerTier1, upgradeCustomerTier2, updateCustomer,
   createCard, createBusinessCard, fundCard, withdrawFromCard, getCard, listCards,
