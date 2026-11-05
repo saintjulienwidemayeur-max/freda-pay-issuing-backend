@@ -348,6 +348,7 @@ router.get('/admin/diagnostic/schema', adminSession.requireAdminSession, apiTraf
 router.get('/admin/diagnostic/webhook-events', adminSession.requireAdminSession, apiTrafficAdmin(() => adminSchemaHandlers.webhookEvents()));
 router.get('/admin/diagnostic/webhook-events/raw', adminSession.requireAdminSession, apiTrafficAdmin(adminSchemaHandlers.rawEvents));
 router.get('/admin/diagnostic/maplerad/transaction', adminSession.requireAdminSession, apiTrafficAdmin(adminSchemaHandlers.lookupTransaction));
+router.post('/admin/diagnostic/fix-address-casing', adminSession.requireAdminSession, apiTrafficAdmin(() => adminSchemaHandlers.fixAddressCasing()));
 router.post('/admin/cards/import-transactions', adminSession.requireAdminSession, apiTrafficAdmin(adminSchemaHandlers.importTransactions));
 router.get('/admin/payments/problems', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPaymentProblemHandlers.overview(ctx); });
 router.get('/admin/payments/problems/:merchantId', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPaymentProblemHandlers.detail(ctx); });
