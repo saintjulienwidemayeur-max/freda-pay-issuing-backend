@@ -216,4 +216,22 @@ async function adminDeposits(ctx) {
   };
 }
 
-module.exports = { overview, createAddress, quote, send, convert, apiBalance, apiListWallets, apiCreateWallet, apiTransactions, apiQuote, getFees, setFees, adminDeposits };
+/**
+ * Admin: POST /admin/crypto/deposits/replay : re-checks deposit notifications already stored in webhook_events
+ * against the current address records, for deposits missed the first time (e.g. the EVM case-sensitivity bug).
+ * Give one of: { address } for a single merchant's deposit address, { reference } for one deposit's reference or
+ * tx hash, or { all: true } to scan every stored successful deposit notification. Safe to call more than once.
+ */
+async function adminReplayDeposits(ctx) {
+  const body = ctx.body || {};
+  const result = await cryptoWallet.replayMissedDeposits({ address: body.address, reference: body.reference, all: body.all === true, mode: body.mode === 'sandbox' ? 'sandbox' : 'live' });
+  try {
+    await supabase.insert('admin_audit_log', {
+      id: 'aud_' + require('../utils/ids').randomHex(8), admin_id: ctx.adminId, admin_email: (ctx.admin && ctx.admin.email) || null, action: 'crypto_deposit_replay',
+      target_type: 'crypto_deposit', target_id: body.address || body.reference || 'all', merchant_id: null, details: { checked: result.checked, credited: result.credited },
+    });
+  } catch (_) { /* the replay itself is what matters */ }
+  return { status: 200, body: result };
+}
+
+module.exports = { overview, createAddress, quote, send, convert, apiBalance, apiListWallets, apiCreateWallet, apiTransactions, apiQuote, getFees, setFees, adminDeposits, adminReplayDeposits };

@@ -1,18 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Re-runs applyDepositEvent() against a Maplerad crypto deposit webhook already stored in webhook_events,
- * for deposits that were missed because the deposit address didn't match (e.g. the case-sensitivity bug fixed
- * alongside this script: an EVM address stored in one case never matched a notification reporting it in another).
- * Safe to re-run: applyDepositEvent is idempotent on the partner's reference, so an already-credited deposit is
- * left untouched and reported as "already credited" instead of being credited twice.
+ * CLI for cryptoWallet.replayMissedDeposits() (same function the admin endpoint POST /admin/crypto/deposits/replay
+ * uses) - re-checks deposit notifications already stored in webhook_events against the current address records,
+ * for deposits missed the first time (e.g. the EVM address case-sensitivity bug: an address stored in one case
+ * never matched a notification reporting it in another, so nothing was ever written, not even a 'review' row).
+ * Safe to run more than once: an already-credited deposit is reported as skipped, never credited twice.
  *
- * Run on the server that has SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY set (e.g. via the Render shell):
+ * Run on the server that has SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY set (e.g. via a hosting shell):
  *   node scripts/replay-crypto-deposit.js --address=0x4540c69b4D42d190C99AfCE5a0aa4912BEB6acb6
  *   node scripts/replay-crypto-deposit.js --reference=<provider_reference or tx_hash>
  *   node scripts/replay-crypto-deposit.js --all          (checks every stored deposit notification, not just one merchant)
  */
-const supabase = require('../src/lib/supabase');
 const cryptoWallet = require('../src/services/cryptoWallet');
 
 function arg(name) {
@@ -32,43 +31,19 @@ async function main() {
     console.error('   or: node scripts/replay-crypto-deposit.js --all [--mode=live]');
     process.exit(1);
   }
-  const normalized = address && /^0x[0-9a-fA-F]{40}$/.test(address) ? address.toLowerCase() : address;
 
-  const rows = await supabase.select('webhook_events', { provider: 'maplerad' }, { order: 'created_at.desc', limit: 2000 });
-  const matches = rows.filter((r) => {
-    const dep = cryptoWallet.parseDepositEvent(r.payload || {});
-    if (!dep || !dep.ok) return false;
-    if (all) return true;
-    if (address) {
-      const depAddr = dep.address && /^0x[0-9a-fA-F]{40}$/.test(dep.address) ? dep.address.toLowerCase() : dep.address;
-      return depAddr === normalized;
-    }
-    return dep.reference === reference || dep.txHash === reference;
-  });
-
-  if (!matches.length) {
+  const { checked, credited, still_missing: stillMissing, results } = await cryptoWallet.replayMissedDeposits({ address, reference, all, mode });
+  if (!results.length) {
     console.log('No stored Maplerad webhook event matches that address/reference. Nothing to replay.');
     return;
   }
-  if (all) console.log(`Checking ${matches.length} stored successful deposit notification(s)...`);
-
-  let checked = 0; let credited = 0; let stillMissing = 0;
-  for (const r of matches) {
-    const dep = cryptoWallet.parseDepositEvent(r.payload || {});
-    const existing = await supabase.selectOne('crypto_deposits', { provider_reference: dep.reference }).catch(() => null);
-    checked += 1;
-    if (existing) {
-      if (!all) console.log(`\nwebhook_events.id=${r.id}  at=${r.created_at}  event=${r.event_type}  amount=${dep.amount}  reference=${dep.reference}\n  -> already in crypto_deposits (status=${existing.status}, credited_usd=${existing.credited_usd}). Skipped.`);
-      continue; // the normal case once the fix is deployed: skip quietly in --all mode
-    }
-    console.log(`\nwebhook_events.id=${r.id}  at=${r.created_at}  event=${r.event_type}  amount=${dep.amount}  reference=${dep.reference}`);
-    try {
-      const row = await cryptoWallet.applyDepositEvent(r.payload, mode);
-      if (row) { console.log(`  -> CREDITED: crypto_deposits.id=${row.id}, status=${row.status}, credited_usd=${row.credited_usd}`); credited += 1; }
-      else { console.log('  -> still not credited (address unknown, wrong mode, amount out of bounds, or not a successful deposit). Check crypto_addresses for this merchant.'); stillMissing += 1; }
-    } catch (err) {
-      console.log(`  -> ERROR: ${err.message}`); stillMissing += 1;
-    }
+  for (const r of results) {
+    if (r.outcome === 'already_recorded' && all) continue; // the normal case once the fix is deployed: skip quietly in --all mode
+    console.log(`\nwebhook_event_id=${r.webhook_event_id}  at=${r.at}  amount=${r.amount}  reference=${r.reference}`);
+    if (r.outcome === 'already_recorded') console.log(`  -> already in crypto_deposits (status=${r.status}, credited_usd=${r.credited_usd}). Skipped.`);
+    else if (r.outcome === 'credited') console.log(`  -> CREDITED: crypto_deposits.id=${r.crypto_deposit_id}, status=${r.status}, credited_usd=${r.credited_usd}`);
+    else if (r.outcome === 'error') console.log(`  -> ERROR: ${r.message}`);
+    else console.log('  -> still not credited (address unknown, wrong mode, amount out of bounds, or not a successful deposit). Check crypto_addresses for this merchant.');
   }
   if (all) console.log(`\n${checked} checked, ${credited} newly credited, ${stillMissing} still need manual investigation.`);
 }
