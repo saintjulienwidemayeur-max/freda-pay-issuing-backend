@@ -97,4 +97,17 @@ async function importTransactions(ctx) {
   return { status: 200, body: { mode, cards_checked: checked, imported, errors: errors.slice(0, 10) } };
 }
 
-module.exports = { schemaCheck, webhookEvents, importTransactions, expectedTables };
+/**
+ * The exact JSON Maplerad sent for recent events of one type - to see the real field names when parseDepositEvent
+ * (or anything else reading the payload) doesn't recognize a notification's shape. Admin-only: a webhook payload
+ * can carry amounts and references, nothing more sensitive than what's already visible elsewhere in the admin.
+ */
+async function rawEvents(ctx) {
+  const eventType = ctx.query && ctx.query.event_type;
+  if (!eventType) throw httpError(400, 'MISSING_FIELDS', 'event_type est requis.');
+  const limit = Math.min(Number(ctx.query.limit) || 3, 20);
+  const rows = await supabase.select('webhook_events', { provider: 'maplerad', event_type: eventType }, { order: 'created_at.desc', limit });
+  return { status: 200, body: { events: rows.map((r) => ({ id: r.id, at: r.created_at, payload: r.payload })) } };
+}
+
+module.exports = { schemaCheck, webhookEvents, importTransactions, rawEvents, expectedTables };
