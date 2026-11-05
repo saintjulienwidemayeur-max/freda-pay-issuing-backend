@@ -269,9 +269,11 @@ function parseDepositEvent(event) {
   const name = String(event.event || event.type || '');
   if (!/^(collection|crypto|deposit)[._]/i.test(name)) return null;
   const d = Object.assign({}, event, event.data && typeof event.data === 'object' ? event.data : {});
+  // Some notifications (collection.successful) carry no address at all - just { id, status, reference } - and need
+  // a separate partner lookup for the real deposit details (see fetchCryptoDepositDetails). Not having one here is
+  // not a reason to give up: a reference to look up with is enough to keep going.
   const address = d.address || d.to_address || d.wallet_address || d.deposit_address || null;
   const addressId = d.address_id || d.crypto_id || null;
-  if (!address && !addressId) return null;
   const status = String(d.status || name).toLowerCase();
   const failed = /fail|reject|cancel/.test(status) || /fail/i.test(name);
   const ok = !failed && /success|complete|confirm|credited/.test(`${status} ${name}`.toLowerCase());
