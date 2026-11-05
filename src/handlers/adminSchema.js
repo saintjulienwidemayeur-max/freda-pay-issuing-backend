@@ -122,4 +122,21 @@ async function lookupTransaction(ctx) {
   return { status: 200, body: { mode, result: res } };
 }
 
-module.exports = { schemaCheck, webhookEvents, importTransactions, rawEvents, lookupTransaction, expectedTables };
+/**
+ * Lowercases every EVM (Ethereum/Polygon/BSC) address in crypto_addresses that predates the case-normalization fix,
+ * so it keeps matching deposit notifications going forward. Does what migrations/2026-11-05-crypto-address-lowercase.sql
+ * does, but through the app's own Supabase client (no manual SQL Editor step needed). Safe to run more than once:
+ * nothing changes once every address is already lowercase.
+ */
+async function fixAddressCasing() {
+  const rows = await supabase.select('crypto_addresses', { chain: supabase.inList(['ethereum', 'polygon', 'bsc']) }, { limit: 5000 });
+  const toFix = rows.filter((r) => r.address && /^0x[0-9a-fA-F]{40}$/.test(r.address) && r.address !== r.address.toLowerCase());
+  const fixed = [];
+  for (const r of toFix) {
+    await supabase.update('crypto_addresses', { id: r.id }, { address: r.address.toLowerCase() });
+    fixed.push({ id: r.id, from: r.address, to: r.address.toLowerCase() });
+  }
+  return { status: 200, body: { checked: rows.length, fixed } };
+}
+
+module.exports = { schemaCheck, webhookEvents, importTransactions, rawEvents, lookupTransaction, fixAddressCasing, expectedTables };
