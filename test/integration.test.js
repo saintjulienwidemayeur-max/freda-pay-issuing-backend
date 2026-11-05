@@ -7350,6 +7350,45 @@ test('crypto wallet: its own balance (separate from the Master Wallet), receive,
   assert.equal(mockTables.merchant_identity.find((r) => r.merchant_id === live2.merchantId).identification_number, 'HT999');
 });
 
+test('crypto wallet: a collection.successful webhook with no address/amount is read back from the partner (and the source address is never mistaken for ours)', async () => {
+  const reg = await registerAndVerify({ business_name: 'Thin Webhook Co', email: 'thinwebhook@sandbox-test.example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const a1 = await api('POST', '/dashboard/crypto/addresses', { token, body: { chain: 'bsc', coin: 'USDT' } });
+  assert.equal(a1.status, 201);
+
+  // Maplerad's own transaction record: amount and the real deposit address are only here, not on the webhook.
+  // source = the SENDER's wallet (must be ignored); destination = ours (the only one a crypto_addresses row can match).
+  await fetch('http://localhost:4504/__control/mock-transaction', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      reference: '0xthinref1', status: 'SUCCESS', entry: 'CREDIT', type: 'COLLECTION', channel: 'CRYPTO', amount: 1198, currency: 'USDT',
+      source: { address: '0xSenderWalletNotOurs00000000000000000001', chain: 'BSC', coin: 'USDT' },
+      destination: { id: 'dst_1', address: a1.data.address, chain: 'BSC', coin: 'USDT' },
+    }),
+  });
+  // The webhook itself: just { id, status, reference }, exactly like the real collection.successful notification.
+  await sendProviderEvent({ event: 'collection.successful', status: 'SUCCESS', id: 'evt-thin-1', reference: '0xthinref1' }, MOCK_SANDBOX_WHSEC);
+
+  const o = await api('GET', '/dashboard/crypto', { token });
+  assert.equal(o.data.balances.USDT, 11.92); // 11.98 - 0.5% deposit fee (0.06 rounded)
+  const dep = mockTables.crypto_deposits.find((d) => d.provider_reference === '0xthinref1');
+  assert.equal(dep.status, 'credited');
+  assert.equal(dep.address_id, mockTables.crypto_addresses.find((c) => c.address === a1.data.address).id); // matched by destination, not source
+
+  // Delivered twice (the partner's retry): credited once.
+  await sendProviderEvent({ event: 'collection.successful', status: 'SUCCESS', id: 'evt-thin-1', reference: '0xthinref1' }, MOCK_SANDBOX_WHSEC);
+  assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 11.92);
+
+  // A non-crypto collection.successful (e.g. a bank/mobile-money collection) is left alone, not mistaken for a crypto deposit.
+  await fetch('http://localhost:4504/__control/mock-transaction', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reference: '0xthinref2', status: 'SUCCESS', entry: 'CREDIT', type: 'COLLECTION', channel: 'BANK_TRANSFER', amount: 500000, currency: 'USD' }),
+  });
+  await sendProviderEvent({ event: 'collection.successful', status: 'SUCCESS', id: 'evt-thin-2', reference: '0xthinref2' }, MOCK_SANDBOX_WHSEC);
+  assert.equal(mockTables.crypto_deposits.find((d) => d.provider_reference === '0xthinref2'), undefined);
+  assert.equal((await api('GET', '/dashboard/crypto', { token })).data.balances.USDT, 11.92);
+});
+
 test('crypto wallet: a partner customer left by an earlier failed attempt is taken back, not refused as "already exists"', async () => {
   const reg = await registerAndVerify({ business_name: 'Retry Crypto Co', email: 'retrycrypto@sandbox-test.example.com', password: 'password123' });
   const token = reg.data.session_token;
