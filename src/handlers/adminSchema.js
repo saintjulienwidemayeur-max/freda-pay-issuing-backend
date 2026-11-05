@@ -110,4 +110,16 @@ async function rawEvents(ctx) {
   return { status: 200, body: { events: rows.map((r) => ({ id: r.id, at: r.created_at, payload: r.payload })) } };
 }
 
-module.exports = { schemaCheck, webhookEvents, importTransactions, rawEvents, expectedTables };
+/**
+ * Reads one transaction/collection back from Maplerad by its id or reference - for a webhook like collection.successful
+ * that carries no amount/address/customer, this is the only way to find out what actually happened.
+ */
+async function lookupTransaction(ctx) {
+  const reference = ctx.query && ctx.query.reference;
+  if (!reference) throw httpError(400, 'MISSING_FIELDS', 'reference est requis.');
+  const mode = ctx.query.mode === 'sandbox' ? 'sandbox' : 'live';
+  const res = await maplerad.forMode(mode).getTransaction(reference);
+  return { status: 200, body: { mode, result: res } };
+}
+
+module.exports = { schemaCheck, webhookEvents, importTransactions, rawEvents, lookupTransaction, expectedTables };
