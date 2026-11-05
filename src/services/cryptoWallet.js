@@ -31,6 +31,10 @@ const ADDRESS_FORMAT = {
 // The crypto wallet is open in Live. CRYPTO_LIVE_ENABLED=false is the switch to close it again (Sandbox keeps working).
 const liveEnabled = () => process.env.CRYPTO_LIVE_ENABLED !== 'false';
 const round2 = (n) => Math.round(n * 100) / 100;
+// EVM addresses (Ethereum/Polygon/BSC) are case-insensitive on-chain: the same address can come back checksummed (mixed case) from one
+// partner call and lowercased from another (e.g. address creation vs. a deposit notification). Comparing them as literal strings would
+// silently fail to match. Solana and Tron addresses ARE case-sensitive, so only 0x... addresses are normalized.
+const normalizeAddress = (a) => (a && /^0x[0-9a-fA-F]{40}$/.test(a) ? a.toLowerCase() : (a || null));
 const AUTO_CREDIT_MAX = 25000; // above this, a deposit waits for the team instead of crediting by itself
 
 function httpError(status, code, message) {
@@ -242,7 +246,7 @@ async function getOrCreateAddress(merchant, mode, chain, coin, profile) {
   if (!d) {
     const res = await maplerad.forMode(mode).createMerchantCryptoAddress({ coin, chain: c.provider, offramp: false });
     d = (res && (res.data || res)) || {};
-    if (d.address && await supabase.selectOne('crypto_addresses', { address: d.address })) throw httpError(502, 'CRYPTO_UNAVAILABLE', "Le service crypto n'a pas pu créer une adresse personnelle. Réessayez dans un instant.");
+    if (d.address && await supabase.selectOne('crypto_addresses', { address: normalizeAddress(d.address) })) throw httpError(502, 'CRYPTO_UNAVAILABLE', "Le service crypto n'a pas pu créer une adresse personnelle. Réessayez dans un instant.");
     customerId = 'business';
   }
   if (!d.address) throw httpError(502, 'CRYPTO_UNAVAILABLE', "Le service crypto n'a pas renvoyé d'adresse. Réessayez dans un instant.");
@@ -250,7 +254,7 @@ async function getOrCreateAddress(merchant, mode, chain, coin, profile) {
   try {
     return await supabase.insert('crypto_addresses', {
       id: `cad_${randomHex(8)}`, merchant_id: merchant.id, mode, maplerad_customer_id: customerId, maplerad_address_id: d.id || null,
-      address: d.address, chain, coin, offramp: false, active: d.active !== false,
+      address: normalizeAddress(d.address), chain, coin, offramp: false, active: d.active !== false,
     });
   } catch (err) {
     const again = await supabase.selectOne('crypto_addresses', { merchant_id: merchant.id, mode, chain, coin });
@@ -285,7 +289,7 @@ async function applyDepositEvent(event, webhookMode) {
   const dep = parseDepositEvent(event);
   if (!dep || !dep.ok || !dep.reference) return null;
   const addr = dep.address
-    ? await supabase.selectOne('crypto_addresses', { address: dep.address })
+    ? await supabase.selectOne('crypto_addresses', { address: normalizeAddress(dep.address) })
     : await supabase.selectOne('crypto_addresses', { maplerad_address_id: dep.addressId });
   if (!addr) return null;
   if (addr.mode === 'live' && !liveEnabled()) return null; // Sandbox only for now

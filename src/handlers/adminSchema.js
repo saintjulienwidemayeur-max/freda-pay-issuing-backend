@@ -59,7 +59,8 @@ async function webhookEvents() {
     let cryptoKnown = null; let cryptoStored = null; let cryptoNote = null;
     const dep = require('../services/cryptoWallet').parseDepositEvent(p);
     if (dep) {
-      const addr = dep.address ? await supabase.selectOne('crypto_addresses', { address: dep.address }).catch(() => null) : (dep.addressId ? await supabase.selectOne('crypto_addresses', { maplerad_address_id: dep.addressId }).catch(() => null) : null);
+      const normalizedAddr = dep.address && /^0x[0-9a-fA-F]{40}$/.test(dep.address) ? dep.address.toLowerCase() : dep.address;
+      const addr = normalizedAddr ? await supabase.selectOne('crypto_addresses', { address: normalizedAddr }).catch(() => null) : (dep.addressId ? await supabase.selectOne('crypto_addresses', { maplerad_address_id: dep.addressId }).catch(() => null) : null);
       cryptoKnown = !!addr;
       cryptoStored = dep.reference ? !!(await supabase.selectOne('crypto_deposits', { provider_reference: dep.reference }).catch(() => null)) : false;
       cryptoNote = !dep.ok ? 'not a successful deposit' : (dep.amount == null ? 'amount not readable' : (!addr ? 'address unknown' : null));
