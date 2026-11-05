@@ -322,6 +322,54 @@ async function applyDepositEvent(event, webhookMode) {
   return row;
 }
 
+/**
+ * Re-runs applyDepositEvent() against deposit notifications already stored in webhook_events - for deposits that were
+ * missed the first time (e.g. the EVM address case-sensitivity bug: an address stored in one case never matched a
+ * notification reporting it in another, so nothing was ever written, not even a 'review' row).
+ * Safe to call again at any time: applyDepositEvent is idempotent on the partner's reference, so an already-credited
+ * deposit is reported as skipped instead of being credited twice. Used by both the admin endpoint and the
+ * scripts/replay-crypto-deposit.js CLI, so both stay in sync.
+ */
+async function replayMissedDeposits({ address, reference, all, mode }) {
+  if (!address && !reference && !all) throw httpError(400, 'MISSING_FIELDS', 'address, reference ou all est requis.');
+  const webhookMode = mode === 'sandbox' ? 'sandbox' : 'live';
+  const normalizedAddress = normalizeAddress(address);
+
+  const rows = await supabase.select('webhook_events', { provider: 'maplerad' }, { order: 'created_at.desc', limit: 2000 });
+  const matches = rows.filter((r) => {
+    const dep = parseDepositEvent(r.payload || {});
+    if (!dep || !dep.ok) return false;
+    if (all) return true;
+    if (address) return normalizeAddress(dep.address) === normalizedAddress;
+    return dep.reference === reference || dep.txHash === reference;
+  });
+
+  const results = [];
+  for (const r of matches) {
+    const dep = parseDepositEvent(r.payload || {});
+    const existing = await supabase.selectOne('crypto_deposits', { provider_reference: dep.reference }).catch(() => null);
+    const base = { webhook_event_id: r.id, at: r.created_at, amount: dep.amount, reference: dep.reference };
+    if (existing) {
+      results.push(Object.assign(base, { outcome: 'already_recorded', status: existing.status, credited_usd: existing.credited_usd }));
+      continue;
+    }
+    try {
+      const row = await applyDepositEvent(r.payload, webhookMode);
+      results.push(row
+        ? Object.assign(base, { outcome: 'credited', crypto_deposit_id: row.id, status: row.status, credited_usd: row.credited_usd })
+        : Object.assign(base, { outcome: 'still_not_credited' }));
+    } catch (err) {
+      results.push(Object.assign(base, { outcome: 'error', message: err.message }));
+    }
+  }
+  return {
+    checked: results.length,
+    credited: results.filter((r) => r.outcome === 'credited').length,
+    still_missing: results.filter((r) => r.outcome === 'still_not_credited' || r.outcome === 'error').length,
+    results,
+  };
+}
+
 /** Hold the money first, then check nobody spent it at the same time (the same pattern as withdrawals). */
 async function holdOrFail(merchantId, amount, coin, mode, reference, relatedId) {
   await ledger.debitCrypto(merchantId, amount, coin, `${reference}:hold`, relatedId, mode);
@@ -436,4 +484,4 @@ async function convert(merchant, mode, { coin, amount, reference }) {
   return updated || row;
 }
 
-module.exports = { PROFILE_FIELDS, readProfile, liveEnabled, catalog, balances, history, getOrCreateAddress, applyDepositEvent, parseDepositEvent, send, convert, toPublicAddress, CHAINS, COINS, AUTO_CREDIT_MAX };
+module.exports = { PROFILE_FIELDS, readProfile, liveEnabled, catalog, balances, history, getOrCreateAddress, applyDepositEvent, replayMissedDeposits, parseDepositEvent, send, convert, toPublicAddress, CHAINS, COINS, AUTO_CREDIT_MAX };

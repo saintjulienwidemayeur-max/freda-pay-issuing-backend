@@ -305,6 +305,7 @@ router.get('/admin/settings/exchange-rate', adminSession.requireAdminSession, (c
 router.get('/admin/settings/crypto-fees', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return cryptoWalletHandlers.getFees(ctx); });
 router.put('/admin/settings/crypto-fees', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return cryptoWalletHandlers.setFees(ctx); });
 router.get('/admin/crypto/deposits', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return cryptoWalletHandlers.adminDeposits(ctx); });
+router.post('/admin/crypto/deposits/replay', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return cryptoWalletHandlers.adminReplayDeposits(ctx); });
 router.put('/admin/settings/exchange-rate', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminSettingsHandlers.setExchangeRate(ctx); });
 router.get('/admin/bank-payouts', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminBankPayoutHandlers.list(ctx); });
 router.post('/admin/bank-payouts/:id/complete', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminBankPayoutHandlers.complete(ctx); });
