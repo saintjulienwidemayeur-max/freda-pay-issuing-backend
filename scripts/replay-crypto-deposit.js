@@ -10,6 +10,7 @@
  * Run on the server that has SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY set (e.g. via the Render shell):
  *   node scripts/replay-crypto-deposit.js --address=0x4540c69b4D42d190C99AfCE5a0aa4912BEB6acb6
  *   node scripts/replay-crypto-deposit.js --reference=<provider_reference or tx_hash>
+ *   node scripts/replay-crypto-deposit.js --all          (checks every stored deposit notification, not just one merchant)
  */
 const supabase = require('../src/lib/supabase');
 const cryptoWallet = require('../src/services/cryptoWallet');
@@ -23,10 +24,12 @@ function arg(name) {
 async function main() {
   const address = arg('address');
   const reference = arg('reference');
+  const all = process.argv.includes('--all');
   const mode = arg('mode') || 'live';
-  if (!address && !reference) {
+  if (!address && !reference && !all) {
     console.error('Usage: node scripts/replay-crypto-deposit.js --address=0x... [--mode=live]');
     console.error('   or: node scripts/replay-crypto-deposit.js --reference=<provider_reference or tx_hash> [--mode=live]');
+    console.error('   or: node scripts/replay-crypto-deposit.js --all [--mode=live]');
     process.exit(1);
   }
   const normalized = address && /^0x[0-9a-fA-F]{40}$/.test(address) ? address.toLowerCase() : address;
@@ -34,7 +37,8 @@ async function main() {
   const rows = await supabase.select('webhook_events', { provider: 'maplerad' }, { order: 'created_at.desc', limit: 2000 });
   const matches = rows.filter((r) => {
     const dep = cryptoWallet.parseDepositEvent(r.payload || {});
-    if (!dep) return false;
+    if (!dep || !dep.ok) return false;
+    if (all) return true;
     if (address) {
       const depAddr = dep.address && /^0x[0-9a-fA-F]{40}$/.test(dep.address) ? dep.address.toLowerCase() : dep.address;
       return depAddr === normalized;
@@ -46,23 +50,27 @@ async function main() {
     console.log('No stored Maplerad webhook event matches that address/reference. Nothing to replay.');
     return;
   }
+  if (all) console.log(`Checking ${matches.length} stored successful deposit notification(s)...`);
 
+  let checked = 0; let credited = 0; let stillMissing = 0;
   for (const r of matches) {
     const dep = cryptoWallet.parseDepositEvent(r.payload || {});
-    console.log(`\nwebhook_events.id=${r.id}  at=${r.created_at}  event=${r.event_type}  ok=${dep.ok}  amount=${dep.amount}  reference=${dep.reference}`);
     const existing = await supabase.selectOne('crypto_deposits', { provider_reference: dep.reference }).catch(() => null);
+    checked += 1;
     if (existing) {
-      console.log(`  -> already in crypto_deposits (status=${existing.status}, credited_usd=${existing.credited_usd}). Skipped.`);
-      continue;
+      if (!all) console.log(`\nwebhook_events.id=${r.id}  at=${r.created_at}  event=${r.event_type}  amount=${dep.amount}  reference=${dep.reference}\n  -> already in crypto_deposits (status=${existing.status}, credited_usd=${existing.credited_usd}). Skipped.`);
+      continue; // the normal case once the fix is deployed: skip quietly in --all mode
     }
+    console.log(`\nwebhook_events.id=${r.id}  at=${r.created_at}  event=${r.event_type}  amount=${dep.amount}  reference=${dep.reference}`);
     try {
       const row = await cryptoWallet.applyDepositEvent(r.payload, mode);
-      if (row) console.log(`  -> CREDITED: crypto_deposits.id=${row.id}, status=${row.status}, credited_usd=${row.credited_usd}`);
-      else console.log('  -> still not credited (address unknown, wrong mode, amount out of bounds, or not a successful deposit). Check crypto_addresses for this merchant.');
+      if (row) { console.log(`  -> CREDITED: crypto_deposits.id=${row.id}, status=${row.status}, credited_usd=${row.credited_usd}`); credited += 1; }
+      else { console.log('  -> still not credited (address unknown, wrong mode, amount out of bounds, or not a successful deposit). Check crypto_addresses for this merchant.'); stillMissing += 1; }
     } catch (err) {
-      console.log(`  -> ERROR: ${err.message}`);
+      console.log(`  -> ERROR: ${err.message}`); stillMissing += 1;
     }
   }
+  if (all) console.log(`\n${checked} checked, ${credited} newly credited, ${stillMissing} still need manual investigation.`);
 }
 
 main().then(() => process.exit(0)).catch((err) => { console.error(err); process.exit(1); });
