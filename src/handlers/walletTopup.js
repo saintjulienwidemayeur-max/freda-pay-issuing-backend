@@ -27,6 +27,9 @@ async function create(ctx) {
   const mode = await resolveMode(ctx);
   try {
     if (orchestrator.AUTO_METHODS.includes(method)) {
+      if (!require('../config').walletAutoTopupEnabled) {
+        throw httpError(403, 'TOPUP_METHOD_DISABLED', "Le rechargement du Master Wallet par MonCash et Natcash n'est plus disponible. Utilisez Zelle ou un virement bancaire (vérifié par notre équipe), ou convertissez votre wallet crypto en USD.");
+      }
       const { amount_htg } = ctx.body;
       parseAmount(amount_htg, { field: 'amount_htg' });
       const plopplopReference = partnerReference(ctx.merchantId, reference, method);

@@ -136,6 +136,10 @@ const config = {
     inboundReplyAddress: process.env.INBOUND_REPLY_ADDRESS || '',
   },
 
+  // MonCash / Natcash top-ups of the Master Wallet are CLOSED: it is funded by Zelle / bank transfer (checked by the team) or by converting crypto.
+  // Top-ups already started keep being settled. WALLET_AUTO_TOPUP_ENABLED=true reopens the automatic top-up.
+  walletAutoTopupEnabled: String(process.env.WALLET_AUTO_TOPUP_ENABLED || 'false').toLowerCase() === 'true',
+
   // Authenticator-app 2FA: mandatory for merchant dashboards (the tools can move money). TWO_FACTOR_ENFORCE=false is an emergency switch only.
   twoFactor: {
     enforce: String(process.env.TWO_FACTOR_ENFORCE || 'true').toLowerCase() !== 'false',
