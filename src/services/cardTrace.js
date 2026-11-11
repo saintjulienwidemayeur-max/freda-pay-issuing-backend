@@ -50,29 +50,24 @@ async function trace(key) {
   }
   const declines = txs.filter((t) => /DECLIN|REJECT|FAIL/.test(String(t.status || '')) || String(t.type).toUpperCase() === 'DECLINE');
 
-  // One request by the merchant can justify ONE funding at the partner: requests (API call + the Master Wallet debit it caused) are grouped,
-  // then each partner funding claims the closest unclaimed request (time first, then an amount the debit can cover).
+  // A request by the merchant (the API call + the Master Wallet debit it caused) is ONE span of time: the wallet is debited when it starts and the
+  // API journal line is written when it ends, a few seconds later. Everything the partner records inside that span (plus a small margin) is part of it.
+  const SPAN_MARGIN_MS = 10 * 1000;
   const anchorsOf = (callTest, ledgerTest) => {
     const items = [...calls.filter(callTest).map((c) => ({ at: c.at, call: c })), ...ledger.filter(ledgerTest).map((l) => ({ at: l.at, ledger: l }))].sort((x, y) => T(x.at) - T(y.at));
     const out = [];
     for (const it of items) {
       const last = out[out.length - 1];
-      if (last && T(it.at) - T(last.at) <= 60 * 1000) { last.call = last.call || it.call; last.ledger = last.ledger || it.ledger; } else out.push({ at: it.at, call: it.call, ledger: it.ledger, claimed: false });
+      if (last && T(it.at) - T(last.end) <= 20 * 1000) { last.call = last.call || it.call; last.ledger = last.ledger || it.ledger; last.end = it.at; } else out.push({ start: it.at, end: it.at, call: it.call, ledger: it.ledger, events: [] });
     }
     return out;
   };
   const claim = (anchors, evs) => {
-    const pairs = [];
-    evs.forEach((e) => anchors.forEach((a) => {
-      const dt = Math.abs(T(e.at) - T(a.at));
-      if (dt > WINDOW_MS) return;
-      const debit = a.ledger ? Math.abs(a.ledger.amount) : null;
-      if (debit != null && e.amount != null && e.amount > debit + 0.011) return; // the wallet was debited less than the card received
-      pairs.push({ e, a, dt, gap: debit != null && e.amount != null ? debit - e.amount : 0 });
-    }));
-    pairs.sort((x, y) => x.dt - y.dt || x.gap - y.gap);
     const taken = new Map();
-    for (const p of pairs) if (!p.a.claimed && !taken.has(p.e)) { p.a.claimed = true; taken.set(p.e, p.a); }
+    for (const e of evs) {
+      const hit = anchors.find((a) => T(e.at) >= T(a.start) - SPAN_MARGIN_MS && T(e.at) <= T(a.end) + SPAN_MARGIN_MS && !(a.ledger && e.amount != null && e.amount > Math.abs(a.ledger.amount) + 0.011));
+      if (hit) { hit.events.push(e); taken.set(e, hit); }
+    }
     return taken;
   };
   const fundingEvents = [];
@@ -94,7 +89,9 @@ async function trace(key) {
       const afterDecline = declines.some((d) => T(d.occurred_at || d.created_at) <= T(ev.at) && T(ev.at) - T(d.occurred_at || d.created_at) <= WINDOW_MS);
       if (anchor) {
         const c = anchor.call;
-        ev.verdict = { kind: 'requested', text: `Le marchand a fait cette requête : ${c ? `${c.method} ${c.route || c.path} à ${new Date(c.at).toISOString()} (id ${c.request_id || '-'})` : 'un débit du Master Wallet correspond'}.` };
+        const several = anchor.events.length > 1;
+        const total = round2(anchor.events.reduce((t, x) => t + Number(x.amount || 0), 0));
+        ev.verdict = { kind: 'requested', text: `Le marchand a fait cette requête : ${c ? `${c.method} ${c.route || c.path} (id ${c.request_id || '-'}, terminée à ${new Date(c.at).toISOString().slice(11, 19)})` : 'un débit du Master Wallet correspond'}${anchor.ledger ? `, Master Wallet débité de ${Math.abs(anchor.ledger.amount)} $ à ${new Date(anchor.ledger.at).toISOString().slice(11, 19)}` : ''}.${several ? ` ATTENTION : le fournisseur a enregistré ${anchor.events.length} écritures pour cette seule requête (${anchor.events.map((x) => `${Number(x.amount).toFixed(2)} $`).join(' + ')} = ${total} $) : la 2e écriture n'a pas été demandée séparément par le marchand, elle vient du fournisseur.` : ''}` };
       } else if (tooOld) {
         ev.verdict = { kind: 'unknown', text: `Journal API trop ancien (${JOURNAL_DAYS} jours) pour vérifier.` };
       } else if (ev.type !== 'FUNDING' && ev.amount != null && ev.amount <= 1 && afterDecline) {
