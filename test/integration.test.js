@@ -8232,7 +8232,7 @@ test('card trace: each partner operation says whether the merchant really asked 
   const base = Date.now() - 2 * 3600 * 1000;
   const at = (s) => new Date(base + s * 1000).toISOString();
   const tx = (id, type, direction, status, amount, s) => mockTables.card_transactions.push({ id: `ctx_${id}`, merchant_id: card.merchant_id, card_id: card.id, mode: card.mode, provider_reference: id, type, status, direction, amount_usd: amount, currency: 'USD', occurred_at: at(s), created_at: at(s) });
-  tx('t-unasked', 'FUNDING', null, 'SUCCESS', 4, 0);          // nobody asked for this one
+  tx('t-unasked', 'FUNDING', null, 'SUCCESS', 4, -300);       // nobody asked for this one (5 minutes before any request)
   tx('t-asked', 'FUNDING', 'DEBIT', 'SUCCESS', 5, 2);         // the merchant's own recharge
   tx('t-decl', 'AUTHORIZATION', 'DEBIT', 'DECLINED', 5.98, 600);
   tx('t-fee1', 'WITHDRAWAL', 'DEBIT', 'SUCCESS', 0.5, 612);   // provider fee after the refusal
@@ -8251,6 +8251,23 @@ test('card trace: each partner operation says whether the merchant really asked 
   assert.equal(by('t-fee2').verdict.kind, 'provider_fee');
   assert.deepEqual([r.data.summary.requested, r.data.summary.not_requested, r.data.summary.provider_fees], [1, 1, 2]);
   assert.equal(r.data.card.merchant_name, 'Trace Co');
+
+  // The real case seen in production: ONE recharge request (wallet debited when it starts, API line written when it ends 6 s later) and the partner
+  // records two funding entries inside that span (4.00 then 5.00): both belong to the request, and the report says the partner wrote two.
+  const base2 = Date.now() - 3 * 3600 * 1000;
+  const at2 = (s) => new Date(base2 + s * 1000).toISOString();
+  const tx2 = (id, direction, amount, s) => mockTables.card_transactions.push({ id: `ctx_${id}`, merchant_id: card.merchant_id, card_id: card.id, mode: card.mode, provider_reference: id, type: 'FUNDING', status: 'SUCCESS', direction, amount_usd: amount, currency: 'USD', occurred_at: at2(s), created_at: at2(s) });
+  mockTables.ledger_entries.push({ id: 880002, merchant_id: card.merchant_id, wallet: 'master_wallet', type: 'wallet_debit', amount: -6.6, currency: 'USD', reference: `fund:${card.id}:k2`, related_id: card.id, created_at: at2(0) });
+  tx2('d-4', null, 4, 4);
+  tx2('d-5', 'DEBIT', 5, 6);
+  mockTables.api_call_log.push({ id: 7002, created_at: at2(6.7), merchant_id: card.merchant_id, method: 'POST', route: '/v1/cards/:id/fund', path: `/v1/cards/${card.id}/fund`, status: 200, code: null, message: null, ms: 6700, mode: 'live', request_id: 'req_two_writes' });
+  const r2 = await api('GET', `/admin/card-trace?card=${card.id}`, { token: admin });
+  const by2 = (ref) => r2.data.events.find((e) => e.source === 'partner' && e.detail.includes(`réf ${ref}`));
+  for (const ref of ['d-4', 'd-5']) {
+    assert.equal(by2(ref).verdict.kind, 'requested');
+    assert.match(by2(ref).verdict.text, /req_two_writes/);
+    assert.match(by2(ref).verdict.text, /2 écritures.*4\.00 \$ \+ 5\.00 \$ = 9 \$/);
+  }
   assert.equal((await api('GET', '/admin/card-trace?card=TRACE-1', { token: admin })).status, 200); // by reference too
   assert.equal((await api('GET', '/admin/card-trace?card=nope', { token: admin })).status, 404);
 });
