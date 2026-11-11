@@ -42,6 +42,7 @@ process.env.MOCK_BREVO_PORT = '4506';
 process.env.MOCK_BREVO_API_KEY = 'mock-brevo-key';
 
 process.env.MASTER_WALLET_MINIMUM_USD = '50';
+process.env.WALLET_AUTO_TOPUP_ENABLED = 'true'; // the suite exercises the automatic top-up; the closed state has its own test
 process.env.TWO_FACTOR_ENFORCE = 'false'; // the rest of the suite logs in with the emailed code only; 2FA has its own tests (they switch it on)
 
 process.env.TRANZAK_BASE_URL = 'http://localhost:4530';
@@ -8119,4 +8120,55 @@ test('admin profit by operation: creation / recharge / withdrawal / deposit are 
   assert.deepEqual(only.data.rows.map((x) => x.kind), ['card_withdrawal']);
   assert.equal(only.data.total.profit_usd, 9.5); // the summary always covers the whole period
   assert.equal((await api('GET', '/admin/profit?from=2031-05-06&to=2031-05-05', { token: admin.token })).status, 400);
+});
+
+test('Master Wallet top-up by MonCash / Natcash is closed by default; Zelle / bank stay open and started top-ups keep settling', async () => {
+  const config = require('../src/config');
+  const reg = await registerAndVerify({ business_name: 'Closed Topup Co', email: 'closed-topup@example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  config.walletAutoTopupEnabled = false;
+  try {
+    for (const method of ['moncash', 'natcash']) {
+      const r = await api('POST', '/dashboard/wallet/topups', { token, body: { method, amount_htg: 1000, reference: `CLOSED-${method}` } });
+      assert.equal(r.status, 403);
+      assert.equal(r.data.error.code, 'TOPUP_METHOD_DISABLED');
+    }
+    const z = await api('POST', '/dashboard/wallet/topups', { token, body: { method: 'zelle', amount_usd: 50, reference: 'CLOSED-ZELLE' } });
+    assert.equal(z.status, 201);
+  } finally {
+    config.walletAutoTopupEnabled = true;
+  }
+});
+
+test('admin wallet audit: a Master Wallet balance is explained cause by cause, and credits with no real source are flagged', async () => {
+  const admin = await adminLogin('owner');
+  const reg = await registerAndVerify({ business_name: 'Audit Co', email: 'audit-co@example.com', password: 'CorrectHorse9!' });
+  const id = reg.data.merchant.id;
+  // A legitimate credit (written in the admin log) and a legitimate debit.
+  assert.equal((await api('POST', `/admin/merchants/${id}/credit`, { token: admin.token, body: { wallet: 'master_wallet', amount: 100, mode: 'live', note: 'Zelle confirmé' } })).status, 200);
+  assert.equal((await api('POST', `/admin/merchants/${id}/debit`, { token: admin.token, body: { wallet: 'master_wallet', amount: 10, mode: 'live', reason: 'Correction' } })).status, 200);
+  // What a flaw would look like: money written in the ledger with no source, and the same credit twice.
+  const rogue = (reference, amount) => mockTables.ledger_entries.push({ id: 900000 + mockTables.ledger_entries.length, merchant_id: id, wallet: 'live:master_wallet', type: 'wallet_topup', amount, currency: 'USD', reference, related_id: null, created_at: new Date().toISOString() });
+  rogue('mystery-credit-1', 40);
+  rogue('manual-topup:top_does_not_exist', 25);
+
+  const r = await api('GET', `/admin/merchants/${id}/ledger?mode=live&wallet=master_wallet`, { token: admin.token });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.balance, 155); // 100 - 10 + 40 + 25
+  assert.equal(r.data.matches, true);
+  assert.equal(r.data.total_up, 165);
+  assert.equal(r.data.total_down, -10);
+  assert.equal(r.data.anomalies, 2);
+  const okCredit = r.data.entries.find((e) => e.category === 'admin_credit');
+  assert.equal(okCredit.status, 'ok');
+  assert.match(okCredit.note, /Zelle confirmé/);
+  assert.equal(r.data.entries.find((e) => e.reference === 'mystery-credit-1').status, 'anomaly');
+  assert.equal(r.data.entries.find((e) => e.reference === 'manual-topup:top_does_not_exist').status, 'anomaly');
+  assert.equal(r.data.entries[0].balance_after, 155); // newest first, with the running balance
+
+  const all = await api('GET', '/admin/master-wallet/anomalies?mode=live', { token: admin.token });
+  assert.equal(all.status, 200);
+  const mine = all.data.flagged.filter((f) => f.merchant_id === id);
+  assert.deepEqual(mine.map((f) => f.reference).sort(), ['manual-topup:top_does_not_exist', 'mystery-credit-1']);
+  assert.equal((await api('GET', '/admin/merchants/nope/ledger', { token: admin.token })).status, 404);
 });
