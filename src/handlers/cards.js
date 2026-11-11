@@ -164,8 +164,9 @@ async function list(ctx) {
 }
 
 async function get(ctx) {
-  const card = await cardOrchestrator.getById(ctx.merchantId, ctx.params.id);
+  let card = await cardOrchestrator.getById(ctx.merchantId, ctx.params.id);
   if (!card) throw httpError(404, 'NOT_FOUND', 'Carte introuvable.');
+  card = await cardOrchestrator.alignCardIfStale(card); // the figure shown is the partner's, not a stale copy
   return { status: 200, body: toPublicCard(card, ctx) };
 }
 

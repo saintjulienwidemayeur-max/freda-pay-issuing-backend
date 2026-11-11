@@ -11,6 +11,7 @@ const authHandlers = require('./handlers/auth');
 const twoFactorHandlers = require('./handlers/twoFactor');
 const adminPartnerReportHandlers = require('./handlers/adminPartnerReports');
 const adminWalletAuditHandlers = require('./handlers/adminWalletAudit');
+const adminCardTraceHandlers = require('./handlers/adminCardTrace');
 const adminProfitHandlers = require('./handlers/adminProfit');
 const adminTwoFactorHandlers = require('./handlers/adminTwoFactor');
 const apiKeyHandlers = require('./handlers/apiKeys');
@@ -107,6 +108,7 @@ router.post('/admin/partner-reports/:id/send', adminSession.requireAdminSession,
 router.del('/admin/partner-reports/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.remove(ctx); });
 router.get('/admin/merchants/:id/ledger', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.merchantLedger(ctx); });
 router.get('/admin/master-wallet/anomalies', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.anomalies(ctx); });
+router.get('/admin/card-trace', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminCardTraceHandlers.trace(ctx); });
 router.get('/admin/profit', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminProfitHandlers.breakdown(ctx); });
 router.get('/admin/security/2fa', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.overview(ctx); });
 router.post('/admin/security/2fa/remind', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.remind(ctx); });
@@ -344,6 +346,8 @@ router.get('/admin/api-health/:merchantId/message', adminSession.requireAdminSes
 router.post('/admin/api-health/:merchantId/send', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.healthSend));
 router.get('/admin/cards-balance-check', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.cardBalanceCheck));
 router.post('/admin/cards/:id/send-balance', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.cardBalanceSend));
+router.post('/admin/cards/align-all', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 202, body: await require('./services/cardOrchestrator').alignAllCards({ mode: ctx.body && ctx.body.mode }) }; });
+router.get('/admin/cards/align-all', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: require('./services/cardOrchestrator').alignAllStatus() }; });
 router.post('/admin/cards/:id/align-balance', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.cardBalanceAlign));
 router.get('/admin/api-calls', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.callMerchants));
 router.get('/admin/api-calls/:merchantId', adminSession.requireAdminSession, apiTrafficAdmin(adminApiTrafficHandlers.callsOfMerchant));
@@ -504,6 +508,10 @@ if (require.main === module) {
           .finally(() => { cardBusy = false; });
       }, 5 * 60 * 1000).unref();
       // A card that never reached the partner is closed and refunded within a few minutes (the merchant is emailed), not at the next 5-minute pass.
+      // Once after every start: all live cards are read against the partner and aligned, so nothing has to be done by hand after a deploy.
+      if (process.env.CARD_ALIGN_ON_BOOT !== 'false') {
+        setTimeout(() => require('./services/cardOrchestrator').alignAllCards({ mode: 'live' }).catch((e) => console.error('Card alignment at start:', e.message)), 90 * 1000).unref();
+      }
       let unsentBusy = false;
       setInterval(() => {
         if (unsentBusy) return;
@@ -525,7 +533,7 @@ if (require.main === module) {
       setInterval(() => {
         if (cardTxBusy) return;
         cardTxBusy = true;
-        require('./services/cardOrchestrator').reconcileCardTransactions(10)
+        require('./services/cardOrchestrator').reconcileCardTransactions(15)
           .catch((e) => console.error('Card transaction reconciliation:', e.message))
           .finally(() => { cardTxBusy = false; });
       }, 2 * 60 * 1000).unref();

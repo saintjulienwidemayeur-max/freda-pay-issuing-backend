@@ -1346,6 +1346,77 @@ async function syncCardTransactionsFromPartner(card, opts) {
   return { imported };
 }
 
+/**
+ * Puts OUR balance of one card on the partner's figure, whatever the gap. The partner holds the real balance (cross-border fees, charges, purchases
+ * whose notification never reached us...). Two safeguards replace the old "within 2 $" rule: the partner is read TWICE and both answers must agree
+ * (a stale or odd answer is not trusted), and a card we touched in the last `settleMs` is left for the next pass (our own operation may not be
+ * reflected at the partner yet). The correction only applies if our balance did not change meanwhile. The merchant's server is told
+ * (card.balance_updated, reason partner_sync).
+ */
+async function alignCardWithPartner(card, opts) {
+  const settleMs = opts && opts.settleMs !== undefined ? opts.settleMs : 90 * 1000;
+  const result = { id: card && card.id, changed: false };
+  if (!card || !card.maplerad_card_id || !['active', 'disabled'].includes(card.status) || card.deleted_at) return Object.assign(result, { skipped: 'not-applicable' });
+  const read = async () => {
+    const res = await maplerad.forMode(card.mode).getCard(card.maplerad_card_id);
+    const cents = Number(((res && (res.data || res)) || {}).balance);
+    return Number.isFinite(cents) && cents >= 0 ? pricing.round2(cents / 100) : null;
+  };
+  const fresh = await supabase.selectOne('cards', { id: card.id });
+  if (!fresh) return Object.assign(result, { skipped: 'gone' });
+  if (settleMs && fresh.updated_at && Date.now() - new Date(fresh.updated_at).getTime() < settleMs) return Object.assign(result, { skipped: 'recently-changed' });
+  const first = await read();
+  if (first === null) return Object.assign(result, { skipped: 'no-partner-balance' });
+  const ours = Number(fresh.balance || 0);
+  if (Math.abs(first - ours) < 0.005) return Object.assign(result, { balance: ours });
+  await new Promise((r) => setTimeout(r, (opts && opts.confirmMs) !== undefined ? opts.confirmMs : 400));
+  const second = await read();
+  if (second === null || Math.abs(second - first) >= 0.005) return Object.assign(result, { skipped: 'partner-answer-unstable' });
+  const [fixed] = await supabase.update('cards', { id: card.id, balance: ours }, { balance: first, updated_at: new Date().toISOString() });
+  if (!fixed) return Object.assign(result, { skipped: 'changed-meanwhile' });
+  webhookDispatcher.dispatch(fixed.merchant_id, 'card.balance_updated', balanceWebhookData(fixed, ours, 'partner_sync'));
+  // eslint-disable-next-line no-console
+  console.log(`Card ${card.id} (${card.own_reference || ''}): balance aligned with the partner, ${ours} $ -> ${first} $.`);
+  return Object.assign(result, { changed: true, before: ours, balance: first, merchant_id: fixed.merchant_id, own_reference: fixed.own_reference });
+}
+
+/** Aligns one card with the partner at most once per `minGapMs` (the card page does this when it is opened, so a merchant never sees a stale figure). */
+const lastAlign = new Map();
+async function alignCardIfStale(card, minGapMs) {
+  if (!card || card.mode !== 'live') return card;
+  const now = Date.now();
+  if (now - (lastAlign.get(card.id) || 0) < (minGapMs || 30 * 1000)) return card;
+  lastAlign.set(card.id, now);
+  try {
+    const r = await alignCardWithPartner(card);
+    if (r.changed) return (await supabase.selectOne('cards', { id: card.id })) || card;
+  } catch (err) { /* the stored balance is still shown */ }
+  return card;
+}
+
+/** One-time / on-demand: every live active card is read at the partner (missing transactions imported) and aligned. Runs in the background; progress is readable. */
+const alignJob = { running: false, started_at: null, finished_at: null, total: 0, checked: 0, corrected: [], skipped: 0, errors: [] };
+function alignAllStatus() { return Object.assign({}, alignJob, { corrected: alignJob.corrected.slice(-300), errors: alignJob.errors.slice(-20) }); }
+async function alignAllCards(opts) {
+  if (alignJob.running) return alignAllStatus();
+  const mode = opts && opts.mode === 'sandbox' ? 'sandbox' : 'live';
+  const cards = await supabase.select('cards', { status: supabase.inList(['active', 'disabled']), mode, deleted_at: supabase.isNull() }, { order: 'created_at.asc', limit: 5000 });
+  Object.assign(alignJob, { running: true, started_at: new Date().toISOString(), finished_at: null, total: cards.length, checked: 0, corrected: [], skipped: 0, errors: [] });
+  (async () => {
+    for (const c of cards) {
+      try {
+        if (c.maplerad_card_id) await syncCardTransactionsFromPartner(c, { sinceMs: 14 * 24 * 3600 * 1000 }).catch(() => {});
+        const r = await alignCardWithPartner(c, { settleMs: opts && opts.settleMs !== undefined ? opts.settleMs : 20 * 1000, confirmMs: opts && opts.confirmMs });
+        if (r.changed) alignJob.corrected.push({ card: c.own_reference || c.id, merchant_id: c.merchant_id, before: r.before, after: r.balance });
+        else if (r.skipped) alignJob.skipped += 1;
+      } catch (err) { alignJob.errors.push(`${c.own_reference || c.id}: ${err.message}`); }
+      alignJob.checked += 1;
+      await new Promise((r) => setTimeout(r, (opts && opts.pauseMs) !== undefined ? opts.pauseMs : Number(process.env.CARD_ALIGN_PAUSE_MS || 250)));
+    }
+  })().finally(() => { alignJob.running = false; alignJob.finished_at = new Date().toISOString(); });
+  return alignAllStatus();
+}
+
 /** Background safety net: webhooks can be lost, so a few cards per run (rotating through all of them) are read against the partner. */
 let cardSyncCursor = 0;
 async function reconcileCardTransactions(limit) {
@@ -1357,6 +1428,7 @@ async function reconcileCardTransactions(limit) {
   let imported = 0;
   for (const c of cards) {
     try { imported += (await syncCardTransactionsFromPartner(c, { sinceMs: 7 * 24 * 3600 * 1000 })).imported; } catch (err) { console.error(`Card transaction sync ${c.id}: ${err.message}`); } // eslint-disable-line no-console
+    try { await alignCardWithPartner(c); } catch (err) { console.error(`Card balance alignment ${c.id}: ${err.message}`); } // eslint-disable-line no-console
   }
   return { cards: cards.length, imported };
 }
@@ -1394,6 +1466,10 @@ function transactionWebhookData(card, t) {
 }
 
 module.exports = {
+  alignCardWithPartner,
+  alignCardIfStale,
+  alignAllCards,
+  alignAllStatus,
   partnerCustomerState,
   failUnsentPendingCards,
   lookupProviderCustomerId,

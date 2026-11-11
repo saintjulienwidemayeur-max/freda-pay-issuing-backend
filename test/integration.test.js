@@ -43,6 +43,7 @@ process.env.MOCK_BREVO_API_KEY = 'mock-brevo-key';
 
 process.env.MASTER_WALLET_MINIMUM_USD = '50';
 process.env.WALLET_AUTO_TOPUP_ENABLED = 'true'; // the suite exercises the automatic top-up; the closed state has its own test
+process.env.CARD_ALIGN_PAUSE_MS = '0';
 process.env.TWO_FACTOR_ENFORCE = 'false'; // the rest of the suite logs in with the emailed code only; 2FA has its own tests (they switch it on)
 
 process.env.TRANZAK_BASE_URL = 'http://localhost:4530';
@@ -8171,4 +8172,85 @@ test('admin wallet audit: a Master Wallet balance is explained cause by cause, a
   const mine = all.data.flagged.filter((f) => f.merchant_id === id);
   assert.deepEqual(mine.map((f) => f.reference).sort(), ['manual-topup:top_does_not_exist', 'mystery-credit-1']);
   assert.equal((await api('GET', '/admin/merchants/nope/ledger', { token: admin.token })).status, 404);
+});
+
+test('card balances align with the partner automatically: any gap is corrected once the partner answers twice the same, and a card just touched is left alone', async () => {
+  const maplerad = require('../src/services/maplerad');
+  const cardOrchestrator = require('../src/services/cardOrchestrator');
+  const original = maplerad.forMode;
+  try {
+    const reg = await registerAndVerify({ business_name: 'Align Co', email: 'align-co@example.com', password: 'password123' });
+    const token = reg.data.session_token;
+    const create = await api('POST', '/dashboard/cards', { token, body: { reference: 'ALIGN-1', kind: 'business', business_name: 'Align Co', brand: 'VISA', amount: 20 } });
+    await pollUntil(() => api('GET', `/dashboard/cards/${create.data.id}`, { token }), (r) => r.data.status !== 'pending', 30, 20);
+    const row = mockTables.cards.find((c) => c.id === create.data.id);
+    const long = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const partner = (cents) => { maplerad.forMode = () => ({ getCard: async () => ({ data: { id: row.maplerad_card_id, balance: cents } }) }); };
+
+    // A gap of 38 $ (far above the old 2 $ limit): corrected.
+    row.balance = 50; row.updated_at = long;
+    partner(1200);
+    const r1 = await cardOrchestrator.alignCardWithPartner(row, { confirmMs: 0 });
+    assert.equal(r1.changed, true);
+    assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), 12);
+
+    // Just touched by one of our own operations: left for the next pass.
+    row.balance = 50; row.updated_at = new Date().toISOString();
+    const r2 = await cardOrchestrator.alignCardWithPartner(row, { confirmMs: 0 });
+    assert.equal(r2.skipped, 'recently-changed');
+    assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), 50);
+
+    // The partner contradicts itself between two reads: nothing is trusted.
+    row.updated_at = long;
+    let n = 0;
+    maplerad.forMode = () => ({ getCard: async () => ({ data: { balance: (n += 1) % 2 ? 1200 : 3400 } }) });
+    const r3 = await cardOrchestrator.alignCardWithPartner(row, { confirmMs: 0 });
+    assert.equal(r3.skipped, 'partner-answer-unstable');
+    assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), 50);
+
+    // The team's one-click run over all cards (also run once after every start).
+    row.updated_at = long;
+    maplerad.forMode = () => ({
+      getCard: async (id) => ({ data: { balance: id === row.maplerad_card_id ? 700 : Math.round(Number((mockTables.cards.find((c) => c.maplerad_card_id === id) || {}).balance || 0) * 100) } }),
+      getCardTransactions: async () => ({ data: [] }),
+    });
+    const { token: admin } = await adminLogin('owner');
+    const start = await api('POST', '/admin/cards/align-all', { token: admin, body: { mode: 'sandbox' } });
+    assert.equal(start.status, 202);
+    const done = await pollUntil(() => api('GET', '/admin/cards/align-all', { token: admin }), (r) => r.data.running === false && r.data.finished_at, 100, 100);
+    assert.ok(done.data.corrected.find((c) => c.card === 'ALIGN-1' && c.after === 7));
+    assert.equal(Number(mockTables.cards.find((c) => c.id === row.id).balance), 7);
+  } finally { maplerad.forMode = original; }
+});
+
+test('card trace: each partner operation says whether the merchant really asked for it (API call or wallet debit), and fees after a decline are the provider\'s', async () => {
+  const reg = await registerAndVerify({ business_name: 'Trace Co', email: 'trace-co@example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const create = await api('POST', '/dashboard/cards', { token, body: { reference: 'TRACE-1', kind: 'business', business_name: 'Trace Co', brand: 'VISA', amount: 20 } });
+  await pollUntil(() => api('GET', `/dashboard/cards/${create.data.id}`, { token }), (r) => r.data.status !== 'pending', 30, 20);
+  const card = mockTables.cards.find((c) => c.id === create.data.id);
+  const base = Date.now() - 2 * 3600 * 1000;
+  const at = (s) => new Date(base + s * 1000).toISOString();
+  const tx = (id, type, direction, status, amount, s) => mockTables.card_transactions.push({ id: `ctx_${id}`, merchant_id: card.merchant_id, card_id: card.id, mode: card.mode, provider_reference: id, type, status, direction, amount_usd: amount, currency: 'USD', occurred_at: at(s), created_at: at(s) });
+  tx('t-unasked', 'FUNDING', null, 'SUCCESS', 4, 0);          // nobody asked for this one
+  tx('t-asked', 'FUNDING', 'DEBIT', 'SUCCESS', 5, 2);         // the merchant's own recharge
+  tx('t-decl', 'AUTHORIZATION', 'DEBIT', 'DECLINED', 5.98, 600);
+  tx('t-fee1', 'WITHDRAWAL', 'DEBIT', 'SUCCESS', 0.5, 612);   // provider fee after the refusal
+  tx('t-fee2', 'CHARGE', 'DEBIT', 'SUCCESS', 0.5, 613);
+  mockTables.api_call_log.push({ id: 7001, created_at: at(2), merchant_id: card.merchant_id, method: 'POST', route: '/v1/cards/:id/fund', path: `/v1/cards/${card.id}/fund`, status: 200, code: null, message: null, ms: 80, mode: 'live', request_id: 'req_abc123' });
+  mockTables.ledger_entries.push({ id: 880001, merchant_id: card.merchant_id, wallet: 'master_wallet', type: 'wallet_debit', amount: -6.6, currency: 'USD', reference: `fund:${card.own_reference}:k1`, related_id: card.id, created_at: at(2) });
+
+  const { token: admin } = await adminLogin('owner');
+  const r = await api('GET', `/admin/card-trace?card=${card.id}`, { token: admin });
+  assert.equal(r.status, 200);
+  const by = (ref) => r.data.events.find((e) => e.source === 'partner' && e.detail.includes(`réf ${ref}`));
+  assert.equal(by('t-unasked').verdict.kind, 'not_requested');
+  assert.equal(by('t-asked').verdict.kind, 'requested');
+  assert.match(by('t-asked').verdict.text, /req_abc123/);
+  assert.equal(by('t-fee1').verdict.kind, 'provider_fee');
+  assert.equal(by('t-fee2').verdict.kind, 'provider_fee');
+  assert.deepEqual([r.data.summary.requested, r.data.summary.not_requested, r.data.summary.provider_fees], [1, 1, 2]);
+  assert.equal(r.data.card.merchant_name, 'Trace Co');
+  assert.equal((await api('GET', '/admin/card-trace?card=TRACE-1', { token: admin })).status, 200); // by reference too
+  assert.equal((await api('GET', '/admin/card-trace?card=nope', { token: admin })).status, 404);
 });
