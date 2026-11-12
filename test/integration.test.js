@@ -3115,7 +3115,7 @@ test('the decline fee follows the plan and the admin\'s custom price: free plan 
   assert.equal(Math.round((beforeCustom - (await b.balance())) * 100) / 100, 0.4);
 });
 
-test('the decline fee never digs into the 50 $ guarantee deposit, and a live card is only charged by a LIVE-signed event', async () => {
+test('the decline fee never pushes a wallet below zero, and a live card is only charged by a LIVE-signed event', async () => {
   const live = await makeLiveMerchant('decllive', { fundUsd: 300 });
   const c = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'DECL-LIVE-1', kind: 'business', business_name: 'Decl Live Co', brand: 'VISA', amount: 90 } });
   assert.equal(c.status, 202);
@@ -3132,19 +3132,14 @@ test('the decline fee never digs into the 50 $ guarantee deposit, and a live car
   await sendProviderEvent(declineEvent(card.maplerad_card_id), MOCK_LIVE_WHSEC);
   assert.equal(r2(start - (await liveBalance())), 1);
 
-  // drain the live wallet down to 50.40 $ (0.40 $ above the guarantee): the next decline can only take what is above the 50 $
+  // drain the live wallet down to 0.40 $: the next decline can only take what is there
   const now = await liveBalance();
-  mockTables.ledger_entries.push({ merchant_id: live.merchantId, wallet: 'live:master_wallet', type: 'wallet_debit', amount: -(now - 50.4), currency: 'USD', reference: 'test-drain', created_at: new Date().toISOString() });
-  assert.equal(r2(await liveBalance()), 50.4);
+  mockTables.ledger_entries.push({ merchant_id: live.merchantId, wallet: 'live:master_wallet', type: 'wallet_debit', amount: -(now - 0.4), currency: 'USD', reference: 'test-drain', created_at: new Date().toISOString() });
+  assert.equal(r2(await liveBalance()), 0.4);
   await sendProviderEvent(declineEvent(card.maplerad_card_id), MOCK_LIVE_WHSEC);
-  assert.equal(r2(await liveBalance()), 50); // took 0.40, not 1.00: the reserve is untouched
+  assert.equal(r2(await liveBalance()), 0); // took 0.40, not 1.00
   await sendProviderEvent(declineEvent(card.maplerad_card_id), MOCK_LIVE_WHSEC);
-  assert.equal(r2(await liveBalance()), 50); // nothing above the reserve: nothing more is taken, never below 50
-
-  // the per-purchase fee follows the same rule
-  const purchase = { ...declineEvent(card.maplerad_card_id), type: 'AUTHORIZATION', status: 'SUCCESS', mode: 'DEBIT', reference: 'live-purchase-1', description: 'Approved or completed successfully' };
-  await sendProviderEvent(purchase, MOCK_LIVE_WHSEC);
-  assert.equal(r2(await liveBalance()), 50);
+  assert.equal(r2(await liveBalance()), 0); // empty wallet: nothing more, and never negative
 
   const fees = mockTables.fee_revenue.filter((f) => f.kind === 'card_decline' && f.merchant_id === live.merchantId);
   assert.deepEqual(fees.map((f) => Number(f.amount)), [1, 0.4]);

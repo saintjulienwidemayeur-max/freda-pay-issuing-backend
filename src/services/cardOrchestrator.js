@@ -1085,13 +1085,16 @@ async function applyCardDeclineWebhook(event, webhookMode) {
   const fee = pricing.cardDeclineFee(planKeyFor(merchant, 'issuing', mode), await getMerchantPricingOverride(card.merchant_id));
   if (!(fee > 0)) return { charged: 0, reason: 'no-fee-on-plan' };
 
-  // Only what is above the guarantee deposit can be taken: the reserve (50 $ by default) never goes down.
-  const charge = await masterWallet.chargeFeeAboveFloor(card.merchant_id, fee, ref, card.id, mode);
+  // After-the-fact fees (decline, per purchase) are collected from whatever the wallet holds, even into the guarantee deposit: they are
+  // what the deposit is for. Never more than the wallet holds.
+  const available = await ledger.getBalance(card.merchant_id, 'master_wallet', 'USD', mode);
+  const charge = pricing.round2(Math.min(fee, Math.max(0, available)));
   if (!(charge > 0)) {
     // eslint-disable-next-line no-console
-    console.log(`Decline fee for card ${card.id} not collected: nothing is available above the guarantee deposit of the ${mode} Master Wallet.`);
+    console.log(`Decline fee for card ${card.id} not collected: the ${mode} Master Wallet is empty.`);
     return { charged: 0, reason: 'empty-wallet' };
   }
+  await ledger.debitMasterWallet(card.merchant_id, charge, 'USD', ref, card.id, mode);
   await revenue.log(card.merchant_id, 'card_decline', charge, 'USD', card.id, mode, 0);
   return { charged: charge, reason: 'charged' };
 }
@@ -1446,8 +1449,10 @@ async function chargeCardSpendFee(card, row) {
   if (!(fee > 0)) return { charged: 0, reason: 'no-fee-on-plan' };
   const ref = `card-spend-fee:${row.provider_reference}`;
   if (await supabase.selectOne('ledger_entries', { merchant_id: card.merchant_id, reference: ref })) return { charged: 0, reason: 'already-charged' };
-  const charge = await masterWallet.chargeFeeAboveFloor(card.merchant_id, fee, ref, card.id, mode);
+  const available = await ledger.getBalance(card.merchant_id, 'master_wallet', 'USD', mode);
+  const charge = pricing.round2(Math.min(fee, Math.max(0, available)));
   if (!(charge > 0)) return { charged: 0, reason: 'empty-wallet' };
+  await ledger.debitMasterWallet(card.merchant_id, charge, 'USD', ref, card.id, mode);
   await revenue.log(card.merchant_id, 'card_spend', charge, 'USD', card.id, mode, 0);
   return { charged: charge, reason: 'charged' };
 }
