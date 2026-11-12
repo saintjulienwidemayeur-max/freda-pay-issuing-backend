@@ -18,4 +18,9 @@ async function anomalies(ctx) {
   return { status: 200, body: await walletAudit.masterWalletAnomalies(ctx.query && ctx.query.mode === 'sandbox' ? 'sandbox' : 'live') };
 }
 
-module.exports = { merchantLedger, anomalies };
+/** GET /admin/master-wallet/below-floor?mode : who is under the guarantee deposit, and what took them there. */
+async function belowFloor(ctx) {
+  return { status: 200, body: await walletAudit.belowFloor(ctx.query && ctx.query.mode === 'sandbox' ? 'sandbox' : 'live') };
+}
+
+module.exports = { merchantLedger, anomalies, belowFloor };

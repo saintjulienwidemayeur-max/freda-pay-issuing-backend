@@ -193,4 +193,44 @@ async function masterWalletAnomalies(mode) {
   return { mode: mode === 'live' ? 'live' : 'sandbox', credits_checked: credits, anomalies: flagged.length, total_usd: round2(flagged.reduce((t, f) => t + f.amount, 0)), flagged: flagged.reverse().slice(0, 300) };
 }
 
-module.exports = { ledgerFor, masterWalletAnomalies, explain, WALLETS };
+/**
+ * Merchants whose Master Wallet is under their guarantee deposit (50 $ unless the team changed it), and WHAT took them there: the movement that
+ * first crossed the floor, and the latest debits. Computed from the ledger with the guarantee as it is now.
+ */
+async function belowFloor(mode) {
+  const guarantee = require('./guarantee');
+  const key = ledger.walletKey('master_wallet', mode === 'live' ? 'live' : 'sandbox');
+  const [entries, merchants] = await Promise.all([
+    selectAll('ledger_entries', { wallet: key, currency: 'USD' }, 'created_at.asc,id.asc'),
+    supabase.select('merchants', {}, { limit: 5000 }),
+  ]);
+  const names = new Map(merchants.map((m) => [m.id, m]));
+  const byMerchant = new Map();
+  for (const e of entries) { const l = byMerchant.get(e.merchant_id) || []; l.push(e); byMerchant.set(e.merchant_id, l); }
+  const out = [];
+  for (const [merchantId, list] of byMerchant) {
+    const m = names.get(merchantId);
+    if (!m || m.deleted_at) continue;
+    const floor = await guarantee.get(merchantId);
+    let balance = 0;
+    let crossing = null;
+    for (const e of list) {
+      const before = balance;
+      balance = round2(balance + Number(e.amount));
+      if (before >= floor && balance < floor) crossing = e;       // went from OK to under
+      else if (balance >= floor) crossing = null;                   // back above: the earlier crossing no longer matters
+    }
+    if (balance >= floor || balance <= 0 && list.length === 0) continue;
+    const x = crossing ? explain(crossing, 'master_wallet') : null;
+    out.push({
+      merchant_id: merchantId, merchant_name: m.business_name || m.email, email: m.email, balance, guarantee: floor, below_by: round2(floor - balance),
+      crossed_at: crossing ? crossing.created_at : null,
+      cause: crossing ? { label: x.label, amount: round2(crossing.amount), reference: crossing.reference } : { label: 'Jamais atteint : le solde est resté sous le dépôt de garantie depuis le début', amount: null, reference: null },
+      last_debits: list.filter((e) => Number(e.amount) < 0).slice(-4).reverse().map((e) => ({ at: e.created_at, amount: round2(e.amount), label: explain(e, 'master_wallet').label, reference: e.reference })),
+    });
+  }
+  out.sort((a, b) => b.below_by - a.below_by);
+  return { mode: mode === 'live' ? 'live' : 'sandbox', merchants_checked: byMerchant.size, below: out.length, list: out };
+}
+
+module.exports = { belowFloor, ledgerFor, masterWalletAnomalies, explain, WALLETS };
