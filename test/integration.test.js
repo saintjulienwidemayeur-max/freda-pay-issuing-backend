@@ -3115,7 +3115,7 @@ test('the decline fee follows the plan and the admin\'s custom price: free plan 
   assert.equal(Math.round((beforeCustom - (await b.balance())) * 100) / 100, 0.4);
 });
 
-test('the decline fee never pushes a wallet below zero, and a live card is only charged by a LIVE-signed event', async () => {
+test('the decline fee never digs into the 50 $ guarantee deposit, and a live card is only charged by a LIVE-signed event', async () => {
   const live = await makeLiveMerchant('decllive', { fundUsd: 300 });
   const c = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'DECL-LIVE-1', kind: 'business', business_name: 'Decl Live Co', brand: 'VISA', amount: 90 } });
   assert.equal(c.status, 202);
@@ -3132,14 +3132,19 @@ test('the decline fee never pushes a wallet below zero, and a live card is only 
   await sendProviderEvent(declineEvent(card.maplerad_card_id), MOCK_LIVE_WHSEC);
   assert.equal(r2(start - (await liveBalance())), 1);
 
-  // drain the live wallet down to 0.40 $: the next decline can only take what is there
+  // drain the live wallet down to 50.40 $ (0.40 $ above the guarantee): the next decline can only take what is above the 50 $
   const now = await liveBalance();
-  mockTables.ledger_entries.push({ merchant_id: live.merchantId, wallet: 'live:master_wallet', type: 'wallet_debit', amount: -(now - 0.4), currency: 'USD', reference: 'test-drain', created_at: new Date().toISOString() });
-  assert.equal(r2(await liveBalance()), 0.4);
+  mockTables.ledger_entries.push({ merchant_id: live.merchantId, wallet: 'live:master_wallet', type: 'wallet_debit', amount: -(now - 50.4), currency: 'USD', reference: 'test-drain', created_at: new Date().toISOString() });
+  assert.equal(r2(await liveBalance()), 50.4);
   await sendProviderEvent(declineEvent(card.maplerad_card_id), MOCK_LIVE_WHSEC);
-  assert.equal(r2(await liveBalance()), 0); // took 0.40, not 1.00
+  assert.equal(r2(await liveBalance()), 50); // took 0.40, not 1.00: the reserve is untouched
   await sendProviderEvent(declineEvent(card.maplerad_card_id), MOCK_LIVE_WHSEC);
-  assert.equal(r2(await liveBalance()), 0); // empty wallet: nothing more, and never negative
+  assert.equal(r2(await liveBalance()), 50); // nothing above the reserve: nothing more is taken, never below 50
+
+  // the per-purchase fee follows the same rule
+  const purchase = { ...declineEvent(card.maplerad_card_id), type: 'AUTHORIZATION', status: 'SUCCESS', mode: 'DEBIT', reference: 'live-purchase-1', description: 'Approved or completed successfully' };
+  await sendProviderEvent(purchase, MOCK_LIVE_WHSEC);
+  assert.equal(r2(await liveBalance()), 50);
 
   const fees = mockTables.fee_revenue.filter((f) => f.kind === 'card_decline' && f.merchant_id === live.merchantId);
   assert.deepEqual(fees.map((f) => Number(f.amount)), [1, 0.4]);
@@ -8270,4 +8275,24 @@ test('card trace: each partner operation says whether the merchant really asked 
   }
   assert.equal((await api('GET', '/admin/card-trace?card=TRACE-1', { token: admin })).status, 200); // by reference too
   assert.equal((await api('GET', '/admin/card-trace?card=nope', { token: admin })).status, 404);
+});
+
+test('admin: merchants under the guarantee deposit are listed with the movement that took them there', async () => {
+  const admin = await adminLogin('owner');
+  const reg = await registerAndVerify({ business_name: 'Floor Co', email: 'floor-co@example.com', password: 'CorrectHorse9!' });
+  const id = reg.data.merchant.id;
+  const entry = (amount, reference, s) => mockTables.ledger_entries.push({ id: 990000 + mockTables.ledger_entries.length, merchant_id: id, wallet: 'live:master_wallet', type: amount > 0 ? 'wallet_topup' : 'wallet_debit', amount, currency: 'USD', reference, related_id: null, created_at: new Date(Date.now() - (100 - s) * 1000).toISOString() });
+  entry(60, 'manual-topup:x', 1);
+  entry(-5, 'FLOOR-CARD-1', 2);                       // 55 : still above 50
+  entry(-1, 'card-decline-fee:abc', 3);               // 54
+  entry(-6, 'fund:card_x:k', 4);                      // 48 : this one crossed the floor
+  const r = await api('GET', '/admin/master-wallet/below-floor?mode=live', { token: admin.token });
+  assert.equal(r.status, 200);
+  const me = r.data.list.find((x) => x.merchant_id === id);
+  assert.equal(me.balance, 48);
+  assert.equal(me.guarantee, 50);
+  assert.equal(me.below_by, 2);
+  assert.equal(me.cause.label, 'Recharge d\'une carte');
+  assert.equal(me.cause.amount, -6);
+  assert.equal(me.last_debits[0].reference, 'fund:card_x:k');
 });

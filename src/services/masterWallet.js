@@ -125,4 +125,23 @@ async function notifyLowBalance(merchantId, balance) {
   await brevo.sendEmail({ to: merchant.email, toName: merchant.business_name, subject, html, text });
 }
 
-module.exports = { debitWithFloor, notifyLowBalance, notifyLowBalanceThrottled };
+/**
+ * A fee that is taken after the fact (card decline fee, per-purchase fee) can never dig into the guarantee deposit (50 $ unless the team set
+ * another amount): only what sits ABOVE it can be collected. Returns the amount really taken (0 when nothing is available above the floor).
+ * The debit itself goes through the same atomic floor check as every other wallet debit, so two fees at once cannot cross it either.
+ */
+async function chargeFeeAboveFloor(merchantId, fee, reference, relatedId, mode) {
+  const floor = await guarantee.get(merchantId);
+  const balance = await ledger.getBalance(merchantId, 'master_wallet', 'USD', mode);
+  const charge = Math.round(Math.min(Number(fee), Math.max(0, balance - floor)) * 100) / 100;
+  if (!(charge > 0)) return 0;
+  try {
+    await debitWithFloor(merchantId, charge, reference, relatedId, mode);
+  } catch (err) {
+    if (err.code === 'BELOW_MINIMUM_BALANCE') return 0; // another debit used it in the meantime
+    throw err;
+  }
+  return charge;
+}
+
+module.exports = { chargeFeeAboveFloor, debitWithFloor, notifyLowBalance, notifyLowBalanceThrottled };

@@ -107,6 +107,7 @@ router.get('/admin/partner-reports/:id/pdf', adminSession.requireAdminSession, (
 router.post('/admin/partner-reports/:id/send', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.send(ctx); });
 router.del('/admin/partner-reports/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminPartnerReportHandlers.remove(ctx); });
 router.get('/admin/merchants/:id/ledger', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.merchantLedger(ctx); });
+router.get('/admin/master-wallet/below-floor', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.belowFloor(ctx); });
 router.get('/admin/master-wallet/anomalies', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.anomalies(ctx); });
 router.get('/admin/card-trace', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminCardTraceHandlers.trace(ctx); });
 router.get('/admin/profit', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminProfitHandlers.breakdown(ctx); });
