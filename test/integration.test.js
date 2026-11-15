@@ -9011,3 +9011,61 @@ test('Freda Mail keys are read forgivingly from the environment, and a problem i
   assert.deepEqual(parse({}).keys, {});
   assert.deepEqual(parse({ FREDA_MAIL_API_KEY: 'x', FREDA_MAIL_WEBHOOK_SECRET: 's' }).env_names_found, ['FREDA_MAIL_API_KEY', 'FREDA_MAIL_WEBHOOK_SECRET']);
 });
+
+test('agent + Freda Mail: the admin asks which emails wait for an answer and the agent looks at the REAL mailbox (read or not), then processes them', async () => {
+  const http = require('node:http');
+  const config = require('../src/config');
+  const savedFm = { ...config.fredaMail };
+  const sent = [];
+  const now = Date.now();
+  const iso = (m) => new Date(now - m * 60000).toISOString();
+  const inbox = [
+    { id: 'P-1', thread_id: '<tp1@x>', from: { name: 'Client Un', address: 'pending-one@example.com' }, to: [{ address: 'issuing@fredapay.com' }], subject: 'Déjà répondu', date: iso(300), unread: false, text: 'Merci' },
+    { id: 'P-2', thread_id: '<tp2@x>', from: { name: 'Client Deux', address: 'pending-two@example.com' }, to: [{ address: 'issuing@fredapay.com' }], subject: 'Quels sont vos frais ?', date: iso(200), unread: false, text: 'Bonjour, quels sont vos frais de recharge ?' },
+    { id: 'P-3', thread_id: '<tp3@x>', from: { name: 'Nous', address: 'issuing@fredapay.com' }, to: [{ address: 'x@y.com' }], subject: 'Notre propre message', date: iso(100), unread: true, text: 'interne' },
+    { id: 'P-4', thread_id: '<tp4@x>', from: { name: 'Vieux', address: 'pending-old@example.com' }, to: [{ address: 'issuing@fredapay.com' }], subject: 'Très ancien', date: iso(60 * 24 * 40), unread: false, text: 'ancien' },
+  ];
+  const sentFolder = [{ id: 'S-1', thread_id: '<tp1@x>', from: { address: 'issuing@fredapay.com' }, to: [{ address: 'pending-one@example.com' }], subject: 'Re: Déjà répondu', date: iso(250) }];
+  const fm = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.headers.authorization !== 'Bearer fmk_issuing_key') { res.writeHead(401); return res.end('{"message":"bad key"}'); }
+      if (req.url === '/api/v1/me') return res.end(JSON.stringify({ mailbox: 'issuing@fredapay.com', name: 'Issuing', key: { id: 'k1', name: 'agent', scope: 'read_send' }, limits: {} }));
+      if (req.method === 'GET' && req.url.startsWith('/api/v1/messages?')) return res.end(JSON.stringify({ messages: (req.url.includes('folder=sent') ? sentFolder : inbox).map(({ text, ...m }) => m), next_cursor: null, total_matching: 4 }));
+      if (req.method === 'GET' && req.url.startsWith('/api/v1/messages/')) return res.end(JSON.stringify(inbox.find((m) => req.url.endsWith(m.id))));
+      if (req.method === 'POST' && req.url === '/api/v1/messages/send') { sent.push(JSON.parse(raw)); return res.end('{"id":"sent-x"}'); }
+      if (req.method === 'PATCH') return res.end('{"ok":true}');
+      res.writeHead(404); res.end('{}');
+    });
+  });
+  await new Promise((r) => fm.listen(AGENT_PORT + 2, r));
+  config.fredaMail.baseUrl = `http://localhost:${AGENT_PORT + 2}`;
+  config.fredaMail.keys = { key1: 'fmk_issuing_key' }; // a key given without a mailbox name: the mailbox is learned from Freda Mail
+  const admin = await adminLogin('owner');
+  try {
+    await withAgent((body) => {
+      const sys = JSON.stringify(body.systemInstruction);
+      const last = JSON.stringify(body.contents[body.contents.length - 1]);
+      if (/Tu prépares le BROUILLON/.test(sys)) return say(emailAnswer({ category: 'tarifs', confidence: 0.9 }));
+      if (/functionResponse/.test(last) && /freda_mail_unanswered/.test(last)) return callTool('freda_mail_answer_pending', {});
+      if (/functionResponse/.test(last)) return [{ text: 'Fait : 1 email lancé.' }];
+      return callTool('freda_mail_unanswered', {});
+    }, async (calls) => {
+      const r = await api('POST', '/admin/agent/chat', { token: admin.token, body: { messages: [{ role: 'user', content: 'Regarde tous les emails à répondre sur Freda Mail (issuing@fredapay.com).' }] } });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.data.tools_used, ['freda_mail_unanswered', 'freda_mail_answer_pending']);
+      // what the model was told about the real mailbox: only P-2 (P-1 was answered, P-3 is ours, P-4 is older than the window)
+      const seen = JSON.stringify(calls[1].body.contents[calls[1].body.contents.length - 1]);
+      assert.match(seen, /"total_unanswered":1/);
+      assert.match(seen, /Quels sont vos frais/);
+      assert.ok(!/Déjà répondu|Notre propre|Très ancien/.test(seen));
+      assert.deepEqual(Object.keys(config.fredaMail.keys), ['issuing@fredapay.com'], 'the key was named after its mailbox');
+      // the agent processed it (autonomous mode: informational reply sent through Freda Mail, in the same thread)
+      await pollUntil(async () => sent.length, (n) => n >= 1, 80, 50);
+      assert.equal(sent[0].reply_to_message_id, 'P-2');
+      assert.match(sent[0].text, /1,60 \$/);
+    }, { autoSend: true });
+  } finally { Object.assign(config.fredaMail, savedFm); await new Promise((r) => fm.close(r)); }
+});
