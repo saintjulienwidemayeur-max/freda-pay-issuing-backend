@@ -9160,3 +9160,13 @@ test('admin can enter the AI and Freda Mail keys in the panel: stored encrypted,
     Object.assign(config.agent, { apiKey: before.key, provider: before.provider });
   }
 });
+
+test('Freda Mail webhook: several secrets (one per mailbox) are accepted', () => {
+  const crypto = require('node:crypto');
+  const fm = require('../src/services/fredaMail');
+  const ts = String(Math.floor(Date.now() / 1000)); const body = '{"a":1}';
+  const sig = (sec) => ({ 'x-freda-timestamp': ts, 'x-freda-signature': `sha256=${crypto.createHmac('sha256', sec).update(`${ts}.${body}`).digest('hex')}` });
+  assert.equal(fm.verifySignature(sig('whsec_two'), body, 'whsec_one\nwhsec_two'), true);
+  assert.equal(fm.verifySignature(sig('whsec_two'), body, 'whsec_one, whsec_three'), false);
+  assert.equal(fm.verifySignature(sig('whsec_one'), body, 'whsec_one'), true);
+});
