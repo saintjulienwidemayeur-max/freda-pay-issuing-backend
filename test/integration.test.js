@@ -8304,8 +8304,14 @@ async function withAgent(script, fn, { autoSend = false, chat = true, email = tr
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
+      if (req.method === 'GET' && req.url.startsWith('/v1beta/models')) {
+        if (calls.forceError) { res.writeHead(calls.forceError, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { code: calls.forceError, message: 'Your prepayment credits are depleted.' } })); }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ models: ['gemini-flash-latest', 'gemini-slow-flash', 'gemini-fast-flash-lite', 'gemini-2.5-flash', 'gemini-pro-latest', 'text-embedding-004'].map((n) => ({ name: `models/${n}`, supportedGenerationMethods: n.startsWith('text-embedding') ? ['embedContent'] : ['generateContent'] })) }));
+      }
       const body = JSON.parse(raw || '{}');
       calls.push({ url: req.url, key: req.headers['x-goog-api-key'], body });
+      if (/gemini-slow-flash/.test(req.url)) return; // never answers
       // What the real API refuses: an object schema with no properties (or an empty "required") in a function declaration.
       const bad = ((body.tools && body.tools[0] && body.tools[0].functionDeclarations) || []).find((d) => d.parameters && (!d.parameters.properties || !Object.keys(d.parameters.properties).length || (d.parameters.required && !d.parameters.required.length)));
       if (bad) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 400, message: `Invalid function declaration ${bad.name}: parameters.properties: should be non-empty for OBJECT type` } })); }
@@ -8674,25 +8680,47 @@ test('agent speed: no long reasoning, the account is in the prompt up front (one
   } finally { Object.assign(config.agent, saved); await new Promise((r) => server.close(r)); }
 });
 
-test('agent ping: the admin sees where the time goes (tiny question, then the real chat prompt), or the model\'s own refusal', async () => {
+test('agent ping: the admin sees the connection to Google, the timing of the configured model, a faster model to adopt, or the model\'s own refusal', async () => {
   const admin = await adminLogin('owner');
-  await withAgent((body) => [{ text: 'OK' }], async () => {
-    const r = await api('POST', '/admin/agent/ping', { token: admin.token });
-    assert.equal(r.status, 200);
-    assert.equal(r.data.ok, true);
-    assert.equal(r.data.steps.length, 2);
-    assert.ok(r.data.steps.every((s) => s.ok && typeof s.ms === 'number'));
-    assert.match(r.data.steps[1].name, /vrai prompt/);
-    assert.ok(r.data.steps[1].tokens_in > 0);
-  });
-  await withAgent(() => [{ text: 'OK' }], async (calls) => {
-    calls.forceError = 402;
-    const r = await api('POST', '/admin/agent/ping', { token: admin.token });
-    assert.equal(r.status, 200);
-    assert.equal(r.data.ok, false);
-    assert.match(r.data.steps[0].error, /HTTP 402/);
-  });
   const config = require('../src/config');
+  const agentSettings = require('../src/services/agent/settings');
+  const savedPing = config.agent.pingTimeoutMs;
+  config.agent.pingTimeoutMs = 400;
+  try {
+    // healthy
+    await withAgent(() => [{ text: 'OK' }], async () => {
+      const r = await api('POST', '/admin/agent/ping', { token: admin.token });
+      assert.equal(r.status, 200);
+      assert.equal(r.data.ok, true);
+      assert.match(r.data.steps[0].name, /Connexion à Google/);
+      assert.match(r.data.steps[0].reply, /5 modèle/); // the embedding model is not usable for answers
+      assert.ok(r.data.models.includes('gemini-flash-latest') && !r.data.models.some((m) => /embedding|pro/.test(m)));
+      assert.equal(r.data.steps[1].name, 'Question minuscule');
+      assert.equal(r.data.steps[1].ok, true);
+      assert.equal(r.data.suggestion, null);
+    });
+    // the configured model never answers: other fast models are tried and the quickest is suggested
+    await agentSettings.save({ model: 'gemini-slow-flash' }, 'test');
+    await withAgent(() => [{ text: 'OK' }], async () => {
+      await agentSettings.save({ model: 'gemini-slow-flash' }, 'test');
+      const r = await api('POST', '/admin/agent/ping', { token: admin.token });
+      assert.equal(r.data.steps[1].ok, false);
+      assert.match(r.data.steps[1].error, /pas répondu à temps/);
+      const others = r.data.steps.filter((s) => s.name === 'Même question, autre modèle');
+      assert.ok(others.length >= 1 && others[0].model === 'gemini-fast-flash-lite'); // lite models first
+      assert.ok(others[0].ok);
+      assert.equal(r.data.suggestion, 'gemini-fast-flash-lite');
+      assert.equal(r.data.ok, true);
+    });
+    // Google refuses the key: the reason is shown, nothing else is tried
+    await withAgent(() => [{ text: 'OK' }], async (calls) => {
+      calls.forceError = 402;
+      const r = await api('POST', '/admin/agent/ping', { token: admin.token });
+      assert.equal(r.data.ok, false);
+      assert.match(r.data.steps[0].error, /HTTP 402.*prepayment credits/);
+      assert.equal(r.data.steps.length, 1);
+    });
+  } finally { config.agent.pingTimeoutMs = savedPing; await agentSettings.save({ model: '' }, 'test'); }
   const savedKey = config.agent.apiKey; config.agent.apiKey = '';
   assert.equal((await api('POST', '/admin/agent/ping', { token: admin.token })).data.ok, false);
   config.agent.apiKey = savedKey;

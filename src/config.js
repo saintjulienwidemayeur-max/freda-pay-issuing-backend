@@ -155,6 +155,7 @@ const config = {
       maxTokens: parseInt(process.env.AGENT_MAX_TOKENS || '1500', 10),
       timeoutMs: parseInt(process.env.AGENT_TIMEOUT_MS || '60000', 10),
       chatRepliesPerHour: parseInt(process.env.AGENT_CHAT_REPLIES_PER_HOUR || '40', 10),
+      pingTimeoutMs: parseInt(process.env.AGENT_PING_TIMEOUT_MS || '15000', 10), // the admin speed test waits this long for each model
     };
   })(),
   // Freda Mail (the team's mail platform): its webhook is POST /webhooks/freda-mail?token=<FREDA_MAIL_SECRET>.

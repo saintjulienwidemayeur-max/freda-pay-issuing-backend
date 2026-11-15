@@ -52,30 +52,54 @@ async function chat(ctx) {
 }
 
 /**
- * POST /admin/agent/ping : where the time goes. One tiny question, then one with the real chat prompt (rules + knowledge, no tools): each is timed, with
- * the model, the reasoning setting used and the model's own error if it refuses. The answer is always 200 so the page can show it.
+ * POST /admin/agent/ping : where the time goes. (1) can the server reach Google and which models does this key offer, (2) one tiny question to the
+ * configured model, (3) if that fails or is slow, the same question to a few other fast models. Each step is timed, the model's own error is shown,
+ * and a model that answers quickly can be adopted from the page. The answer is always 200 so the page can show it.
  */
 async function ping() {
   if (!llm.configured()) return { status: 200, body: { ok: false, error: "Aucune clé : ajoutez GEMINI_API_KEY (ou ANTHROPIC_API_KEY) sur le serveur." } };
   const cfg = await settings.get();
   const model = cfg.model || config.agent.model;
-  const out = { ok: true, provider: config.agent.provider, model, steps: [] };
-  const prompts = require('../services/agent/prompts');
-  const tries = [
-    { name: 'Question minuscule', system: 'Tu es un test de connexion.', content: 'Réponds uniquement : OK', maxTokens: 64 },
-    { name: 'Question avec le vrai prompt du chat (règles + connaissances)', system: await prompts.chatSystem({ businessName: 'Test' }), content: 'Bonjour, combien coûte la création d\'une carte ?', maxTokens: 600 },
-  ];
-  for (const t of tries) {
+  const out = { ok: true, provider: config.agent.provider, model, steps: [], models: [], suggestion: null };
+  const tiny = (m, timeoutMs) => llm.generate({ system: 'Tu es un test de connexion.', messages: [{ role: 'user', content: 'Réponds uniquement : OK' }], model: m, maxTokens: 64, timeoutMs });
+  const step = async (name, m, timeoutMs) => {
     const started = Date.now();
     try {
-      const r = await llm.generate({ system: t.system, messages: [{ role: 'user', content: t.content }], model, maxTokens: t.maxTokens, timeoutMs: 40000 });
-      out.steps.push({ name: t.name, ok: true, ms: Date.now() - started, reasoning: r.thinking || null, tokens_in: r.usage.input, tokens_out: r.usage.output, reply: String(r.text).slice(0, 160) });
+      const r = await tiny(m, timeoutMs);
+      out.steps.push({ name, model: m, ok: true, ms: Date.now() - started, reasoning: r.thinking || null, reply: String(r.text).slice(0, 60) });
+      return true;
+    } catch (e) {
+      out.steps.push({ name, model: m, ok: false, ms: Date.now() - started, error: e.message });
+      return false;
+    }
+  };
+
+  let available = [];
+  if (config.agent.provider === 'gemini') {
+    const started = Date.now();
+    try {
+      available = await llm.listGeminiModels(10000);
+      out.steps.push({ name: 'Connexion à Google (liste des modèles)', ok: true, ms: Date.now() - started, reply: `${available.length} modèle(s) utilisables avec cette clé` });
+      out.models = available.map((m) => m.name).filter((n) => /flash/i.test(n)).slice(0, 25);
     } catch (e) {
       out.ok = false;
-      out.steps.push({ name: t.name, ok: false, ms: Date.now() - started, error: e.message });
-      break;
+      out.steps.push({ name: 'Connexion à Google (liste des modèles)', ok: false, ms: Date.now() - started, error: e.message });
+      return { status: 200, body: out };
     }
+    if (available.length && !available.some((m) => m.name === model)) out.steps.push({ name: 'Modèle configuré', model, ok: false, ms: 0, error: `« ${model} » n'est pas dans la liste des modèles de cette clé.` });
   }
+  const T = config.agent.pingTimeoutMs;
+  const mainOk = await step('Question minuscule', model, T);
+  const slow = !mainOk || out.steps[out.steps.length - 1].ms > 8000;
+  if (slow && available.length) {
+    // The same tiny question to other fast models, to find one that answers.
+    const rank = (n) => (/lite/i.test(n) ? 0 : 1) + (/preview|exp|image|tts|audio|live|thinking|robotics|computer/i.test(n) ? 5 : 0) + (/latest/i.test(n) ? 0 : 0.5);
+    const candidates = available.map((m) => m.name).filter((n) => /flash/i.test(n) && n !== model && !/image|tts|audio|live|embedding|robotics|computer/i.test(n)).sort((a, b) => rank(a) - rank(b)).slice(0, 3);
+    for (const c of candidates) await step('Même question, autre modèle', c, Math.min(T, 12000));
+  }
+  const good = out.steps.find((x) => x.ok && x.model && x.ms <= 8000); // in the order tried: the configured model first, then the lite ones
+  if (good && good.model !== model) out.suggestion = good.model;
+  out.ok = out.steps.every((x) => x.ok) || !!good;
   return { status: 200, body: out };
 }
 
