@@ -155,7 +155,17 @@ async function answerPending({ mailbox, days, limit } = {}) {
       let started = 0;
       for (const m of list) {
         if (result.started + started >= Math.min(30, limit || 20)) break;
-        if (await supabase.selectOne('admin_inbox', { message_id: `fm:${m.id}` })) { result.already_known += 1; continue; }
+        const known = await supabase.selectOne('admin_inbox', { message_id: `fm:${m.id}` });
+        if (known) {
+          // Already imported: if the agent never finished it (error, or stuck while processing for 15 minutes), it is run again.
+          const stuck = known.agent_status === 'processing' && Date.now() - new Date(known.received_at || 0).getTime() > 15 * 60 * 1000;
+          if (!known.replied_at && (known.agent_status === 'error' || !known.agent_status || stuck)) {
+            await supabase.update('admin_inbox', { id: known.id }, { agent_status: null, agent_error: null });
+            started += 1; require('./agent/emailAgent').enqueue(known.id);
+            result.retried = (result.retried || 0) + 1;
+          } else result.already_known += 1;
+          continue;
+        }
         const full = await readMessage(box, m.id);
         const row = await storeMessage(full.message || full, box);
         if (row) { started += 1; require('./agent/emailAgent').enqueue(row.id); }

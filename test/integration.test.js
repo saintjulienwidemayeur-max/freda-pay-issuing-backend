@@ -9044,6 +9044,8 @@ test('agent + Freda Mail: the admin asks which emails wait for an answer and the
   config.fredaMail.baseUrl = `http://localhost:${AGENT_PORT + 2}`;
   config.fredaMail.keys = { key1: 'fmk_issuing_key' }; // a key given without a mailbox name: the mailbox is learned from Freda Mail
   const admin = await adminLogin('owner');
+  // P-2 was already imported by the background pass, but the agent failed on it (the model timed out): it must be run again, not skipped as "already known"
+  mockTables.admin_inbox.push({ id: 'in_p2_failed', message_id: 'fm:P-2', from_email: 'pending-two@example.com', from_name: 'Client Deux', subject: 'Quels sont vos frais ?', body: 'Bonjour, quels sont vos frais de recharge ?', is_read: false, source: 'freda_mail', mailbox: 'support', fm_id: 'P-2', fm_mailbox: 'issuing@fredapay.com', agent_status: 'error', agent_error: "Le modèle n'a pas répondu à temps.", received_at: new Date(now - 200 * 60000).toISOString() });
   try {
     await withAgent((body) => {
       const sys = JSON.stringify(body.systemInstruction);
@@ -9065,7 +9067,46 @@ test('agent + Freda Mail: the admin asks which emails wait for an answer and the
       // the agent processed it (autonomous mode: informational reply sent through Freda Mail, in the same thread)
       await pollUntil(async () => sent.length, (n) => n >= 1, 80, 50);
       assert.equal(sent[0].reply_to_message_id, 'P-2');
+      assert.equal(mockTables.admin_inbox.filter((m) => m.message_id === 'fm:P-2').length, 1, 'the same message is not imported twice');
+      assert.equal(mockTables.admin_inbox.find((m) => m.id === 'in_p2_failed').agent_status, 'done');
       assert.match(sent[0].text, /1,60 \$/);
     }, { autoSend: true });
   } finally { Object.assign(config.fredaMail, savedFm); await new Promise((r) => fm.close(r)); }
+});
+
+test('agent resilience: a model that does not answer in time is replaced by a fast one automatically (and kept); emails whose processing failed are retried, not skipped forever', async () => {
+  const config = require('../src/config');
+  const agentSettings = require('../src/services/agent/settings');
+  const llm = require('../src/services/agent/llm');
+  const savedTimeout = config.agent.timeoutMs;
+  config.agent.timeoutMs = 400;
+  try {
+    await agentSettings.save({ model: 'gemini-slow-flash' }, 'test'); // the mock never answers for this one
+    await withAgent(() => [{ text: 'bonjour' }], async (calls) => {
+      await agentSettings.save({ model: 'gemini-slow-flash' }, 'test');
+      const cfg = await agentSettings.get();
+      const out = await llm.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: cfg.model });
+      assert.equal(out.text, 'bonjour');
+      assert.equal(out.model, 'gemini-fast-flash-lite', 'the lite model answered');
+      assert.equal((await agentSettings.get()).model, 'gemini-fast-flash-lite', 'and it is kept for the next messages');
+      assert.ok(calls.some((c) => /gemini-fast-flash-lite/.test(c.url)));
+    });
+  } finally { config.agent.timeoutMs = savedTimeout; await agentSettings.save({ model: '' }, 'test'); }
+
+  // emails whose agent run failed are tried again by the background pass (at most 4 times, 10 minutes apart)
+  const emailAgent = require('../src/services/agent/emailAgent');
+  const mkRow = (id, subject) => mockTables.admin_inbox.push({ id, message_id: `fm:${id}`, from_email: 'retry-client@example.com', from_name: 'Retry', subject, body: 'Quels sont vos frais ?', is_read: false, source: 'freda_mail', mailbox: 'support', agent_status: 'error', agent_error: "Le modèle n'a pas répondu à temps.", received_at: new Date(Date.now() - 3600 * 1000).toISOString() });
+  mkRow('in_retry_ok', 'Retry ok'); mkRow('in_retry_tired', 'Retry tired'); mkRow('in_retry_recent', 'Retry recent');
+  const run = (id, minutesAgo) => mockTables.agent_runs.push({ id: `run_${id}_${minutesAgo}_${Math.random()}`, kind: 'email', ref_id: id, outcome: 'error', created_at: new Date(Date.now() - minutesAgo * 60000).toISOString() });
+  run('in_retry_ok', 30);
+  for (let i = 0; i < 4; i += 1) run('in_retry_tired', 30 + i);
+  run('in_retry_recent', 2);
+  await withAgent(() => say(emailAnswer()), async () => {
+    const r = await emailAgent.catchUp(5);
+    assert.ok(r.processed >= 1);
+    await pollUntil(async () => mockTables.admin_inbox.find((m) => m.id === 'in_retry_ok').agent_status, (s) => s === 'done', 60, 50);
+    assert.equal(mockTables.admin_inbox.find((m) => m.id === 'in_retry_ok').agent_status, 'done');
+    assert.equal(mockTables.admin_inbox.find((m) => m.id === 'in_retry_tired').agent_status, 'error', 'given up after 4 failures');
+    assert.equal(mockTables.admin_inbox.find((m) => m.id === 'in_retry_recent').agent_status, 'error', 'too soon to try again');
+  });
 });

@@ -141,7 +141,42 @@ async function runAnthropic({ system, messages, tools, runTool, maxIterations, m
   throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.');
 }
 
-async function generate({ system, messages, tools = [], runTool = async () => ({}), maxIterations = 6, maxTokens, model, timeoutMs }) {
+/** Fast "flash" models first (lite before the others, previews and special-purpose models last). */
+function rankFast(names, exclude) {
+  const rank = (n) => (/lite/i.test(n) ? 0 : 1) + (/preview|exp|thinking/i.test(n) ? 5 : 0) + (/latest/i.test(n) ? 0 : 0.5);
+  return names.filter((n) => /flash/i.test(n) && !/image|tts|audio|live|embedding|robotics|computer/i.test(n) && !(exclude || []).includes(n)).sort((a, b) => rank(a) - rank(b));
+}
+
+// A model that did not answer in time is remembered for a while, and the agent moves to a fast one by itself (and keeps it): a support agent that
+// hangs for a minute on every message is worse than a lighter model.
+const timedOut = new Map(); // model -> time
+let lastAutoSwitch = 0;
+async function fallbackModel(current) {
+  timedOut.set(current, Date.now());
+  const recent = [...timedOut.entries()].filter(([, t]) => Date.now() - t < 30 * 60 * 1000).map(([m]) => m);
+  const list = await listGeminiModels(8000);
+  return rankFast(list.map((m) => m.name), recent)[0] || null;
+}
+
+async function generate(opts) {
+  const isTimeout = (e) => e && e.code === 'AGENT_UNREACHABLE' && /pas répondu à temps/.test(e.message);
+  try {
+    return await generateOnce(opts);
+  } catch (e) {
+    if (!isTimeout(e) || config.agent.provider !== 'gemini' || opts._fallback || opts.noFallback) throw e;
+    const current = opts.model || config.agent.model;
+    let alt = null;
+    try { alt = await fallbackModel(current); } catch (x) { throw e; }
+    if (!alt) throw e;
+    const out = await generateOnce(Object.assign({}, opts, { model: alt, timeoutMs: 35000 }));
+    lastAutoSwitch = Date.now();
+    console.log(`Agent: model ${current} did not answer in time, switched to ${alt} (answered).`); // eslint-disable-line no-console
+    try { await require('./settings').save({ model: alt }, 'auto (timeout)'); } catch (x) { /* the answer is what matters */ }
+    return out;
+  }
+}
+
+async function generateOnce({ system, messages, tools = [], runTool = async () => ({}), maxIterations = 6, maxTokens, model, timeoutMs }) {
   if (!configured()) throw agentError('AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré (GEMINI_API_KEY ou ANTHROPIC_API_KEY manquante sur le serveur).");
   const opts = { system, messages, tools, runTool, maxIterations, maxTokens: maxTokens || config.agent.maxTokens, model: model || config.agent.model, timeoutMs };
   const out = config.agent.provider === 'gemini' ? await runGemini(opts) : await runAnthropic(opts);
@@ -172,4 +207,4 @@ async function listGeminiModels(timeoutMs) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { listGeminiModels, generate, extractJson, configured, agentError };
+module.exports = { rankFast, listGeminiModels, generate, extractJson, configured, agentError };

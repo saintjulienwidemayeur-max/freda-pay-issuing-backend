@@ -61,7 +61,7 @@ async function ping() {
   const cfg = await settings.get();
   const model = cfg.model || config.agent.model;
   const out = { ok: true, provider: config.agent.provider, model, steps: [], models: [], suggestion: null };
-  const tiny = (m, timeoutMs) => llm.generate({ system: 'Tu es un test de connexion.', messages: [{ role: 'user', content: 'Réponds uniquement : OK' }], model: m, maxTokens: 64, timeoutMs });
+  const tiny = (m, timeoutMs) => llm.generate({ system: 'Tu es un test de connexion.', messages: [{ role: 'user', content: 'Réponds uniquement : OK' }], model: m, maxTokens: 64, timeoutMs, noFallback: true }); // the test shows the model as it is: no automatic switch
   const step = async (name, m, timeoutMs) => {
     const started = Date.now();
     try {
@@ -93,8 +93,7 @@ async function ping() {
   const slow = !mainOk || out.steps[out.steps.length - 1].ms > 8000;
   if (slow && available.length) {
     // The same tiny question to other fast models, to find one that answers.
-    const rank = (n) => (/lite/i.test(n) ? 0 : 1) + (/preview|exp|image|tts|audio|live|thinking|robotics|computer/i.test(n) ? 5 : 0) + (/latest/i.test(n) ? 0 : 0.5);
-    const candidates = available.map((m) => m.name).filter((n) => /flash/i.test(n) && n !== model && !/image|tts|audio|live|embedding|robotics|computer/i.test(n)).sort((a, b) => rank(a) - rank(b)).slice(0, 3);
+    const candidates = llm.rankFast(available.map((m) => m.name), [model]).slice(0, 3);
     for (const c of candidates) await step('Même question, autre modèle', c, Math.min(T, 12000));
   }
   const good = out.steps.find((x) => x.ok && x.model && x.ms <= 8000); // in the order tried: the configured model first, then the lite ones
