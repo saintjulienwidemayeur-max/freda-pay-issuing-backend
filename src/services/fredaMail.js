@@ -70,7 +70,11 @@ async function reply(mailbox, replyToId, text) {
 }
 
 /** X-Freda-Signature = "sha256=" + HMAC-SHA256("<timestamp>.<raw body>", whsec_...). Rejects bad signatures and replays older than 5 minutes. */
-function verifySignature(headers, rawBody, secret) {
+function verifySignature(headers, rawBody, secretOrList) {
+  // Each mailbox's webhook has its own secret: several can be given (separated by commas, spaces or new lines).
+  const secrets = String(secretOrList || '').split(/[\s,;]+/).filter(Boolean);
+  if (secrets.length > 1) return secrets.some((x) => verifySignature(headers, rawBody, x));
+  const secret = secrets[0];
   if (!secret) return false;
   const ts = String(headers['x-freda-timestamp'] || '');
   if (!/^\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
