@@ -118,6 +118,8 @@ router.post('/admin/agent/kyc/:id/review', adminSession.requireAdminSession, (ct
 router.post('/admin/agent/learn', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.learnNow(ctx); });
 router.get('/admin/agent/freda-mail', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.fredaMailStatus(ctx); });
 router.post('/admin/agent/knowledge/:id/toggle', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeToggle(ctx); });
+router.get('/admin/agent/secrets', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.secretsGet(ctx); });
+router.put('/admin/agent/secrets', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.secretsSave(ctx); });
 router.get('/admin/agent/status', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.status(ctx); });
 router.put('/admin/agent/settings', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.saveSettings(ctx); });
 router.get('/admin/agent/drafts', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.drafts(ctx); });
@@ -494,6 +496,7 @@ if (require.main === module) {
     // eslint-disable-next-line no-console
     console.log(`Freda Pay backend listening on http://localhost:${config.port}`);
     // API usage counters are saved every 30 s; blocks are re-read every 30 s. A redeploy flushes the counters first.
+    require('./services/agent/secrets').load().catch((e) => console.error('Agent secrets:', e.message));
     require('./services/apiUsage').start();
     require('./services/apiCallLog').start();
     if (process.env.NODE_ENV !== 'test') require('./services/cardOrchestrator').backfillCardBalances().catch((e) => console.error('Card balance correction failed:', e.message));
@@ -543,7 +546,7 @@ if (require.main === module) {
       setInterval(() => {
         if (agentBusy) return;
         agentBusy = true;
-        Promise.all([require('./services/fredaMail').answerPending({ days: 3, limit: 5 }).catch(() => null), require('./services/agent/emailAgent').catchUp(5), require('./services/agent/kycAgent').reviewPending(3).catch(() => null)])
+        require('./services/agent/secrets').load().catch(() => null).then(() => Promise.all([require('./services/fredaMail').answerPending({ days: 3, limit: 5 }).catch(() => null), require('./services/agent/emailAgent').catchUp(5), require('./services/agent/kycAgent').reviewPending(3).catch(() => null)]))
           .catch((e) => console.error('Agent email catch-up:', e.message))
           .finally(() => { agentBusy = false; });
       }, 2 * 60 * 1000).unref();

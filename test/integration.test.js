@@ -9123,3 +9123,40 @@ test('agent resilience: a model that does not answer in time is replaced by a fa
     assert.equal(mockTables.admin_inbox.find((m) => m.id === 'in_retry_recent').agent_status, 'error', 'too soon to try again');
   });
 });
+
+test('admin can enter the AI and Freda Mail keys in the panel: stored encrypted, never returned, applied at once, owner only', async () => {
+  const owner = await adminLogin('owner');
+  const secrets = require('../src/services/agent/secrets');
+  const config = require('../src/config');
+  const before = { key: config.agent.apiKey, provider: config.agent.provider, keys: Object.assign({}, config.fredaMail.keys), wh: config.fredaMail.webhookSecret };
+  try {
+    const bad = await api('PUT', '/admin/agent/secrets', { token: owner.token, body: { gemini_api_key: 'AIzaSyTEST_KEY_1234567890' } });
+    assert.equal(bad.status, 200);
+    const r = await api('PUT', '/admin/agent/secrets', { token: owner.token, body: { gemini_api_key: 'AIzaSyTEST_KEY_1234567890', freda_mail_keys: 'contact@fredapay.com=fmk_contactkey123456\nissuing@fredapay.com=fmk_issuingkey123456', freda_mail_webhook_secret: 'whsec_abcdef123456' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.secrets.gemini_api_key.source, 'admin');
+    assert.equal(r.data.secrets.gemini_api_key.hint, '…7890');
+    assert.deepEqual(r.data.secrets.freda_mail_keys.mailboxes.sort(), ['contact@fredapay.com', 'issuing@fredapay.com']);
+    assert.ok(!JSON.stringify(r.data).includes('AIzaSyTEST') && !JSON.stringify(r.data).includes('fmk_contactkey'));
+    // applied right away
+    assert.equal(config.agent.apiKey, 'AIzaSyTEST_KEY_1234567890');
+    assert.equal(config.fredaMail.webhookSecret, 'whsec_abcdef123456');
+    // stored encrypted
+    const row = mockTables.platform_settings.find((x) => x.key === 'agent_secrets');
+    assert.ok(row && !/AIzaSyTEST|fmk_contactkey/.test(row.value));
+    // survives a reload
+    const st = await secrets.load();
+    assert.equal(st.freda_mail_keys.mailboxes.length, 2);
+    const g = await api('GET', '/admin/agent/secrets', { token: owner.token });
+    assert.equal(g.status, 200);
+    assert.ok(!JSON.stringify(g.data).includes('AIzaSyTEST'));
+    // an empty value removes the key and falls back to the environment
+    const rm = await api('PUT', '/admin/agent/secrets', { token: owner.token, body: { gemini_api_key: '', freda_mail_keys: '', freda_mail_webhook_secret: '' } });
+    assert.equal(rm.status, 200);
+    assert.equal(config.agent.apiKey, before.key);
+    assert.deepEqual(config.fredaMail.keys, before.keys);
+  } finally {
+    await secrets.save({ gemini_api_key: '', freda_mail_keys: '', freda_mail_webhook_secret: '' });
+    Object.assign(config.agent, { apiKey: before.key, provider: before.provider });
+  }
+});
