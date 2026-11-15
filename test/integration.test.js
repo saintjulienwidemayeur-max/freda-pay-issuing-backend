@@ -9170,3 +9170,23 @@ test('Freda Mail webhook: several secrets (one per mailbox) are accepted', () =>
   assert.equal(fm.verifySignature(sig('whsec_two'), body, 'whsec_one, whsec_three'), false);
   assert.equal(fm.verifySignature(sig('whsec_one'), body, 'whsec_one'), true);
 });
+
+test('agent email: sounds human - a legit/legal question is not handed off, a follow-up gets the earlier exchange and no new greeting rule violation', async () => {
+  await withAgent((body) => say(emailAnswer({ reply: 'Oui, Freda Pay LLC est une société enregistrée au Wyoming et auprès du FinCEN.\n\nL\'équipe Freda Pay Issuing' })), async (calls) => {
+    await inboundEmail('human-1@example.com', 'Est-ce légal ?', 'Est-ce que Freda Pay est légal ? Ce n\'est pas un scam ?', '<human-1@mail>');
+    const d1 = await draftFor('Est-ce légal');
+    assert.equal(d1.status, 'auto_sent');
+    assert.match(d1.body, /^Oui, Freda Pay LLC/);
+    assert.ok(!/prend en charge et reviendra/.test(d1.body), 'a plain legitimacy question gets no hand-off line');
+    const sys = JSON.stringify(calls[0].body.systemInstruction);
+    assert.match(sys, /IDENTITÉ LÉGALE/);
+    assert.match(sys, /FinCEN/);
+    assert.match(sys, /Merci de nous avoir contactés/); // listed as forbidden in the style rules
+    // follow-up: the prior exchange is given to the model
+    await inboundEmail('human-1@example.com', 'Re: Est-ce légal ?', 'Et où êtes-vous enregistrés ?', '<human-1b@mail>');
+    await pollUntil(async () => calls.length, (n) => n >= 2, 80, 50);
+    const userMsg = JSON.stringify(calls[calls.length - 1].body.contents[0]);
+    assert.match(userMsg, /CONVERSATION DÉJÀ ENGAGÉE/);
+    assert.match(userMsg, /Est-ce que Freda Pay est légal/);
+  }, { autoSend: true });
+});
