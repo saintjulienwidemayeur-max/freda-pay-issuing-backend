@@ -23,7 +23,7 @@ const cleanBody = (b, hasAttachment) => {
   if (body.length > MAX_BODY) throw httpError(400, 'MESSAGE_TOO_LONG', `Message trop long (${MAX_BODY} caractères maximum).`);
   return body;
 };
-const view = (m, url) => ({ id: m.id, sender: m.sender, author_name: m.author_name || null, body: m.body, created_at: m.created_at, read: m.sender === 'merchant' ? !!m.read_by_admin : !!m.read_by_merchant,
+const view = (m, url) => ({ id: m.id, sender: m.sender, by_agent: !!m.by_agent, author_name: m.author_name || null, body: m.body, created_at: m.created_at, read: m.sender === 'merchant' ? !!m.read_by_admin : !!m.read_by_merchant,
   attachment: m.attachment_path ? { name: m.attachment_name || 'photo', type: m.attachment_type || 'image/jpeg', url: url || null } : null });
 
 /** A photo sent with a message: a real PNG / JPEG / GIF / WebP (checked by its first bytes, not by what the client claims), 5 MB at most. */
@@ -90,6 +90,7 @@ async function merchantSend(ctx) {
     body, read_by_merchant: true, read_by_admin: false,
   }, att));
   require('../services/adminAlerts').chatMessage({ merchantId: ctx.merchantId, merchantName: author, body, hasPhoto: !!img });
+  require('../services/agent/chatAgent').enqueue(ctx.merchantId); // answered by the agent unless a human has the chat
   return { status: 201, body: { message: (await withUrls([row]))[0] } };
 }
 
@@ -138,6 +139,7 @@ async function adminSend(ctx) {
     id, merchant_id: m.id, sender: 'admin', author_name: String((ctx.admin && ctx.admin.name) || 'Support Freda Pay Issuing').slice(0, 120),
     body, read_by_merchant: false, read_by_admin: true,
   }, att));
+  await require('../services/agent/chatAgent').humanTookOver(m.id); // a human answered: the agent steps back
   return { status: 201, body: { message: (await withUrls([row]))[0] } };
 }
 
