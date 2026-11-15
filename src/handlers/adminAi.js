@@ -25,6 +25,14 @@ async function status() {
   ]);
   return { status: 200, body: { configured: llm.configured(), provider: config.agent.provider || null, model: cfg.model || config.agent.model, settings: cfg, pending_drafts: drafts.length, open_alerts: alerts.length, freda_mail: { keys: require('../services/fredaMail').mailboxes(), webhook_secret_set: !!config.fredaMail.webhookSecret } } };
 }
+async function secretsGet() { return { status: 200, body: { secrets: require('../services/agent/secrets').status() } }; }
+async function secretsSave(ctx) {
+  if (ctx.adminRole !== 'owner') { const e = new Error('Seul le propriétaire peut enregistrer des clés API.'); e.httpStatus = 403; e.code = 'INSUFFICIENT_ROLE'; throw e; }
+  const b = ctx.body || {};
+  const patch = {};
+  for (const n of require('../services/agent/secrets').NAMES) if (typeof b[n] === 'string') patch[n] = b[n];
+  return { status: 200, body: { secrets: await require('../services/agent/secrets').save(patch, who(ctx)) } };
+}
 async function saveSettings(ctx) {
   return { status: 200, body: { settings: await settings.save(ctx.body || {}, who(ctx)) } };
 }
@@ -186,4 +194,4 @@ async function knowledgeToggle(ctx) {
   return { status: 200, body: { entry: done[0] } };
 }
 
-module.exports = { kycList, kycReview, learnNow, fredaMailStatus, knowledgeToggle, ping, status, saveSettings, drafts, approve, reject, runOnMessage, chat, reportOf, alerts, ackAlert, knowledgeList, knowledgeSave, knowledgeDelete, chatStateGet, chatStateSet };
+module.exports = { secretsGet, secretsSave, kycList, kycReview, learnNow, fredaMailStatus, knowledgeToggle, ping, status, saveSettings, drafts, approve, reject, runOnMessage, chat, reportOf, alerts, ackAlert, knowledgeList, knowledgeSave, knowledgeDelete, chatStateGet, chatStateSet };
