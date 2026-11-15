@@ -177,7 +177,7 @@ async function fredaMailStatus() {
   await fm.nameKeys();
   const boxes = [];
   for (const m of fm.mailboxes()) {
-    try { const me = await fm.me(m); boxes.push({ mailbox: m, ok: true, scope: me.scope || null, info: me }); } catch (e) { boxes.push({ mailbox: m, ok: false, error: e.message }); }
+    try { const me = await fm.me(m); boxes.push({ mailbox: m, ok: true, scope: (me.key && me.key.scope) || me.scope || null, name: me.name || null, address: me.mailbox || null }); } catch (e) { boxes.push({ mailbox: m, ok: false, error: e.message }); }
   }
   return { status: 200, body: { configured: fm.configured(), webhook_secret_set: !!config.fredaMail.webhookSecret, webhook_url_hint: '/webhooks/freda-mail', mailboxes: boxes, problems: config.fredaMail.keyProblems || [], env_names_found: config.fredaMail.envNamesFound || [] } };
 }

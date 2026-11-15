@@ -59,6 +59,7 @@ async function call(mailbox, method, path, body, extraHeaders) {
 
 const me = (mailbox) => call(mailbox, 'GET', '/api/v1/me');
 const listUnread = (mailbox, limit) => call(mailbox, 'GET', `/api/v1/messages?unread=true&limit=${Math.min(50, limit || 20)}`);
+const listFolder = (mailbox, folder, limit, cursor) => call(mailbox, 'GET', `/api/v1/messages?folder=${folder === 'sent' ? 'sent' : 'inbox'}&limit=${Math.min(50, limit || 50)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
 const readMessage = (mailbox, id) => call(mailbox, 'GET', `/api/v1/messages/${encodeURIComponent(id)}`);
 const markRead = (mailbox, id) => call(mailbox, 'PATCH', `/api/v1/messages/${encodeURIComponent(id)}`, { unread: false });
 
@@ -116,6 +117,56 @@ async function storeMessage(msg, mailbox) {
   }
 }
 
+/**
+ * The messages of a mailbox's inbox nobody answered, read or not: a thread is answered when the "sent" folder holds a message of the same thread
+ * dated after it. Looks at the last `days` days (at most 100 messages each way). Oldest first.
+ */
+async function unanswered(mailbox, days) {
+  const since = Date.now() - Math.max(1, Math.min(60, days || 14)) * 86400000;
+  const pull = async (folder) => {
+    const out = []; let cursor = null;
+    for (let page = 0; page < 2; page += 1) {
+      const r = await listFolder(mailbox, folder, 50, cursor);
+      out.push(...(r.messages || []));
+      cursor = r.next_cursor;
+      if (!cursor || (r.messages || []).length === 0 || new Date((r.messages[r.messages.length - 1] || {}).date || 0).getTime() < since) break;
+    }
+    return out.filter((m) => !m.date || new Date(m.date).getTime() >= since);
+  };
+  const [inbox, sent] = await Promise.all([pull('inbox'), pull('sent')]);
+  const repliedAt = new Map();
+  for (const m of sent) { const k = m.thread_id || m.in_reply_to; if (k) repliedAt.set(k, Math.max(repliedAt.get(k) || 0, new Date(m.date || 0).getTime())); }
+  const boxes = mailboxes().map((m) => m.toLowerCase());
+  return inbox
+    .filter((m) => !boxes.includes(addr(m.from)) && !(m.thread_id && (repliedAt.get(m.thread_id) || 0) >= new Date(m.date || 0).getTime()))
+    .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
+    .map((m) => ({ mailbox, id: m.id, thread_id: m.thread_id || null, from: addr(m.from), from_name: (m.from && m.from.name) || '', subject: m.subject || '(sans objet)', date: m.date, unread: !!m.unread }));
+}
+
+/** Brings the unanswered messages into the admin inbox and starts the agent on each (it answers, or drafts, under its usual rules). */
+async function answerPending({ mailbox, days, limit } = {}) {
+  await nameKeys();
+  const boxes = mailbox ? [mailbox] : mailboxes();
+  const result = { mailboxes: [], found: 0, started: 0, already_known: 0, errors: [] };
+  for (const box of boxes) {
+    try {
+      const list = await unanswered(box, days || 14);
+      result.found += list.length;
+      let started = 0;
+      for (const m of list) {
+        if (result.started + started >= Math.min(30, limit || 20)) break;
+        if (await supabase.selectOne('admin_inbox', { message_id: `fm:${m.id}` })) { result.already_known += 1; continue; }
+        const full = await readMessage(box, m.id);
+        const row = await storeMessage(full.message || full, box);
+        if (row) { started += 1; require('./agent/emailAgent').enqueue(row.id); }
+      }
+      result.started += started;
+      result.mailboxes.push({ mailbox: box, unanswered: list.length, started });
+    } catch (e) { result.errors.push(`${box} : ${e.message}`); }
+  }
+  return result;
+}
+
 /** Safety net: the unread messages of every mailbox (last 3 days), whatever the webhook did or missed. */
 async function pollUnread(limit) {
   let stored = 0; const errors = [];
@@ -136,4 +187,4 @@ async function pollUnread(limit) {
   return { stored, errors };
 }
 
-module.exports = { nameKeys, configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };
+module.exports = { unanswered, answerPending, listFolder, nameKeys, configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };
