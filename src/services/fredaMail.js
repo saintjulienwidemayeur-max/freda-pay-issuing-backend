@@ -123,13 +123,13 @@ async function storeMessage(msg, mailbox) {
 
 /**
  * The messages of a mailbox's inbox nobody answered, read or not: a thread is answered when the "sent" folder holds a message of the same thread
- * dated after it. Looks at the last `days` days (at most 100 messages each way). Oldest first.
+ * dated after it. Looks at the last `days` days (default 30, up to a year; at most 600 messages each way). Oldest first.
  */
 async function unanswered(mailbox, days) {
-  const since = Date.now() - Math.max(1, Math.min(60, days || 14)) * 86400000;
+  const since = Date.now() - Math.max(1, Math.min(365, days || 30)) * 86400000;
   const pull = async (folder) => {
     const out = []; let cursor = null;
-    for (let page = 0; page < 2; page += 1) {
+    for (let page = 0; page < 12; page += 1) {
       const r = await listFolder(mailbox, folder, 50, cursor);
       out.push(...(r.messages || []));
       cursor = r.next_cursor;
@@ -163,16 +163,16 @@ async function agentStateOf(fmId) {
 async function answerPending({ mailbox, days, limit, wait } = {}) {
   await nameKeys();
   const boxes = mailbox ? [mailbox] : mailboxes();
-  const result = { mailboxes: [], found: 0, started: 0, retried: 0, already_handled: 0, details: [], errors: [] };
+  const result = { mailboxes: [], found: 0, started: 0, retried: 0, already_handled: 0, remaining: 0, details: [], errors: [] };
   const jobs = [];
   const emailAgent = require('./agent/emailAgent');
   for (const box of boxes) {
     try {
-      const list = await unanswered(box, days || 14);
+      const list = await unanswered(box, days || 30);
       result.found += list.length;
       let started = 0;
       for (const m of list) {
-        if (jobs.length >= Math.min(30, limit || 20)) break;
+        if (jobs.length >= Math.min(30, limit || 20)) { result.remaining += 1; continue; } // the next call takes the following ones
         const known = await supabase.selectOne('admin_inbox', { message_id: `fm:${m.id}` });
         let rowId = known ? known.id : null;
         if (known) {
@@ -199,7 +199,7 @@ async function answerPending({ mailbox, days, limit, wait } = {}) {
   await Promise.race([Promise.allSettled(jobs.map((j) => j.promise)), deadline]);
   for (const j of jobs) result.details.push({ mailbox: j.box, id: j.m.id, from: j.m.from, subject: j.m.subject, ...(await agentStateOf(j.m.id)) });
   const count = (re) => result.details.filter((d) => re.test(d.state)).length;
-  result.summary = `${result.found} email(s) sans réponse trouvé(s). Résultat : ${count(/^répondu/)} répondu(s) par l'agent, ${count(/^brouillon/)} brouillon(s) à approuver par un humain (page « Agent IA » > « Brouillons à approuver »), ${count(/^ignoré/)} ignoré(s) (messages automatiques), ${count(/^erreur/)} en erreur, ${count(/^(en cours|en attente)/)} encore en cours.${result.errors.length ? ` Erreurs : ${result.errors.join(' ; ')}` : ''}`;
+  result.summary = `${result.found} email(s) sans réponse trouvé(s). Résultat : ${count(/^répondu/)} répondu(s) par l'agent, ${count(/^brouillon/)} brouillon(s) à approuver par un humain (page « Agent IA » > « Brouillons à approuver »), ${count(/^ignoré/)} ignoré(s) (messages automatiques), ${count(/^erreur/)} en erreur, ${count(/^(en cours|en attente)/)} encore en cours.${result.remaining ? ` Il en reste ${result.remaining} à traiter : relancez l'outil pour la suite.` : ''}${result.errors.length ? ` Erreurs : ${result.errors.join(' ; ')}` : ''}`;
   return result;
 }
 

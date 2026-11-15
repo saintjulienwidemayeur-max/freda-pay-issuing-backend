@@ -546,7 +546,7 @@ if (require.main === module) {
       setInterval(() => {
         if (agentBusy) return;
         agentBusy = true;
-        require('./services/agent/secrets').load().catch(() => null).then(() => Promise.all([require('./services/fredaMail').answerPending({ days: 3, limit: 5 }).catch(() => null), require('./services/agent/emailAgent').catchUp(5), require('./services/agent/kycAgent').reviewPending(3).catch(() => null)]))
+        require('./services/agent/secrets').load().catch(() => null).then(() => Promise.all([require('./services/fredaMail').answerPending({ days: 30, limit: 5 }).catch(() => null), require('./services/agent/emailAgent').catchUp(5), require('./services/agent/kycAgent').reviewPending(3).catch(() => null)]))
           .catch((e) => console.error('Agent email catch-up:', e.message))
           .finally(() => { agentBusy = false; });
       }, 2 * 60 * 1000).unref();
