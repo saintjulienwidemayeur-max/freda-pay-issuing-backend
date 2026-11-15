@@ -16,7 +16,6 @@ const { randomHex } = require('../../utils/ids');
  * Nothing sensitive is ever sent by itself: the reply is saved as a DRAFT for an admin. Only an informational reply that the guardrails
  * AND the model both rate safe can go out alone, and only when an admin switched "auto-send safe replies" on.
  */
-const AUTO_OK = new Set(['tarifs', 'cartes', 'paiements', 'api_technique', 'depots']);
 const ROBOT = /^(no-?reply|noreply|do-?not-?reply|mailer-daemon|postmaster|bounce|notifications?)[@+._-]/i;
 const ROBOT_SUBJECT = /^(re:\s*)*(automatic reply|auto(matic)? ?reply|réponse automatique|out of office|undeliverable|delivery status|returned mail|failure notice)/i;
 
@@ -95,8 +94,9 @@ async function processInbox(id) {
       meta = { language: 'fr', category: 'autre', needs_human: true, sensitive: true, sensitive_reason: 'Réponse du modèle hors format', confidence: 0, summary: "L'agent n'a pas pu produire de réponse structurée." };
     }
     const reasons = [...new Set([...guardrails.sensitiveIntent(incoming), ...(meta.sensitive && meta.sensitive_reason ? [meta.sensitive_reason] : []), ...(secretAsk ? ["demande d'une information secrète"] : []), ...(injection ? ["tentative d'instruction dans le message"] : [])])];
-    const sensitive = meta.sensitive || meta.needs_human || reasons.length > 0 || mailbox !== 'support' && !AUTO_OK.has(meta.category);
-    const autoOk = cfg.auto_send_safe && !sensitive && !meta.needs_human && meta.confidence >= 0.75 && AUTO_OK.has(meta.category) && mailbox === 'support' && !secretAsk && !injection && !!answer;
+    const sensitive = meta.sensitive || meta.needs_human || reasons.length > 0;
+    // Autonomous mode: anything that is not sensitive and that the model is confident about goes out by itself, in every mailbox.
+    const autoOk = cfg.auto_send_safe && !sensitive && !meta.needs_human && meta.confidence >= 0.65 && !secretAsk && !injection && !!answer;
 
     const draft = await supabase.insert('agent_drafts', {
       id: `drf_${randomHex(8)}`, source: 'email', inbox_id: id, merchant_id: merchant ? merchant.id : null, to_email: from, to_name: row.from_name || null,

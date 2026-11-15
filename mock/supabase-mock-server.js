@@ -60,6 +60,7 @@ const tables = {
   agent_chat_state: [],
   agent_knowledge: [],
   agent_alerts: [],
+  agent_kyc_reviews: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();

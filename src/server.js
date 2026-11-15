@@ -113,6 +113,11 @@ router.get('/admin/master-wallet/below-floor', adminSession.requireAdminSession,
 router.get('/admin/master-wallet/anomalies', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.anomalies(ctx); });
 router.get('/admin/card-trace', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminCardTraceHandlers.trace(ctx); });
 router.post('/admin/agent/ping', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.ping(ctx); });
+router.get('/admin/agent/kyc', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.kycList(ctx); });
+router.post('/admin/agent/kyc/:id/review', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.kycReview(ctx); });
+router.post('/admin/agent/learn', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.learnNow(ctx); });
+router.get('/admin/agent/freda-mail', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.fredaMailStatus(ctx); });
+router.post('/admin/agent/knowledge/:id/toggle', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeToggle(ctx); });
 router.get('/admin/agent/status', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.status(ctx); });
 router.put('/admin/agent/settings', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.saveSettings(ctx); });
 router.get('/admin/agent/drafts', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.drafts(ctx); });
@@ -538,10 +543,12 @@ if (require.main === module) {
       setInterval(() => {
         if (agentBusy) return;
         agentBusy = true;
-        require('./services/agent/emailAgent').catchUp(5)
+        Promise.all([require('./services/fredaMail').pollUnread(20).catch(() => null), require('./services/agent/emailAgent').catchUp(5), require('./services/agent/kycAgent').reviewPending(3).catch(() => null)])
           .catch((e) => console.error('Agent email catch-up:', e.message))
           .finally(() => { agentBusy = false; });
       }, 2 * 60 * 1000).unref();
+      // Once a day the agent turns what the team answered into knowledge (checked every hour).
+      setInterval(() => { require('./services/agent/learning').maybeLearn().catch((e) => console.error('Agent learning:', e.message)); }, 60 * 60 * 1000).unref(); // eslint-disable-line no-console
       let unsentBusy = false;
       setInterval(() => {
         if (unsentBusy) return;

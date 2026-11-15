@@ -6,12 +6,15 @@ const { randomHex } = require('../../utils/ids');
 /**
  * Agent settings (platform_settings key "agent_settings"), read with a short cache:
  *   email_enabled / chat_enabled : each channel can be switched off without touching the keys
- *   auto_send_safe : informational replies the guardrails and the model both rate safe are sent by themselves. OFF by default: every
- *                    email reply then waits as a draft for an admin.
+ *   auto_send_safe : "autonomous mode": every reply the guardrails and the model both rate safe is sent by itself (any mailbox). Sensitive topics
+ *                    (refund, blocking, limits, legal, secrets...) always wait as a draft for an admin.
+ *   kyc_review / kyc_auto_approve : the agent examines each KYC/KYB file; it approves a clear one only when kyc_auto_approve is on (off by default),
+ *                    and never rejects: a doubt goes to a human.
+ *   learning_enabled : once a day it turns what the team answered into knowledge entries (source "learned").
  *   model : overrides AGENT_MODEL
  */
 const KEY = 'agent_settings';
-const DEFAULTS = { email_enabled: true, chat_enabled: true, auto_send_safe: false, model: '' };
+const DEFAULTS = { email_enabled: true, chat_enabled: true, auto_send_safe: true, kyc_review: true, kyc_auto_approve: false, learning_enabled: true, model: '' };
 let cache = null;
 let cachedAt = 0;
 
@@ -30,7 +33,7 @@ async function get() {
 async function save(patch, adminEmail) {
   const current = await get();
   const next = Object.assign({}, current);
-  for (const k of ['email_enabled', 'chat_enabled', 'auto_send_safe']) if (patch[k] !== undefined) next[k] = !!patch[k];
+  for (const k of ['email_enabled', 'chat_enabled', 'auto_send_safe', 'kyc_review', 'kyc_auto_approve', 'learning_enabled']) if (patch[k] !== undefined) next[k] = !!patch[k];
   if (patch.model !== undefined) next.model = String(patch.model || '').trim().slice(0, 80);
   const row = { value: JSON.stringify(next), updated_by: adminEmail || null, updated_at: new Date().toISOString() };
   const existing = await supabase.selectOne('platform_settings', { key: KEY });

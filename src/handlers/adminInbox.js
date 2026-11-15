@@ -143,13 +143,11 @@ async function sendReplyEmail(row, text) {
   const subject = `Re: ${base}`.slice(0, 150);
   const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim().replace(/\n/g, ' ')).filter(Boolean);
   const built = buildEmail({ subject, eyebrow: 'Message de Freda Pay Issuing', heading: subject, paragraphs, tone: 'info' });
-  if (row.source === 'freda_mail' && config.fredaMail.sendUrl) {
-    const res = await fetch(config.fredaMail.sendUrl, {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, config.fredaMail.sendKey ? { Authorization: `Bearer ${config.fredaMail.sendKey}` } : {}),
-      body: JSON.stringify({ to: row.from_email, to_name: row.from_name || row.from_email, subject: built.subject, text: built.text, html: built.html, in_reply_to: row.message_id || null, mailbox: row.mailbox || null }),
-    });
-    if (!res.ok) throw httpError(502, 'EMAIL_SEND_FAILED', `Freda Mail a refusé l'envoi (HTTP ${res.status}).`);
+  if (row.source === 'freda_mail' && row.fm_id && require('../services/fredaMail').keyFor(row.fm_mailbox)) {
+    // Same thread, from the mailbox that received it (plain text: Freda Mail builds the headers and the "Re:" subject).
+    const fm = require('../services/fredaMail');
+    await fm.reply(row.fm_mailbox, row.fm_id, text);
+    await fm.markRead(row.fm_mailbox, row.fm_id).catch(() => {});
     return;
   }
   await brevo.sendEmail({
