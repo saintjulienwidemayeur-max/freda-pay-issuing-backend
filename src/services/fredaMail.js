@@ -143,37 +143,59 @@ async function unanswered(mailbox, days) {
     .map((m) => ({ mailbox, id: m.id, thread_id: m.thread_id || null, from: addr(m.from), from_name: (m.from && m.from.name) || '', subject: m.subject || '(sans objet)', date: m.date, unread: !!m.unread }));
 }
 
-/** Brings the unanswered messages into the admin inbox and starts the agent on each (it answers, or drafts, under its usual rules). */
-async function answerPending({ mailbox, days, limit } = {}) {
+/** What the agent did with each message (for the admin and for the admin agent, who must report facts, not guesses). */
+async function agentStateOf(fmId) {
+  const row = await supabase.selectOne('admin_inbox', { message_id: `fm:${fmId}` });
+  if (!row) return { state: 'pas encore importé' };
+  const draft = await supabase.selectOne('agent_drafts', { inbox_id: row.id }).catch(() => null);
+  const state = row.replied_at ? 'répondu' : draft && draft.status === 'draft' ? (draft.sensitive ? `brouillon à approuver par un humain (sensible : ${draft.sensitive_reason || 'à valider'})` : 'brouillon à approuver') : draft && draft.status === 'rejected' ? 'brouillon rejeté par un admin' : row.agent_status === 'skipped' ? 'ignoré (message automatique ou robot)' : row.agent_status === 'error' ? `erreur de l'agent : ${row.agent_error || 'inconnue'}` : row.agent_status === 'processing' ? "en cours de traitement" : row.agent_status === 'done' ? 'traité' : "en attente de l'agent";
+  return { state, inbox_id: row.id, agent_status: row.agent_status || null, category: row.agent_category || null, summary: row.agent_summary || null, draft_id: draft ? draft.id : null };
+}
+
+/**
+ * Brings the unanswered messages into the admin inbox and runs the agent on each (it answers by itself when not sensitive, otherwise drafts), waiting
+ * up to ~40 s so the answer says what really happened to EACH message: replied, draft to approve (and why), ignored (automatic mail), error (and the reason).
+ */
+async function answerPending({ mailbox, days, limit, wait } = {}) {
   await nameKeys();
   const boxes = mailbox ? [mailbox] : mailboxes();
-  const result = { mailboxes: [], found: 0, started: 0, already_known: 0, errors: [] };
+  const result = { mailboxes: [], found: 0, started: 0, retried: 0, already_handled: 0, details: [], errors: [] };
+  const jobs = [];
+  const emailAgent = require('./agent/emailAgent');
   for (const box of boxes) {
     try {
       const list = await unanswered(box, days || 14);
       result.found += list.length;
       let started = 0;
       for (const m of list) {
-        if (result.started + started >= Math.min(30, limit || 20)) break;
+        if (jobs.length >= Math.min(30, limit || 20)) break;
         const known = await supabase.selectOne('admin_inbox', { message_id: `fm:${m.id}` });
+        let rowId = known ? known.id : null;
         if (known) {
-          // Already imported: if the agent never finished it (error, or stuck while processing for 15 minutes), it is run again.
+          // Already imported: run it again if the agent never finished it (error, never started, or stuck in "processing" for 15 minutes).
           const stuck = known.agent_status === 'processing' && Date.now() - new Date(known.received_at || 0).getTime() > 15 * 60 * 1000;
           if (!known.replied_at && (known.agent_status === 'error' || !known.agent_status || stuck)) {
             await supabase.update('admin_inbox', { id: known.id }, { agent_status: null, agent_error: null });
-            started += 1; require('./agent/emailAgent').enqueue(known.id);
-            result.retried = (result.retried || 0) + 1;
-          } else result.already_known += 1;
-          continue;
+            result.retried += 1;
+          } else { result.already_handled += 1; result.details.push({ mailbox: box, id: m.id, from: m.from, subject: m.subject, ...(await agentStateOf(m.id)) }); continue; }
+        } else {
+          const full = await readMessage(box, m.id);
+          const row = await storeMessage(full.message || full, box);
+          if (!row) continue;
+          rowId = row.id;
         }
-        const full = await readMessage(box, m.id);
-        const row = await storeMessage(full.message || full, box);
-        if (row) { started += 1; require('./agent/emailAgent').enqueue(row.id); }
+        started += 1;
+        jobs.push({ box, m, rowId, promise: emailAgent.processInbox(rowId) });
       }
       result.started += started;
       result.mailboxes.push({ mailbox: box, unanswered: list.length, started });
     } catch (e) { result.errors.push(`${box} : ${e.message}`); }
   }
+  const deadline = new Promise((r) => setTimeout(() => r('timeout'), wait || 40000));
+  await Promise.race([Promise.allSettled(jobs.map((j) => j.promise)), deadline]);
+  for (const j of jobs) result.details.push({ mailbox: j.box, id: j.m.id, from: j.m.from, subject: j.m.subject, ...(await agentStateOf(j.m.id)) });
+  const count = (re) => result.details.filter((d) => re.test(d.state)).length;
+  result.summary = `${result.found} email(s) sans réponse trouvé(s). Résultat : ${count(/^répondu/)} répondu(s) par l'agent, ${count(/^brouillon/)} brouillon(s) à approuver par un humain (page « Agent IA » > « Brouillons à approuver »), ${count(/^ignoré/)} ignoré(s) (messages automatiques), ${count(/^erreur/)} en erreur, ${count(/^(en cours|en attente)/)} encore en cours.${result.errors.length ? ` Erreurs : ${result.errors.join(' ; ')}` : ''}`;
   return result;
 }
 
@@ -197,4 +219,4 @@ async function pollUnread(limit) {
   return { stored, errors };
 }
 
-module.exports = { unanswered, answerPending, listFolder, nameKeys, configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };
+module.exports = { agentStateOf, unanswered, answerPending, listFolder, nameKeys, configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };

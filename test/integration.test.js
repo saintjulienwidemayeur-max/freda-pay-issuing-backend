@@ -9023,6 +9023,7 @@ test('agent + Freda Mail: the admin asks which emails wait for an answer and the
     { id: 'P-1', thread_id: '<tp1@x>', from: { name: 'Client Un', address: 'pending-one@example.com' }, to: [{ address: 'issuing@fredapay.com' }], subject: 'Déjà répondu', date: iso(300), unread: false, text: 'Merci' },
     { id: 'P-2', thread_id: '<tp2@x>', from: { name: 'Client Deux', address: 'pending-two@example.com' }, to: [{ address: 'issuing@fredapay.com' }], subject: 'Quels sont vos frais ?', date: iso(200), unread: false, text: 'Bonjour, quels sont vos frais de recharge ?' },
     { id: 'P-3', thread_id: '<tp3@x>', from: { name: 'Nous', address: 'issuing@fredapay.com' }, to: [{ address: 'x@y.com' }], subject: 'Notre propre message', date: iso(100), unread: true, text: 'interne' },
+    { id: 'P-5', thread_id: '<tp5@x>', from: { name: 'Client Cinq', address: 'pending-five@example.com' }, to: [{ address: 'issuing@fredapay.com' }], subject: 'Remboursement', date: iso(150), unread: true, text: 'Je veux un remboursement de ma dernière recharge.' },
     { id: 'P-4', thread_id: '<tp4@x>', from: { name: 'Vieux', address: 'pending-old@example.com' }, to: [{ address: 'issuing@fredapay.com' }], subject: 'Très ancien', date: iso(60 * 24 * 40), unread: false, text: 'ancien' },
   ];
   const sentFolder = [{ id: 'S-1', thread_id: '<tp1@x>', from: { address: 'issuing@fredapay.com' }, to: [{ address: 'pending-one@example.com' }], subject: 'Re: Déjà répondu', date: iso(250) }];
@@ -9060,10 +9061,18 @@ test('agent + Freda Mail: the admin asks which emails wait for an answer and the
       assert.deepEqual(r.data.tools_used, ['freda_mail_unanswered', 'freda_mail_answer_pending']);
       // what the model was told about the real mailbox: only P-2 (P-1 was answered, P-3 is ours, P-4 is older than the window)
       const seen = JSON.stringify(calls[1].body.contents[calls[1].body.contents.length - 1]);
-      assert.match(seen, /"total_unanswered":1/);
+      assert.match(seen, /"total_unanswered":2/);
+      assert.match(seen, /en attente de l'agent|erreur de l'agent/); // each message says what the agent did (or did not do) with it
       assert.match(seen, /Quels sont vos frais/);
       assert.ok(!/Déjà répondu|Notre propre|Très ancien/.test(seen));
       assert.deepEqual(Object.keys(config.fredaMail.keys), ['issuing@fredapay.com'], 'the key was named after its mailbox');
+      // the action waits for the agent and reports message by message, facts not guesses
+      const finalCall = calls.find((c) => { const l = c.body.contents[c.body.contents.length - 1]; return l.parts && l.parts[0] && l.parts[0].functionResponse && l.parts[0].functionResponse.name === 'freda_mail_answer_pending'; });
+      const reported = JSON.stringify(finalCall.body.contents[finalCall.body.contents.length - 1]);
+      assert.match(reported, /"found":2/);
+      assert.match(reported, /répondu/);
+      assert.match(reported, /brouillon à approuver par un humain \(sensible : remboursement\)/);
+      assert.match(reported, /Brouillons à approuver/);
       // the agent processed it (autonomous mode: informational reply sent through Freda Mail, in the same thread)
       await pollUntil(async () => sent.length, (n) => n >= 1, 80, 50);
       assert.equal(sent[0].reply_to_message_id, 'P-2');
