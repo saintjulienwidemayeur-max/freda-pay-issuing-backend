@@ -156,4 +156,20 @@ function extractJson(text) {
   try { return JSON.parse(t.slice(a, b + 1)); } catch (e) { return null; }
 }
 
-module.exports = { generate, extractJson, configured, agentError };
+/** Gemini only: the models this key can call (name, what they do), to pick a fast one. Throws a readable error. */
+async function listGeminiModels(timeoutMs) {
+  if (config.agent.provider !== 'gemini' || !config.agent.apiKey) throw agentError('AGENT_NOT_CONFIGURED', "La liste des modèles n'existe que pour Gemini.");
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs || 10000);
+  try {
+    const res = await fetch(`${config.agent.baseUrl}/v1beta/models?pageSize=200`, { headers: { 'x-goog-api-key': config.agent.apiKey }, signal: ctl.signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw agentError('AGENT_PROVIDER_ERROR', `Google a refusé la liste des modèles (HTTP ${res.status}) : ${String((data.error && data.error.message) || '').slice(0, 200)}`);
+    return (data.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => ({ name: String(m.name || '').replace(/^models\//, ''), display: m.displayName || '' }));
+  } catch (e) {
+    if (e.code) throw e;
+    throw agentError('AGENT_UNREACHABLE', e.name === 'AbortError' ? "Google n'a pas répondu à la liste des modèles (10 s) : le serveur ne joint pas Google, ou Google est bloqué." : `Google est injoignable : ${e.message}`);
+  } finally { clearTimeout(timer); }
+}
+
+module.exports = { listGeminiModels, generate, extractJson, configured, agentError };
