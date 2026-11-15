@@ -8622,3 +8622,52 @@ test('agent report: emails handled, chats answered, hand-offs, frequent problems
   assert.equal((await api('DELETE', `/admin/agent/knowledge/${kb.data.entry.id}`, { token: admin.token })).status, 200);
   assert.equal((await api('POST', '/admin/agent/knowledge', { token: admin.token, body: { title: 'x', content: 'y' } })).status, 400);
 });
+
+test('agent speed: no long reasoning, the account is in the prompt up front (one model call), tool calls asked together are run together', async () => {
+  const reg = await registerAndVerify({ business_name: 'Speedy Co', email: 'speedy@example.com', password: 'password123' });
+  // 1) one model call is enough for a question about the account
+  await withAgent(() => say(emailAnswer({ summary: 'Rapide.' })), async (calls) => {
+    await inboundEmail('speedy@example.com', 'Question rapide', 'Quel est mon plan ?', '<speed-1@mail>');
+    await draftFor('Question rapide');
+    assert.equal(calls.length, 1);
+    const prompt = JSON.stringify(calls[0].body.contents);
+    assert.match(prompt, /Contexte du compte/);
+    assert.match(prompt, /Speedy Co/);
+    assert.equal(calls[0].body.generationConfig.thinkingConfig.thinkingBudget, 0); // no long reasoning by default
+  });
+  // 2) tool calls asked in the same answer are all answered in the next call
+  await withAgent((body, n) => (n === 1 ? [{ functionCall: { name: 'list_cards', args: {} } }, { functionCall: { name: 'get_account_summary', args: {} } }] : say(emailAnswer())), async (calls) => {
+    await inboundEmail('speedy@example.com', 'Deux outils', 'Mes cartes et mon compte ?', '<speed-2@mail>');
+    await draftFor('Deux outils');
+    assert.equal(calls.length, 2);
+    const answered = calls[1].body.contents[calls[1].body.contents.length - 1].parts;
+    assert.equal(answered.length, 2);
+    assert.deepEqual(answered.map((p) => p.functionResponse.name), ['list_cards', 'get_account_summary']);
+  });
+  // 3) a model that refuses the reasoning setting is asked again without it
+  const http = require('node:http');
+  const config = require('../src/config');
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const b = JSON.parse(raw);
+      seen.push(!!(b.generationConfig && b.generationConfig.thinkingConfig));
+      if (b.generationConfig && b.generationConfig.thinkingConfig) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 400, message: 'Thinking budget is not supported for this model' } })); }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] } }], usageMetadata: {} }));
+    });
+  });
+  await new Promise((r) => server.listen(AGENT_PORT + 1, r));
+  const saved = { ...config.agent };
+  Object.assign(config.agent, { provider: 'gemini', apiKey: 'k', baseUrl: `http://localhost:${AGENT_PORT + 1}` });
+  try {
+    const llm = require('../src/services/agent/llm');
+    const out = await llm.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(out.text, 'ok');
+    assert.deepEqual(seen, [true, false]);
+    await llm.generate({ system: 's', messages: [{ role: 'user', content: 'hi again' }] });
+    assert.deepEqual(seen, [true, false, false]); // remembered: not tried again
+  } finally { Object.assign(config.agent, saved); await new Promise((r) => server.close(r)); }
+});
