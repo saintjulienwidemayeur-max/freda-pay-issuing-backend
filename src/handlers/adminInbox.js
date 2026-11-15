@@ -105,6 +105,7 @@ async function receive(ctx) {
     });
     stored += 1;
     if (shouldAcknowledge(it, fromEmail)) await sendAcknowledgement(row, row.from_name);
+    require('../services/agent/emailAgent').enqueue(row.id); // the agent drafts a reply (nothing leaves without the rules in services/agent)
   }
   return { status: 200, body: { received: stored } };
 }
@@ -133,17 +134,24 @@ async function markRead(ctx) {
   return { status: 200, body: { id: row.id, is_read: true } };
 }
 
-async function reply(ctx) {
-  const row = await supabase.selectOne('admin_inbox', { id: ctx.params.id });
-  if (!row) throw httpError(404, 'NOT_FOUND', 'Message introuvable.');
-  const text = String((ctx.body && ctx.body.message) || '').trim();
-  if (!text) throw httpError(400, 'MISSING_FIELDS', 'Le message est requis.');
-  if (text.length > 8000) throw httpError(400, 'MESSAGE_TOO_LONG', 'Le message est trop long (8000 caractères max).');
-
+/**
+ * Sends a reply to an inbox message: through Freda Mail when the message came from it and FREDA_MAIL_SEND_URL is set, otherwise through Brevo
+ * (the same branded email as always). Used by the admin's own replies and by approved / auto-sent agent drafts.
+ */
+async function sendReplyEmail(row, text) {
   const base = String(row.subject || '').replace(/^\s*(re:\s*)+/i, '');
   const subject = `Re: ${base}`.slice(0, 150);
   const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim().replace(/\n/g, ' ')).filter(Boolean);
   const built = buildEmail({ subject, eyebrow: 'Message de Freda Pay Issuing', heading: subject, paragraphs, tone: 'info' });
+  if (row.source === 'freda_mail' && config.fredaMail.sendUrl) {
+    const res = await fetch(config.fredaMail.sendUrl, {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, config.fredaMail.sendKey ? { Authorization: `Bearer ${config.fredaMail.sendKey}` } : {}),
+      body: JSON.stringify({ to: row.from_email, to_name: row.from_name || row.from_email, subject: built.subject, text: built.text, html: built.html, in_reply_to: row.message_id || null, mailbox: row.mailbox || null }),
+    });
+    if (!res.ok) throw httpError(502, 'EMAIL_SEND_FAILED', `Freda Mail a refusé l'envoi (HTTP ${res.status}).`);
+    return;
+  }
   await brevo.sendEmail({
     to: row.from_email,
     toName: row.from_name || row.from_email,
@@ -154,8 +162,18 @@ async function reply(ctx) {
     senderName: config.brevo.adminSenderName,
     replyTo: config.brevo.inboundReplyAddress || config.brevo.adminSenderEmail,
   });
+}
+
+async function reply(ctx) {
+  const row = await supabase.selectOne('admin_inbox', { id: ctx.params.id });
+  if (!row) throw httpError(404, 'NOT_FOUND', 'Message introuvable.');
+  const text = String((ctx.body && ctx.body.message) || '').trim();
+  if (!text) throw httpError(400, 'MISSING_FIELDS', 'Le message est requis.');
+  if (text.length > 8000) throw httpError(400, 'MESSAGE_TOO_LONG', 'Le message est trop long (8000 caractères max).');
+
+  await sendReplyEmail(row, text);
   const [updated] = await supabase.update('admin_inbox', { id: row.id }, { replied_at: new Date().toISOString(), last_reply: text, is_read: true });
   return { status: 200, body: { id: row.id, replied_at: updated && updated.replied_at } };
 }
 
-module.exports = { receive, list, markRead, reply };
+module.exports = { receive, list, markRead, reply, sendReplyEmail };

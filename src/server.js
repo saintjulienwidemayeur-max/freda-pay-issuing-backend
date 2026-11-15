@@ -12,6 +12,8 @@ const twoFactorHandlers = require('./handlers/twoFactor');
 const adminPartnerReportHandlers = require('./handlers/adminPartnerReports');
 const adminWalletAuditHandlers = require('./handlers/adminWalletAudit');
 const adminCardTraceHandlers = require('./handlers/adminCardTrace');
+const adminAiHandlers = require('./handlers/adminAi');
+const fredaMailHandlers = require('./handlers/fredaMail');
 const adminProfitHandlers = require('./handlers/adminProfit');
 const adminTwoFactorHandlers = require('./handlers/adminTwoFactor');
 const apiKeyHandlers = require('./handlers/apiKeys');
@@ -110,6 +112,23 @@ router.get('/admin/merchants/:id/ledger', adminSession.requireAdminSession, (ctx
 router.get('/admin/master-wallet/below-floor', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.belowFloor(ctx); });
 router.get('/admin/master-wallet/anomalies', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.anomalies(ctx); });
 router.get('/admin/card-trace', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminCardTraceHandlers.trace(ctx); });
+router.get('/admin/agent/status', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.status(ctx); });
+router.put('/admin/agent/settings', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.saveSettings(ctx); });
+router.get('/admin/agent/drafts', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.drafts(ctx); });
+router.post('/admin/agent/drafts/:id/approve', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.approve(ctx); });
+router.post('/admin/agent/drafts/:id/reject', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.reject(ctx); });
+router.post('/admin/agent/inbox/:id/run', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.runOnMessage(ctx); });
+router.post('/admin/agent/chat', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.chat(ctx); });
+router.get('/admin/agent/report', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.reportOf(ctx); });
+router.get('/admin/agent/alerts', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.alerts(ctx); });
+router.post('/admin/agent/alerts/:id/ack', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.ackAlert(ctx); });
+router.get('/admin/agent/knowledge', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeList(ctx); });
+router.post('/admin/agent/knowledge', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeSave(ctx); });
+router.put('/admin/agent/knowledge/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeSave(ctx); });
+router.del('/admin/agent/knowledge/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeDelete(ctx); });
+router.get('/admin/agent/chat-state/:merchantId', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.chatStateGet(ctx); });
+router.post('/admin/agent/chat-state/:merchantId', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.chatStateSet(ctx); });
+router.post('/webhooks/freda-mail', rateLimit.middleware('freda-mail', 600, 60 * 1000), fredaMailHandlers.receive);
 router.get('/admin/profit', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminProfitHandlers.breakdown(ctx); });
 router.get('/admin/security/2fa', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.overview(ctx); });
 router.post('/admin/security/2fa/remind', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminTwoFactorHandlers.remind(ctx); });
@@ -513,6 +532,15 @@ if (require.main === module) {
       if (process.env.CARD_ALIGN_ON_BOOT !== 'false') {
         setTimeout(() => require('./services/cardOrchestrator').alignAllCards({ mode: 'live' }).catch((e) => console.error('Card alignment at start:', e.message)), 90 * 1000).unref();
       }
+      // The agent: emails the live trigger missed (restart, key added later) are picked up.
+      let agentBusy = false;
+      setInterval(() => {
+        if (agentBusy) return;
+        agentBusy = true;
+        require('./services/agent/emailAgent').catchUp(5)
+          .catch((e) => console.error('Agent email catch-up:', e.message))
+          .finally(() => { agentBusy = false; });
+      }, 2 * 60 * 1000).unref();
       let unsentBusy = false;
       setInterval(() => {
         if (unsentBusy) return;

@@ -55,6 +55,11 @@ const tables = {
   merchant_identity: [],
   user_2fa: [],
   partner_reports: [],
+  agent_runs: [],
+  agent_drafts: [],
+  agent_chat_state: [],
+  agent_knowledge: [],
+  agent_alerts: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();

@@ -311,3 +311,12 @@ Revni = frè Freda Pay reyèlman ankese. Pwofi = revni - frè patnè (kreyasyon 
 - **Tier 2 KYC pou kliyan kat yo** (pyès idantite + foto): `submitHolderProfile`
   sèlman voye Tier 0+1 (san dokiman idantite), ki ka sifi pou kat tès men gen chans
   Maplerad mande Tier 2 pou kèk aksyon an mòd Live.
+
+## Agent IA (emails, chat, admin)
+
+Variables d'environnement (jamais dans le code ni la base) :
+- `GEMINI_API_KEY` (Google Gemini, modèle par défaut `gemini-flash-latest`) ou `ANTHROPIC_API_KEY` ; `AGENT_MODEL` pour changer de modèle.
+- `FREDA_MAIL_SECRET` : jeton du webhook `POST /webhooks/freda-mail?token=...` (Freda Mail y envoie les nouveaux emails des boîtes support, conformité et finance).
+- Optionnel : `FREDA_MAIL_SEND_URL` / `FREDA_MAIL_SEND_KEY` pour envoyer les réponses via Freda Mail au lieu de Brevo.
+
+L'agent n'a que des outils de lecture. Tout ce qui est sensible reste un brouillon (`agent_drafts`) à approuver dans l'admin, « Agent IA ». Migration : `migrations/2026-11-12-ai-agent.sql`.

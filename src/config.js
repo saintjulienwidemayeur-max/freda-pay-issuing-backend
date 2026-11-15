@@ -140,6 +140,31 @@ const config = {
   // Top-ups already started keep being settled. WALLET_AUTO_TOPUP_ENABLED=true reopens the automatic top-up.
   walletAutoTopupEnabled: String(process.env.WALLET_AUTO_TOPUP_ENABLED || 'false').toLowerCase() === 'true',
 
+  // The central AI agent (email drafts, merchant chat, admin chat). The model is called through GEMINI_API_KEY (Google Gemini) or, failing that,
+  // ANTHROPIC_API_KEY (Claude). The keys live ONLY in the host's environment variables, never in the code or the database.
+  // Without a key the agent stays off and nothing else changes.
+  agent: (() => {
+    const gemini = process.env.GEMINI_API_KEY || '';
+    const anthropic = process.env.ANTHROPIC_API_KEY || '';
+    const provider = process.env.AGENT_PROVIDER || (gemini ? 'gemini' : anthropic ? 'anthropic' : '');
+    return {
+      provider,
+      apiKey: provider === 'gemini' ? gemini : anthropic,
+      baseUrl: (provider === 'gemini' ? (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com') : (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com')).replace(/\/+$/, ''),
+      model: process.env.AGENT_MODEL || (provider === 'gemini' ? 'gemini-flash-latest' : 'claude-sonnet-5-5'),
+      maxTokens: parseInt(process.env.AGENT_MAX_TOKENS || '1500', 10),
+      timeoutMs: parseInt(process.env.AGENT_TIMEOUT_MS || '60000', 10),
+      chatRepliesPerHour: parseInt(process.env.AGENT_CHAT_REPLIES_PER_HOUR || '40', 10),
+    };
+  })(),
+  // Freda Mail (the team's mail platform): its webhook is POST /webhooks/freda-mail?token=<FREDA_MAIL_SECRET>.
+  // FREDA_MAIL_SEND_URL (+ FREDA_MAIL_SEND_KEY) is optional: when set, approved replies to Freda Mail messages are sent through it instead of Brevo.
+  fredaMail: {
+    secret: process.env.FREDA_MAIL_SECRET || '',
+    sendUrl: process.env.FREDA_MAIL_SEND_URL || '',
+    sendKey: process.env.FREDA_MAIL_SEND_KEY || '',
+  },
+
   // Authenticator-app 2FA: mandatory for merchant dashboards (the tools can move money). TWO_FACTOR_ENFORCE=false is an emergency switch only.
   twoFactor: {
     enforce: String(process.env.TWO_FACTOR_ENFORCE || 'true').toLowerCase() !== 'false',
