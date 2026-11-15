@@ -13,9 +13,19 @@ const { randomHex } = require('../../utils/ids');
 /**
  * Email side of the agent. For each new message of the support / compliance / finance mailboxes (Brevo inbound or Freda Mail webhook):
  * it reads the message, looks the sender's account up (READ-ONLY tools), and writes a reply in the sender's language.
- * Nothing sensitive is ever sent by itself: the reply is saved as a DRAFT for an admin. Only an informational reply that the guardrails
- * AND the model both rate safe can go out alone, and only when an admin switched "auto-send safe replies" on.
+ * In autonomous mode (default) every real person gets an answer by itself; sensitive topics get an acknowledgement saying the team takes over (and an alert).
+ * With "auto-send" off, every reply is a DRAFT for an admin.
  */
+const HOLDING = {
+  fr: (n) => `Bonjour${n ? ` ${n}` : ''},\n\nMerci pour votre message. Nous l'avons bien reçu et nous le transmettons à notre équipe, qui vous répondra personnellement dans les meilleurs délais. Pour votre sécurité, nous ne demandons et ne communiquons jamais par email un numéro de carte complet, un CVV, un mot de passe, un code de vérification ou une clé API.\n\nL'équipe Freda Pay Issuing`,
+  ht: (n) => `Bonjou${n ? ` ${n}` : ''},\n\nMèsi pou mesaj ou a. Nou resevwa l byen epi nou pase l bay ekip nou an, ki pral reponn ou pèsonèlman nan pi bon delè. Pou sekirite w, nou pa janm mande ni bay pa imèl yon nimewo kat konplè, yon CVV, yon modpas, yon kòd verifikasyon oswa yon kle API.\n\nEkip Freda Pay Issuing`,
+  en: (n) => `Hello${n ? ` ${n}` : ''},\n\nThank you for your message. We have received it and passed it to our team, who will answer you personally as soon as possible. For your security, we never ask for or share by email a full card number, a CVV, a password, a verification code or an API key.\n\nThe Freda Pay Issuing team`,
+};
+const HANDOFF = {
+  fr: "\n\nPour cette demande, notre équipe la prend en charge et reviendra vers vous directement.",
+  ht: "\n\nPou demann sa a, ekip nou an pran chaj li epi l ap retounen jwenn ou dirèkteman.",
+  en: "\n\nFor this request, our team is taking care of it and will come back to you directly.",
+};
 const ROBOT = /^(no-?reply|noreply|do-?not-?reply|mailer-daemon|postmaster|bounce|notifications?)[@+._-]/i;
 const ROBOT_SUBJECT = /^(re:\s*)*(automatic reply|auto(matic)? ?reply|réponse automatique|out of office|undeliverable|delivery status|returned mail|failure notice)/i;
 
@@ -96,7 +106,14 @@ async function processInbox(id) {
     const reasons = [...new Set([...guardrails.sensitiveIntent(incoming), ...(meta.sensitive && meta.sensitive_reason ? [meta.sensitive_reason] : []), ...(secretAsk ? ["demande d'une information secrète"] : []), ...(injection ? ["tentative d'instruction dans le message"] : [])])];
     const sensitive = meta.sensitive || meta.needs_human || reasons.length > 0;
     // Autonomous mode: anything that is not sensitive and that the model is confident about goes out by itself, in every mailbox.
-    const autoOk = cfg.auto_send_safe && !sensitive && !meta.needs_human && meta.confidence >= 0.65 && !secretAsk && !injection && !!answer;
+    // Autonomous mode: a real person always gets an answer, with no approval step. The model's own reply goes out when it is clean; for a message that
+    // asks for a secret, carries an instruction, or could not be parsed, a safe standard reply goes out instead; for a sensitive topic (money, blocking, KYC...)
+    // the reply is followed by a line saying the team takes it over, and the team is alerted. The reply is never silence.
+    const lang = HOLDING[meta.language] ? meta.language : (meta.language === 'es' ? 'en' : 'fr');
+    const useHolding = !answer || secretAsk || injection;
+    if (useHolding) reply = HOLDING[lang](String(row.from_name || '').split(/\s+/)[0].replace(/[<>@]/g, ''));
+    else if (sensitive && !/équipe|ekip|team/i.test(reply)) reply = reply.replace(/\n*L['’]équipe Freda Pay Issuing\s*$/i, '').replace(/\n*Ekip Freda Pay Issuing\s*$/i, '').replace(/\n*The Freda Pay Issuing team\s*$/i, '').trimEnd() + HANDOFF[lang] + (lang === 'ht' ? '\n\nEkip Freda Pay Issuing' : lang === 'en' ? '\n\nThe Freda Pay Issuing team' : "\n\nL'équipe Freda Pay Issuing");
+    const autoOk = !!cfg.auto_send_safe && !!reply;
 
     const draft = await supabase.insert('agent_drafts', {
       id: `drf_${randomHex(8)}`, source: 'email', inbox_id: id, merchant_id: merchant ? merchant.id : null, to_email: from, to_name: row.from_name || null,
@@ -115,6 +132,12 @@ async function processInbox(id) {
         await supabase.update('admin_inbox', { id }, { replied_at: now, last_reply: reply, is_read: true });
         outcome = 'auto_sent';
       } catch (e) { outcome = 'drafted'; } // the draft stays for an admin
+    }
+    if (outcome === 'auto_sent' && sensitive) {
+      adminAlerts.alert({
+        key: 'agent-followup', throttleMs: 15 * 60 * 1000, subject: 'Un client attend une suite de l\'équipe (accusé de réception envoyé)', eyebrow: 'Agent IA', heading: 'Demande à traiter', tone: 'info',
+        paragraphs: [`${meta.summary || 'Un email sensible a reçu un accusé de réception.'}`, `Sujet sensible : ${reasons.join(', ') || 'à valider'}. L'agent a répondu et annoncé que l'équipe prend le relais.`, 'Ouvrez « Agent IA » > Brouillons pour voir la réponse envoyée, puis traitez la demande dans l\'admin.'],
+      }).catch(() => {});
     }
     if (outcome === 'drafted') {
       adminAlerts.alert({
