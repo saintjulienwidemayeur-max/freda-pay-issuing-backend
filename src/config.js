@@ -163,13 +163,13 @@ const config = {
   // New emails arrive by webhook: POST /webhooks/freda-mail, signed with the secret (whsec_...) shown in Freda Mail > Settings > Integrations & API:
   //   FREDA_MAIL_WEBHOOK_SECRET. A background pass also reads the unread messages of every mailbox, so nothing is missed.
   fredaMail: (() => {
-    let keys = {};
-    try { keys = JSON.parse(process.env.FREDA_MAIL_KEYS || '{}') || {}; } catch (e) { keys = {}; }
-    if (process.env.FREDA_MAIL_API_KEY) keys[process.env.FREDA_MAIL_MAILBOX || 'support@fredapay.com'] = process.env.FREDA_MAIL_API_KEY;
+    const parsed = require('./utils/fredaMailKeys').parse(process.env);
     return {
       baseUrl: (process.env.FREDA_MAIL_BASE_URL || 'https://fredaworkspace.com').replace(/\/+$/, ''),
-      keys,
-      webhookSecret: process.env.FREDA_MAIL_WEBHOOK_SECRET || '',
+      keys: parsed.keys,
+      keyProblems: parsed.problems,
+      envNamesFound: parsed.env_names_found,
+      webhookSecret: (process.env.FREDA_MAIL_WEBHOOK_SECRET || '').trim(),
       legacyToken: process.env.FREDA_MAIL_SECRET || '', // older "?token=" form of the webhook (no signature)
     };
   })(),

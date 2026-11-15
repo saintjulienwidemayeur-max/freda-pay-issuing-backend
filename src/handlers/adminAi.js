@@ -174,11 +174,12 @@ async function learnNow() {
 }
 async function fredaMailStatus() {
   const fm = require('../services/fredaMail');
+  await fm.nameKeys();
   const boxes = [];
   for (const m of fm.mailboxes()) {
     try { const me = await fm.me(m); boxes.push({ mailbox: m, ok: true, scope: me.scope || null, info: me }); } catch (e) { boxes.push({ mailbox: m, ok: false, error: e.message }); }
   }
-  return { status: 200, body: { configured: fm.configured(), webhook_secret_set: !!config.fredaMail.webhookSecret, webhook_url_hint: '/webhooks/freda-mail', mailboxes: boxes } };
+  return { status: 200, body: { configured: fm.configured(), webhook_secret_set: !!config.fredaMail.webhookSecret, webhook_url_hint: '/webhooks/freda-mail', mailboxes: boxes, problems: config.fredaMail.keyProblems || [], env_names_found: config.fredaMail.envNamesFound || [] } };
 }
 async function knowledgeToggle(ctx) {
   const done = await supabase.update('agent_knowledge', { id: ctx.params.id }, { enabled: !!(ctx.body && ctx.body.enabled), updated_by: who(ctx), updated_at: new Date().toISOString() });
