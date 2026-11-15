@@ -138,6 +138,15 @@ async function catchUp(limit) {
   const rows = await supabase.select('admin_inbox', { agent_status: supabase.isNull(), received_at: supabase.gt(since) }, { order: 'received_at.asc', limit: limit || 5 });
   let processed = 0;
   for (const r of rows) { await processInbox(r.id); processed += 1; }
+  // A message whose processing failed (the model did not answer, a refusal...) is tried again, at most 4 times, at least 10 minutes apart.
+  const failed = await supabase.select('admin_inbox', { agent_status: 'error', received_at: supabase.gt(since) }, { order: 'received_at.asc', limit: 10 });
+  for (const r of failed) {
+    if (processed >= (limit || 5) * 2 || r.replied_at) continue;
+    const runs = await supabase.select('agent_runs', { ref_id: r.id, outcome: 'error' }, { order: 'created_at.desc', limit: 10 }).catch(() => []);
+    if (runs.length >= 4 || (runs[0] && Date.now() - new Date(runs[0].created_at).getTime() < 10 * 60 * 1000)) continue;
+    await supabase.update('admin_inbox', { id: r.id }, { agent_status: null, agent_error: null });
+    await processInbox(r.id); processed += 1;
+  }
   return { processed };
 }
 
