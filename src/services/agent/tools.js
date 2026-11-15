@@ -11,7 +11,7 @@ const guardrails = require('./guardrails');
  * whatever id the model passes is ignored, so it can never look at another account. The admin tools can look at any account. Every result
  * goes through the guardrails (card numbers, keys, passwords removed) and is cut to a size the model can use.
  */
-const MAX_JSON = 5500;
+const MAX_JSON = 8000;
 const str = (v, n = 120) => (v == null ? null : String(v).slice(0, n));
 const num = (v) => (v == null ? null : Math.round(Number(v) * 100) / 100);
 const last4 = (pan) => (pan ? String(pan).replace(/\D/g, '').slice(-4) || null : null);
@@ -28,10 +28,22 @@ const MERCHANT_TOOLS = [
   { name: 'get_card_operations', description: "Les dernières opérations d'une carte (achats, refus, recharges, frais) avec date, montant et statut.", parameters: obj({ card: S("Identifiant (card_...) ou référence de la carte"), limit: I('Nombre maximum (défaut 15)') }, ['card']) },
   { name: 'list_recent_payments', description: 'Les derniers paiements reçus (MonCash, Natcash, carte) avec leur statut.', parameters: obj({ limit: I('Nombre maximum (défaut 10)') }) },
   { name: 'get_wallet_movements', description: "Les derniers mouvements d'un portefeuille avec leur cause.", parameters: obj({ wallet: S('master_wallet ou gateway'), limit: I('Nombre maximum (défaut 15)') }) },
+  { name: 'api_reference', description: "La documentation exacte de l'API pour une route ou un sujet (ex. « cards », « payments », « webhooks », « cards/{id}/fund ») : méthode, route, champs de la requête, exemples, erreurs. À utiliser pour toute question technique (quel endpoint, quels champs).", parameters: obj({ topic: S('Route ou sujet, ex. cards, payments, webhooks, crypto, payouts') }, ['topic']) },
+  { name: 'check_webhook', description: "Vérifie le webhook du compte : URL enregistrée (sans le secret), actif ou non, livraisons réussies et échouées sur 24 h, dernière erreur, dernier test.", parameters: obj({}) },
+  { name: 'check_payment', description: "Pourquoi un paiement est dans cet état (en attente, échoué...) : statut, ancienneté, dernière réponse du partenaire de paiement, ce que cela veut dire et quoi faire.", parameters: obj({ payment: S('Identifiant (pay_...) ou référence du paiement') }, ['payment']) },
+  { name: 'diagnose_account', description: "Le diagnostic complet du compte (identité, vérification, clés API, webhook, accès Live, titulaires, cartes, erreurs récentes) : une liste de contrôles ok / à surveiller / en échec avec quoi faire.", parameters: obj({}) },
   { name: 'get_recent_api_errors', description: "Les erreurs récentes de l'API du compte, regroupées par code, route et nombre (pour aider à déboguer une intégration).", parameters: obj({ days: I('Nombre de jours (défaut 3, maximum 14)') }) },
 ];
 
 const ADMIN_TOOLS = [
+  { name: 'list_merchants', description: "La liste de TOUS les marchands, triée : par solde Master Wallet (master_wallet_usd), solde Gateway (gateway_htg), date d'inscription (created_at), nombre de cartes (cards) ou de paiements (payments). Pour savoir qui a le plus d'argent, qui est nouveau, qui n'a pas fait son KYC.", parameters: obj({ sort_by: S('master_wallet_usd, gateway_htg, created_at, cards ou payments'), order: S('desc ou asc'), limit: I('Maximum 50 (défaut 15)'), mode: S('live ou sandbox'), kyc_status: S('not_started, submitted ou verified'), search: S('Nom, email ou identifiant') }) },
+  { name: 'platform_overview', description: "Vue d'ensemble de la plateforme : marchands (Live, KYC), paiements de 7 jours par statut et méthode, cartes par statut, et tout ce qui attend l'équipe (dossiers KYC, dépôts manuels, litiges, retraits bancaires).", parameters: obj({ mode: S('live ou sandbox') }) },
+  { name: 'list_payments', description: 'Les paiements de TOUTE la plateforme, filtrables (statut, méthode, marchand, nombre de jours).', parameters: obj({ status: S('pending, succeeded ou failed'), method: S('moncash, natcash ou card'), merchant_id: S('Identifiant du marchand'), days: I('Défaut 3'), limit: I('Défaut 20, maximum 40') }) },
+  { name: 'list_all_cards', description: 'Les cartes de TOUTE la plateforme, filtrables (statut, marchand).', parameters: obj({ status: S('pending, active, failed, disabled, terminated'), merchant_id: S('Identifiant du marchand'), limit: I('Défaut 20, maximum 40') }) },
+  { name: 'diagnose_merchant', description: "Le diagnostic complet d'un marchand (même contrôles que dans le panneau admin).", parameters: obj({ merchant_id: S('Identifiant du marchand') }, ['merchant_id']) },
+  { name: 'check_calculations', description: "Vérifie que les calculs de la plateforme sont justes : crédits du Master Wallet sans source ou en double, soldes sous le dépôt de garantie, soldes négatifs, frais des paiements contre revenus. Répond s'il y a une erreur ou non.", parameters: obj({ mode: S('live ou sandbox') }) },
+  { name: 'list_unanswered_chats', description: "Les conversations du chat marchands dont le dernier message vient du marchand et n'a pas de réponse.", parameters: obj({}) },
+  { name: 'answer_unanswered_chats', description: "ACTION : répond lui-même aux messages du chat marchands restés sans réponse (avec les mêmes règles de sécurité que le chat : les demandes sensibles sont transférées à un humain avec un résumé).", parameters: obj({ limit: I('Maximum 10 (défaut 10)') }) },
   { name: 'find_merchant', description: "Retrouve des marchands par nom, email ou identifiant (mch_...).", parameters: obj({ query: S('Nom, email ou identifiant') }, ['query']) },
   { name: 'list_inbox', description: "Les derniers emails reçus (support, conformité, finance) avec leur catégorie et un résumé fait par l'agent.", parameters: obj({ limit: I('Nombre maximum (défaut 15)'), unanswered_only: { type: 'boolean', description: 'Seulement ceux sans réponse' } }) },
   { name: 'list_pending_drafts', description: "Les brouillons de réponse en attente d'approbation, avec leur raison.", parameters: obj({}) },
@@ -39,6 +51,38 @@ const ADMIN_TOOLS = [
   { name: 'explain_wallet', description: "Explique un solde : ce qui l'a fait monter et descendre, et les crédits sans source.", parameters: obj({ merchant_id: S('Identifiant du marchand'), wallet: S('master_wallet, gateway ou crypto'), mode: S('live ou sandbox') }, ['merchant_id']) },
   { name: 'platform_report', description: "Le rapport opérationnel de l'agent et de la plateforme sur une période (emails, chats, erreurs fréquentes, alertes).", parameters: obj({ days: I('Nombre de jours (défaut 7)') }) },
 ];
+
+/** The part of openapi.yaml for a route or a topic, cut to a size the model can read. */
+let openapiText = null;
+function apiSnippet(topic) {
+  if (openapiText === null) { try { openapiText = require('fs').readFileSync(require('path').join(__dirname, '..', '..', '..', 'openapi.yaml'), 'utf8'); } catch (e) { openapiText = ''; } }
+  const t = String(topic || '').toLowerCase().replace(/^\/?v1/, '').replace(/^\//, '').trim();
+  if (!t) return null;
+  const lines = openapiText.split('\n');
+  const out = []; let on = false;
+  for (const l of lines) {
+    const r = l.match(/^  (\/[^\s:]+):\s*$/);
+    if (r) on = r[1].toLowerCase().replace(/^\//, '').startsWith(t) || r[1].toLowerCase().includes(t);
+    else if (/^[a-z]/.test(l)) on = false;
+    if (on) out.push(l);
+  }
+  return out.length ? out.join('\n').slice(0, 4500) : null;
+}
+
+/** Chat conversations whose last message is the merchant's and has no answer. */
+async function unansweredChats() {
+  const rows = await supabase.select('chat_messages', {}, { order: 'created_at.desc', limit: 2000 });
+  const last = new Map();
+  for (const m of rows) if (!last.has(m.merchant_id)) last.set(m.merchant_id, m);
+  const waiting = [...last.values()].filter((m) => m.sender === 'merchant');
+  const out = [];
+  for (const m of waiting.slice(0, 30)) {
+    const merchant = await supabase.selectOne('merchants', { id: m.merchant_id }).catch(() => null);
+    const st = await require('./chatAgent').stateOf(m.merchant_id).catch(() => ({ mode: 'agent' }));
+    out.push({ merchant_id: m.merchant_id, business_name: merchant ? merchant.business_name : m.merchant_id, at: m.created_at, body: m.body, mode: st.mode });
+  }
+  return out;
+}
 
 function build(scope) {
   const admin = scope.kind === 'admin';
@@ -102,6 +146,38 @@ function build(scope) {
       const d = await audit.ledgerFor(id, { wallet, mode: 'live', limit: clampInt(input.limit, 15, 30) });
       return { wallet, currency: d.currency, balance: d.balance, entries: d.entries.map((e) => ({ at: e.at, amount: e.amount, cause: e.label, balance_after: e.balance_after })) };
     },
+    async api_reference(input) {
+      const snippet = apiSnippet(input.topic);
+      return snippet ? { topic: input.topic, openapi: snippet } : { error: `Aucune route ne correspond à « ${str(input.topic, 40)} ». Sujets : payments, payouts, balance, crypto, cards, holders, webhooks.` };
+    },
+    async check_webhook(input) {
+      const id = idOf(input);
+      const hook = await supabase.selectOne('webhook_endpoints', { merchant_id: id }).catch(() => null);
+      const health = require('../webhookHealth');
+      if (!hook) return { registered: false, advice: "Aucun webhook enregistré : POST /v1/webhooks avec l'URL https de votre serveur, ou depuis le tableau de bord (Webhooks)." };
+      let host = null; try { host = new URL(hook.url).host; } catch (e) { host = null; }
+      const h = health.get(id);
+      const probe = health.getProbe(id);
+      const advice = !hook.active ? 'Le webhook est désactivé : réactivez-le.' : h.failed_24h && !h.delivered_24h ? `Toutes les livraisons échouent (${h.last_error || 'erreur inconnue'}) : vérifiez que l'URL est publique, en https, répond 2xx en moins de 10 s et vérifie la signature avec le secret.` : h.failed_24h ? `Certaines livraisons échouent (${h.last_error || ''}).` : h.delivered_24h ? 'Le webhook fonctionne.' : "Aucune livraison sur 24 h : normal s'il n'y a pas eu d'évènement.";
+      return { registered: true, active: !!hook.active, url_host: host, url: str(hook.url, 200), deliveries_24h: h, last_test: probe, advice };
+    },
+    async check_payment(input) {
+      const key = str(input.payment, 80);
+      const f = admin ? {} : { merchant_id: scope.merchantId };
+      const p = (await supabase.selectOne('payments', Object.assign({ id: key }, f))) || (await supabase.selectOne('payments', Object.assign({ own_reference: key }, f)));
+      if (!p) return { error: 'Paiement introuvable.' };
+      const health = require('../paymentHealth');
+      const answer = health.lastAnswer(p.id);
+      const ageMin = Math.round((Date.now() - new Date(p.created_at).getTime()) / 60000);
+      const meaning = p.status === 'succeeded' ? 'Le paiement est confirmé et crédité.' : p.status === 'failed' ? 'Le paiement a échoué ou a été refusé.' : ageMin < 15 ? "Le client est probablement encore en train de payer : le statut se règle dès que le partenaire confirme." : answer && answer.kind === 'confirmed' ? 'Le partenaire dit que c\'est payé : le crédit est en cours (relecture automatique).' : answer && answer.kind === 'waiting' ? "Le partenaire indique que le client n'a pas terminé le paiement (en attente côté client)." : answer && answer.kind === 'not_found' ? "Le partenaire ne retrouve pas ce paiement : le client n'a sans doute jamais payé." : "En attente depuis plus de 15 minutes : le système relit le partenaire toutes les quelques minutes ; si le client a payé, l'équipe peut revérifier.";
+      return { id: p.id, reference: p.own_reference, method: p.method, status: p.status, amount: num(p.amount), currency: p.currency, mode: p.mode, created_at: p.created_at, age_min: ageMin, partner_last_answer: answer ? { kind: answer.kind, label: health.LABEL[answer.kind], at: new Date(answer.at).toISOString(), message: str(answer.message, 160) } : null, meaning };
+    },
+    async diagnose_account(input) {
+      const d = await require('../merchantDiagnostic').diagnose(idOf(input));
+      if (!d) return { error: 'Marchand introuvable.' };
+      const checks = (d.checks || []);
+      return { summary: d.summary || null, problems: checks.filter((c) => c.status !== 'ok').map((c) => Object.assign({ area: c.area, check: c.label, status: c.status, detail: str(c.detail, 220) }, admin ? { fix: str(c.fix, 220) } : {})), ok_count: checks.filter((c) => c.status === 'ok').length };
+    },
     async get_recent_api_errors(input) {
       const id = idOf(input);
       const since = new Date(Date.now() - clampInt(input.days, 3, 14) * 86400000).toISOString();
@@ -142,6 +218,34 @@ function build(scope) {
         return { wallet, currency: d.currency, balance: d.balance, matches_ledger: d.matches, total_up: d.total_up, total_down: d.total_down, anomalies: d.anomalies, up: d.up.map((c) => ({ cause: c.label, count: c.count, total: c.total })), down: d.down.map((c) => ({ cause: c.label, count: c.count, total: c.total })),
           latest: d.entries.map((e) => ({ at: e.at, amount: e.amount, cause: e.label, status: e.status, note: e.note })) };
       },
+      async list_merchants(input) { return require('./platformData').listMerchants({ sortBy: input.sort_by, order: input.order, limit: clampInt(input.limit, 15, 50), mode: input.mode === 'sandbox' ? 'sandbox' : 'live', kycStatus: input.kyc_status, search: input.search }); },
+      async platform_overview(input) { return require('./platformData').overview(input.mode === 'sandbox' ? 'sandbox' : 'live'); },
+      async list_payments(input) {
+        const f = {};
+        if (['pending', 'succeeded', 'failed'].includes(input.status)) f.status = input.status;
+        if (input.method) f.method = str(input.method, 20);
+        if (input.merchant_id) f.merchant_id = str(input.merchant_id, 60);
+        f.created_at = supabase.gt(new Date(Date.now() - clampInt(input.days, 3, 60) * 86400000).toISOString());
+        const rows = await supabase.select('payments', f, { order: 'created_at.desc', limit: clampInt(input.limit, 20, 40) });
+        return rows.map((p) => ({ id: p.id, merchant_id: p.merchant_id, at: p.created_at, method: p.method, status: p.status, amount: num(p.amount), currency: p.currency, mode: p.mode }));
+      },
+      async list_all_cards(input) {
+        const f = {};
+        if (input.status) f.status = str(input.status, 20);
+        if (input.merchant_id) f.merchant_id = str(input.merchant_id, 60);
+        const rows = await supabase.select('cards', f, { order: 'created_at.desc', limit: clampInt(input.limit, 20, 40) });
+        return rows.map((c) => ({ id: c.id, merchant_id: c.merchant_id, reference: c.own_reference, last4: last4(c.masked_pan), status: c.status, mode: c.mode, balance_usd: num(c.balance), created_at: c.created_at, failure_reason: str(c.failure_reason, 160) }));
+      },
+      async diagnose_merchant(input) { return handlers.diagnose_account(input); },
+      async check_calculations(input) { return require('./platformData').checkCalculations(input.mode); },
+      async list_unanswered_chats() { return (await unansweredChats()).map((c) => ({ merchant_id: c.merchant_id, business_name: c.business_name, waiting_since: c.at, message: str(c.body, 200), mode: c.mode })); },
+      async answer_unanswered_chats(input) {
+        const list = (await unansweredChats()).slice(0, clampInt(input.limit, 10, 10));
+        const chatAgent = require('./chatAgent');
+        const results = [];
+        for (const c of list) results.push({ business_name: c.business_name, merchant_id: c.merchant_id, outcome: (await chatAgent.handleMerchantMessage(c.merchant_id, { force: true })).outcome });
+        return { answered: results.filter((r) => r.outcome === 'replied').length, handed_to_humans: results.filter((r) => r.outcome === 'handed_off').length, results };
+      },
       async platform_report(input) { return require('./report').build(clampInt(input.days, 7, 90)); },
     });
   }
@@ -151,7 +255,15 @@ function build(scope) {
     if (!fn) return { error: `Outil inconnu : ${name}` };
     const out = guardrails.redactDeep(await fn(input || {}));
     let text = JSON.stringify(out);
-    if (text.length > MAX_JSON) { const cut = Array.isArray(out) ? out.slice(0, Math.max(1, Math.floor(out.length / 2))) : out; text = JSON.stringify(cut).slice(0, MAX_JSON); return { truncated: true, data: text }; }
+    if (text.length > MAX_JSON) {
+      // Too long for the model: the lists inside are cut (the top of a sorted list is what matters), and it is said.
+      let cut = out;
+      for (let i = 0; i < 8 && JSON.stringify(cut).length > MAX_JSON; i += 1) {
+        if (Array.isArray(cut)) cut = cut.slice(0, Math.max(1, Math.floor(cut.length / 2)));
+        else { cut = Object.assign({}, cut); for (const k of Object.keys(cut)) if (Array.isArray(cut[k]) && cut[k].length > 3) cut[k] = cut[k].slice(0, Math.max(3, Math.floor(cut[k].length / 2))); }
+      }
+      return Array.isArray(cut) ? { truncated: true, items: cut } : Object.assign({ truncated: true }, cut);
+    }
     return out;
   }
   return { definitions, run };

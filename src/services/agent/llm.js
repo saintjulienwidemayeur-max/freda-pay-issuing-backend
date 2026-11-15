@@ -4,7 +4,7 @@ const config = require('../../config');
 /**
  * One interface for the model behind the agent: Google Gemini (GEMINI_API_KEY) or Anthropic Claude (ANTHROPIC_API_KEY).
  * generate() runs the conversation, lets the model call the READ-ONLY tools it is given (up to maxIterations rounds) and returns its final text.
- *   messages: [{ role: 'user' | 'assistant', content: string }]
+ *   messages: [{ role: 'user' | 'assistant', content: string, images?: [{ mime_type, data (base64) }] }]   (images and PDFs: KYC files)
  *   tools:    [{ name, description, parameters: { type: 'object', properties, required } }]
  *   runTool:  async (name, args) => any JSON-able value (already redacted by the caller)
  */
@@ -73,7 +73,7 @@ function thinkingConfigFor(model) {
 
 async function runGemini({ system, messages, tools, runTool, maxIterations, maxTokens, model, timeoutMs }) {
   let thinkingUsed = null;
-  const contents = messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content) }] }));
+  const contents = messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content) }, ...((m.images || []).map((im) => ({ inline_data: { mime_type: im.mime_type, data: im.data } })))] }));
   const usage = { input: 0, output: 0 };
   const toolsUsed = [];
   for (let i = 0; i < maxIterations; i += 1) {
@@ -117,7 +117,7 @@ async function runGemini({ system, messages, tools, runTool, maxIterations, maxT
 }
 
 async function runAnthropic({ system, messages, tools, runTool, maxIterations, maxTokens, model }) {
-  const convo = messages.map((m) => ({ role: m.role, content: String(m.content) }));
+  const convo = messages.map((m) => ({ role: m.role, content: m.images && m.images.length ? [...m.images.map((im) => (im.mime_type === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: im.mime_type, data: im.data } } : { type: 'image', source: { type: 'base64', media_type: im.mime_type, data: im.data } })), { type: 'text', text: String(m.content) }] : String(m.content) }));
   const usage = { input: 0, output: 0 };
   const toolsUsed = [];
   for (let i = 0; i < maxIterations; i += 1) {

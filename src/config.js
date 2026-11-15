@@ -158,13 +158,21 @@ const config = {
       pingTimeoutMs: parseInt(process.env.AGENT_PING_TIMEOUT_MS || '15000', 10), // the admin speed test waits this long for each model
     };
   })(),
-  // Freda Mail (the team's mail platform): its webhook is POST /webhooks/freda-mail?token=<FREDA_MAIL_SECRET>.
-  // FREDA_MAIL_SEND_URL (+ FREDA_MAIL_SEND_KEY) is optional: when set, approved replies to Freda Mail messages are sent through it instead of Brevo.
-  fredaMail: {
-    secret: process.env.FREDA_MAIL_SECRET || '',
-    sendUrl: process.env.FREDA_MAIL_SEND_URL || '',
-    sendKey: process.env.FREDA_MAIL_SEND_KEY || '',
-  },
+  // Freda Mail (the team's mail platform, https://fredaworkspace.com/api/v1/docs). One API key per mailbox (fmk_..., "read and send" scope):
+  //   FREDA_MAIL_KEYS = {"support@fredapay.com":"fmk_...","compliance@fredapay.com":"fmk_...","finance@fredapay.com":"fmk_..."}   (or FREDA_MAIL_API_KEY for a single mailbox)
+  // New emails arrive by webhook: POST /webhooks/freda-mail, signed with the secret (whsec_...) shown in Freda Mail > Settings > Integrations & API:
+  //   FREDA_MAIL_WEBHOOK_SECRET. A background pass also reads the unread messages of every mailbox, so nothing is missed.
+  fredaMail: (() => {
+    let keys = {};
+    try { keys = JSON.parse(process.env.FREDA_MAIL_KEYS || '{}') || {}; } catch (e) { keys = {}; }
+    if (process.env.FREDA_MAIL_API_KEY) keys[process.env.FREDA_MAIL_MAILBOX || 'support@fredapay.com'] = process.env.FREDA_MAIL_API_KEY;
+    return {
+      baseUrl: (process.env.FREDA_MAIL_BASE_URL || 'https://fredaworkspace.com').replace(/\/+$/, ''),
+      keys,
+      webhookSecret: process.env.FREDA_MAIL_WEBHOOK_SECRET || '',
+      legacyToken: process.env.FREDA_MAIL_SECRET || '', // older "?token=" form of the webhook (no signature)
+    };
+  })(),
 
   // Authenticator-app 2FA: mandatory for merchant dashboards (the tools can move money). TWO_FACTOR_ENFORCE=false is an emergency switch only.
   twoFactor: {

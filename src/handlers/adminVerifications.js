@@ -35,16 +35,23 @@ async function viewDocument(ctx) {
   return { status: 200, body: { url } };
 }
 
-async function approve(ctx) {
-  const submission = await getOwnedSubmission(ctx.params.id);
-  const [updated] = await supabase.update('verification_submissions', { id: submission.id }, {
-    status: 'approved', reviewed_by: ctx.adminId, reviewed_at: new Date().toISOString(),
+/** The approval itself (used by the admin and, when the team switched it on, by the AI agent). adminId = null for the agent. */
+async function approveSubmission(submission, adminId) {
+  const [updated] = await supabase.update('verification_submissions', { id: submission.id, status: 'submitted' }, {
+    status: 'approved', reviewed_by: adminId || null, reviewed_at: new Date().toISOString(),
   });
+  if (!updated) throw httpError(409, 'ALREADY_REVIEWED', 'Cette soumission a déjà été traitée.');
   await supabase.update('merchants', { id: submission.merchant_id }, { [`${submission.kind}_status`]: 'verified' });
   await maybeEnableLive(submission.merchant_id);
   require('../middleware/apiKey').clearAuthCache();
   const merchant = await supabase.selectOne('merchants', { id: submission.merchant_id });
   await notify.verificationApproved(merchant, submission.kind, { liveEnabled: !!(merchant && merchant.gateway_live_enabled) });
+  return updated;
+}
+
+async function approve(ctx) {
+  const submission = await getOwnedSubmission(ctx.params.id);
+  const updated = await approveSubmission(submission, ctx.adminId);
   return { status: 200, body: { submission: toPublic(updated) } };
 }
 
@@ -92,4 +99,4 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { listPending, viewDocument, approve, reject };
+module.exports = { listPending, viewDocument, approve, reject, approveSubmission };

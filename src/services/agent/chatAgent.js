@@ -70,13 +70,14 @@ async function handOff(merchantId, merchant, { reason, summary, lang }) {
 }
 
 /** Answers the merchant's latest message. Fire-and-forget from the chat handler; never throws. */
-async function handleMerchantMessage(merchantId) {
+async function handleMerchantMessage(merchantId, opts) {
+  const force = !!(opts && opts.force); // an admin asked: the human-takeover pause does not apply
   const started = Date.now();
   try {
     const cfg = await settings.get();
     if (!cfg.chat_enabled || !llm.configured()) return { outcome: 'disabled' };
     const st = await stateOf(merchantId);
-    if (st.mode === 'human') return { outcome: 'human' };
+    if (st.mode === 'human' && !force) return { outcome: 'human' };
     const merchant = await supabase.selectOne('merchants', { id: merchantId });
     if (!merchant || merchant.deleted_at) return { outcome: 'no-merchant' };
 

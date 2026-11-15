@@ -23,7 +23,7 @@ async function status() {
     supabase.select('agent_drafts', { status: 'draft' }, { select: 'id', limit: 1000 }).catch(() => []),
     supabase.select('agent_alerts', { acknowledged: false }, { select: 'id', limit: 1000 }).catch(() => []),
   ]);
-  return { status: 200, body: { configured: llm.configured(), provider: config.agent.provider || null, model: cfg.model || config.agent.model, settings: cfg, pending_drafts: drafts.length, open_alerts: alerts.length, freda_mail_webhook_ready: !!config.fredaMail.secret } };
+  return { status: 200, body: { configured: llm.configured(), provider: config.agent.provider || null, model: cfg.model || config.agent.model, settings: cfg, pending_drafts: drafts.length, open_alerts: alerts.length, freda_mail: { keys: require('../services/fredaMail').mailboxes(), webhook_secret_set: !!config.fredaMail.webhookSecret } } };
 }
 async function saveSettings(ctx) {
   return { status: 200, body: { settings: await settings.save(ctx.body || {}, who(ctx)) } };
@@ -148,4 +148,42 @@ async function chatStateSet(ctx) {
   return { status: 200, body: { state: await chatAgent.stateOf(ctx.params.merchantId) } };
 }
 
-module.exports = { ping, status, saveSettings, drafts, approve, reject, runOnMessage, chat, reportOf, alerts, ackAlert, knowledgeList, knowledgeSave, knowledgeDelete, chatStateGet, chatStateSet };
+/** KYC / KYB files waiting for the team with what the agent made of each (it never rejects; it approves only when the team switched that on). */
+async function kycList() {
+  const [subs, reviews] = await Promise.all([
+    supabase.select('verification_submissions', { status: 'submitted' }, { order: 'created_at.asc', limit: 100 }),
+    supabase.select('agent_kyc_reviews', {}, { order: 'created_at.desc', limit: 200 }).catch(() => []),
+  ]);
+  const byId = new Map(reviews.map((r) => [r.submission_id, r]));
+  const out = [];
+  for (const s of subs) {
+    const m = await supabase.selectOne('merchants', { id: s.merchant_id }).catch(() => null);
+    out.push({ submission_id: s.id, kind: s.kind, created_at: s.created_at, merchant_id: s.merchant_id, business_name: m && m.business_name, email: m && m.email, review: byId.get(s.id) || null });
+  }
+  return { status: 200, body: { pending: out, recent_reviews: reviews.slice(0, 20) } };
+}
+async function kycReview(ctx) {
+  if (!llm.configured()) throw httpError(424, 'AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré.");
+  const existing = await supabase.selectOne('agent_kyc_reviews', { submission_id: ctx.params.id });
+  if (existing && ctx.body && ctx.body.again) await supabase.delete('agent_kyc_reviews', { id: existing.id });
+  return { status: 200, body: await require('../services/agent/kycAgent').review(ctx.params.id) };
+}
+async function learnNow() {
+  if (!llm.configured()) throw httpError(424, 'AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré.");
+  return { status: 200, body: await require('../services/agent/learning').learn({ force: true }) };
+}
+async function fredaMailStatus() {
+  const fm = require('../services/fredaMail');
+  const boxes = [];
+  for (const m of fm.mailboxes()) {
+    try { const me = await fm.me(m); boxes.push({ mailbox: m, ok: true, scope: me.scope || null, info: me }); } catch (e) { boxes.push({ mailbox: m, ok: false, error: e.message }); }
+  }
+  return { status: 200, body: { configured: fm.configured(), webhook_secret_set: !!config.fredaMail.webhookSecret, webhook_url_hint: '/webhooks/freda-mail', mailboxes: boxes } };
+}
+async function knowledgeToggle(ctx) {
+  const done = await supabase.update('agent_knowledge', { id: ctx.params.id }, { enabled: !!(ctx.body && ctx.body.enabled), updated_by: who(ctx), updated_at: new Date().toISOString() });
+  if (!done || !done.length) throw httpError(404, 'NOT_FOUND', 'Entrée introuvable.');
+  return { status: 200, body: { entry: done[0] } };
+}
+
+module.exports = { kycList, kycReview, learnNow, fredaMailStatus, knowledgeToggle, ping, status, saveSettings, drafts, approve, reject, runOnMessage, chat, reportOf, alerts, ackAlert, knowledgeList, knowledgeSave, knowledgeDelete, chatStateGet, chatStateSet };
