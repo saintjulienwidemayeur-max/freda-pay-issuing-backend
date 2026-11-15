@@ -8957,3 +8957,33 @@ test('agent KYC: reads the documents (vision), records a verdict, approves a cle
     });
   } finally { await agentSettings.save({ kyc_auto_approve: false }, 'test'); }
 });
+
+test('agent honesty: the facts for the question are fetched BEFORE the model answers (a registered webhook is never reported as missing)', async () => {
+  const reg = await registerAndVerify({ business_name: 'Hook Fact Co', email: 'hook-fact@example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const id = reg.data.merchant.id;
+  mockTables.webhook_endpoints.push({ id: 'whe_fact', merchant_id: id, url: 'https://eliteautodeal.example.com/webhooks/freda', secret: 'whsec_hidden_value', active: true });
+  mockTables.payments.push({ id: 'pay_factpending1', merchant_id: id, own_reference: 'FACT-1', plopplop_reference: 'fact_ref_1', amount: 900, currency: 'HTG', method: 'moncash', status: 'pending', mode: 'live', fee: 0, created_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString() });
+  const agentMessages = () => mockTables.chat_messages.filter((m) => m.merchant_id === id && m.by_agent);
+  await withAgent(() => say({ language: 'ht', needs_human: false, sensitive: false, handoff_summary: '', reply: 'Webhook ou a aktif sou eliteautodeal.example.com.' }), async (calls) => {
+    await api('POST', '/dashboard/chat', { token, body: { body: 'webhook mwen konfigire ?' } });
+    await pollUntil(async () => agentMessages().length, (n) => n >= 1, 60, 50);
+    const prompt = JSON.stringify(calls[0].body.contents);
+    assert.match(prompt, /Faits vérifiés par le système/);
+    assert.match(prompt, /\\"registered\\":true/);
+    assert.match(prompt, /eliteautodeal\.example\.com/);
+    assert.ok(!/whsec_hidden_value/.test(prompt), 'the secret is never given to the model');
+    assert.match(JSON.stringify(calls[0].body.systemInstruction), /Une absence d'information n'est pas la preuve/);
+    // a payment question gets the payment and the reason it is pending
+    await api('POST', '/dashboard/chat', { token, body: { body: 'pourquoi mon paiement est en attente ?' } });
+    await pollUntil(async () => agentMessages().length, (n) => n >= 2, 60, 50);
+    const prompt2 = JSON.stringify(calls[calls.length - 1].body.contents);
+    assert.match(prompt2, /check_payment_latest_pending/);
+    assert.match(prompt2, /15 minutes/);
+    // a question with no technical topic does not get facts it did not ask for
+    const n = calls.length;
+    await api('POST', '/dashboard/chat', { token, body: { body: 'Merci beaucoup, bonne journée !' } });
+    await pollUntil(async () => agentMessages().length, (c) => c >= 3, 60, 50);
+    assert.ok(!/Faits vérifiés par le système/.test(JSON.stringify(calls[n].body.contents)));
+  });
+});

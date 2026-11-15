@@ -280,4 +280,35 @@ async function accountContext(merchantId) {
   return `Contexte du compte (lecture seule, déjà vérifié par le système) :\n${JSON.stringify({ account: summary, cards: shortCards, cards_listed: Array.isArray(cards) ? Math.min(cards.length, 8) : 0 }).slice(0, 2500)}`;
 }
 
-module.exports = { accountContext, build, MERCHANT_TOOLS, ADMIN_TOOLS };
+/**
+ * Facts for the question that was just asked, fetched BEFORE the model answers: a model left to itself can claim it "checked" something it never looked at
+ * (it once told a merchant that no webhook was registered while one was). The topics are recognised from the message (French, Creole, English, Spanish);
+ * each fact comes from a read-only tool bound to the merchant and is given to the model as verified by the system.
+ */
+const TOPICS = [
+  { name: 'webhook', re: /web ?hooks?|webhuk|callback|url de notification|notifikasyon/i, run: async (t) => ({ check_webhook: await t.run('check_webhook', {}) }) },
+  { name: 'payments', re: /pay(e)?ment|peman|paiement|moncash|natcash|en attente|attente|atant|pending|transaction|tranzaksyon|pay_[a-z0-9]{6,}/i, run: async (t, text) => {
+    const out = { list_recent_payments: await t.run('list_recent_payments', { limit: 8 }) };
+    const ref = String(text).match(/\b(pay_[a-z0-9]{6,})\b/i);
+    if (ref) out.check_payment = await t.run('check_payment', { payment: ref[1] });
+    else if (Array.isArray(out.list_recent_payments)) { const p = out.list_recent_payments.find((x) => x.status === 'pending'); if (p) out.check_payment_latest_pending = await t.run('check_payment', { payment: p.id }); }
+    return out;
+  } },
+  { name: 'api_errors', re: /erreur|erè|error|\b(401|403|404|409|422|429|500)\b|api|cl[ée]s?\b|kle\b|token|unauthorized|forbidden/i, run: async (t) => ({ get_recent_api_errors: await t.run('get_recent_api_errors', { days: 3 }) }) },
+  { name: 'cards', re: /carte|\bkat\b|card|titulaire|holder|cr[ée]ation|kreye|create|issuing/i, run: async (t) => ({ diagnose_account: await t.run('diagnose_account', {}) }) },
+  { name: 'how_to', re: /endpoint|route|champs?\b|field|param[eè]tre|comment (cr[ée]er|utiliser|faire)|kijan|how (do|to|can)|documentation|dokimantasyon|empreinte|anpwent|curl|sdk/i, run: async (t, text) => {
+    const topic = /web ?hook/i.test(text) ? 'webhooks' : /carte|\bkat\b|card/i.test(text) ? 'cards' : /pay|peman|paiement/i.test(text) ? 'payments' : /retrait|payout|withdraw|retire/i.test(text) ? 'payouts' : /crypto|usdt|usdc/i.test(text) ? 'crypto' : 'cards';
+    return { api_reference: await t.run('api_reference', { topic }) };
+  } },
+];
+async function situationalContext(merchantId, text) {
+  const t = build({ kind: 'merchant', merchantId });
+  const str2 = String(text || '').slice(0, 1500);
+  const hits = TOPICS.filter((x) => x.re.test(str2));
+  if (!hits.length) return '';
+  const results = await Promise.all(hits.map((h) => h.run(t, str2).catch((e) => ({ [h.name]: { error: e.message } }))));
+  const merged = Object.assign({}, ...results);
+  return `Faits vérifiés par le système pour CETTE question (lecture seule, à jour maintenant) :\n${JSON.stringify(merged).slice(0, 5000)}\nCes faits sont la vérité : ne les contredis jamais. Si la réponse demande une information qui n'y est pas, utilise un outil ou dis honnêtement que tu ne l'as pas.`;
+}
+
+module.exports = { situationalContext, accountContext, build, MERCHANT_TOOLS, ADMIN_TOOLS };
