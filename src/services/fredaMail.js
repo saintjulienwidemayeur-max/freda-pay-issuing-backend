@@ -25,6 +25,18 @@ const keyFor = (mailbox) => {
   return exact ? keys[exact] : (mailboxes().length === 1 ? keys[mailboxes()[0]] : null);
 };
 
+/** A key given without a mailbox name is labelled key1, key2...: ask Freda Mail which mailbox it opens and rename it (once). */
+async function nameKeys() {
+  const keys = config.fredaMail.keys;
+  for (const label of Object.keys(keys).filter((l) => /^key\d+$/.test(l))) {
+    try {
+      const info = await call(label, 'GET', '/api/v1/me');
+      const addr = String(info.mailbox || info.address || info.email || (info.mailbox && info.mailbox.address) || '').toLowerCase();
+      if (addr && !keys[addr]) { keys[addr] = keys[label]; delete keys[label]; }
+    } catch (e) { /* the status page shows the reason */ }
+  }
+}
+
 async function call(mailbox, method, path, body, extraHeaders) {
   const key = keyFor(mailbox);
   if (!key) throw fmError(409, 'FREDA_MAIL_NO_KEY', `Aucune clé Freda Mail pour la boîte ${mailbox || '?'} (FREDA_MAIL_KEYS).`);
@@ -107,6 +119,7 @@ async function storeMessage(msg, mailbox) {
 /** Safety net: the unread messages of every mailbox (last 3 days), whatever the webhook did or missed. */
 async function pollUnread(limit) {
   let stored = 0; const errors = [];
+  await nameKeys();
   for (const box of mailboxes()) {
     try {
       const list = await listUnread(box, limit || 20);
@@ -123,4 +136,4 @@ async function pollUnread(limit) {
   return { stored, errors };
 }
 
-module.exports = { configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };
+module.exports = { nameKeys, configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };

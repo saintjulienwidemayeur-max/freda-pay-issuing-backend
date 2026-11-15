@@ -8987,3 +8987,27 @@ test('agent honesty: the facts for the question are fetched BEFORE the model ans
     assert.ok(!/Faits vérifiés par le système/.test(JSON.stringify(calls[n].body.contents)));
   });
 });
+
+test('Freda Mail keys are read forgivingly from the environment, and a problem is explained (never the key)', () => {
+  const { parse } = require('../src/utils/fredaMailKeys');
+  assert.deepEqual(parse({ FREDA_MAIL_KEYS: '{"Support@X.com":"fmk_aaa","compliance@x.com":"fmk_bbb"}' }).keys, { 'support@x.com': 'fmk_aaa', 'compliance@x.com': 'fmk_bbb' });
+  // smart quotes and a trailing comma from a copy-paste
+  assert.deepEqual(parse({ FREDA_MAIL_KEYS: '{\u201csupport@x.com\u201d:\u201cfmk_aaa\u201d,}' }).keys, { 'support@x.com': 'fmk_aaa' });
+  // simple form, one per line or comma separated
+  assert.deepEqual(parse({ FREDA_MAIL_KEYS: 'support@x.com=fmk_aaa,\nfinance@x.com: fmk_ccc' }).keys, { 'support@x.com': 'fmk_aaa', 'finance@x.com': 'fmk_ccc' });
+  // bare keys: labelled, the mailbox is learned from Freda Mail
+  assert.deepEqual(parse({ FREDA_MAIL_KEYS: 'fmk_one, fmk_two' }).keys, { key1: 'fmk_one', key2: 'fmk_two' });
+  // single key under the other names
+  assert.deepEqual(parse({ FREDA_MAIL_API_KEY: 'fmk_solo', FREDA_MAIL_MAILBOX: 'Support@X.com' }).keys, { 'support@x.com': 'fmk_solo' });
+  assert.deepEqual(parse({ FREDA_MAIL_KEY: 'fmk_solo' }).keys, { key1: 'fmk_solo' });
+  // problems
+  const bad = parse({ FREDA_MAIL_KEYS: '{support@x.com: fmk_aaa' });
+  assert.ok(bad.problems.length >= 0);
+  const wrong = parse({ FREDA_MAIL_KEYS: 'support@x.com=abc123' });
+  assert.match(wrong.problems.join(' '), /fmk_/);
+  assert.ok(!JSON.stringify(wrong.problems).includes('abc123'), 'a key is never echoed');
+  const broken = parse({ FREDA_MAIL_KEYS: '{"a":' });
+  assert.match(broken.problems.join(' '), /JSON valide/);
+  assert.deepEqual(parse({}).keys, {});
+  assert.deepEqual(parse({ FREDA_MAIL_API_KEY: 'x', FREDA_MAIL_WEBHOOK_SECRET: 's' }).env_names_found, ['FREDA_MAIL_API_KEY', 'FREDA_MAIL_WEBHOOK_SECRET']);
+});
