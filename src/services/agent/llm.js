@@ -35,7 +35,9 @@ async function post(url, headers, body) {
     if (!res.ok) {
       const msg = (data && (data.error && (data.error.message || data.error))) || `HTTP ${res.status}`;
       console.error(`Agent model error: HTTP ${res.status} ${String(msg).slice(0, 300)}`); // eslint-disable-line no-console
-      throw agentError('AGENT_PROVIDER_ERROR', `Le modèle a refusé la requête (HTTP ${res.status}) : ${String(msg).slice(0, 200)}`);
+      const failure = agentError('AGENT_PROVIDER_ERROR', `Le modèle a refusé la requête (HTTP ${res.status}) : ${String(msg).slice(0, 200)}`);
+      failure.providerStatus = res.status;
+      throw failure;
     }
     return data || {};
   }
@@ -55,6 +57,11 @@ function geminiDeclaration(t) {
   return decl;
 }
 
+// Gemini "flash" models reason before answering, which can take many seconds. For support answers a short reasoning is enough: the budget is
+// set by AGENT_THINKING_BUDGET (default 0 = none, "" = leave the model's own default). A model that does not accept the setting is asked again without it.
+let thinkingUnsupported = false;
+const thinkingBudget = () => { const v = process.env.AGENT_THINKING_BUDGET; if (v === '') return null; const n = v === undefined ? 0 : Number(v); return Number.isFinite(n) ? n : 0; };
+
 async function runGemini({ system, messages, tools, runTool, maxIterations, maxTokens, model }) {
   const contents = messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content) }] }));
   const usage = { input: 0, output: 0 };
@@ -62,7 +69,18 @@ async function runGemini({ system, messages, tools, runTool, maxIterations, maxT
   for (let i = 0; i < maxIterations; i += 1) {
     const body = { systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: { maxOutputTokens: maxTokens, temperature: 0.3 } };
     if (tools.length) body.tools = [{ functionDeclarations: tools.map((t) => geminiDeclaration(t)) }];
-    const data = await post(`${config.agent.baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, { 'x-goog-api-key': config.agent.apiKey }, body);
+    const budget = thinkingBudget();
+    if (budget !== null && !thinkingUnsupported) body.generationConfig.thinkingConfig = { thinkingBudget: budget };
+    const url = `${config.agent.baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    let data;
+    try {
+      data = await post(url, { 'x-goog-api-key': config.agent.apiKey }, body);
+    } catch (e) {
+      if (!(e.providerStatus === 400 && /thinking/i.test(e.message) && body.generationConfig.thinkingConfig)) throw e;
+      thinkingUnsupported = true; // this model does not take the setting: same request without it, and not tried again
+      delete body.generationConfig.thinkingConfig;
+      data = await post(url, { 'x-goog-api-key': config.agent.apiKey }, body);
+    }
     usage.input += Number(data.usageMetadata && data.usageMetadata.promptTokenCount) || 0;
     usage.output += Number(data.usageMetadata && data.usageMetadata.candidatesTokenCount) || 0;
     const cand = data.candidates && data.candidates[0];
@@ -71,13 +89,13 @@ async function runGemini({ system, messages, tools, runTool, maxIterations, maxT
     const calls = parts.filter((p) => p.functionCall);
     if (!calls.length) return { text: parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim(), usage, toolsUsed };
     contents.push(cand.content); // returned unchanged (the model's own parts, thought signatures included)
-    const responses = [];
-    for (const c of calls) {
+    // Several tool calls asked at once are run at the same time (each one is only a read).
+    const responses = await Promise.all(calls.map(async (c) => {
       toolsUsed.push(c.functionCall.name);
       let result;
       try { result = await runTool(c.functionCall.name, c.functionCall.args || {}); } catch (e) { result = { error: String(e.message || e).slice(0, 200) }; }
-      responses.push({ functionResponse: { name: c.functionCall.name, response: { result } } });
-    }
+      return { functionResponse: { name: c.functionCall.name, response: { result } } };
+    }));
     contents.push({ role: 'user', parts: responses });
   }
   throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.');
@@ -97,13 +115,12 @@ async function runAnthropic({ system, messages, tools, runTool, maxIterations, m
     const calls = blocks.filter((b) => b.type === 'tool_use');
     if (data.stop_reason !== 'tool_use' || !calls.length) return { text: blocks.filter((b) => b.type === 'text').map((b) => b.text).join('').trim(), usage, toolsUsed };
     convo.push({ role: 'assistant', content: blocks });
-    const results = [];
-    for (const c of calls) {
+    const results = await Promise.all(calls.map(async (c) => {
       toolsUsed.push(c.name);
       let result;
       try { result = await runTool(c.name, c.input || {}); } catch (e) { result = { error: String(e.message || e).slice(0, 200) }; }
-      results.push({ type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(result) });
-    }
+      return { type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(result) };
+    }));
     convo.push({ role: 'user', content: results });
   }
   throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.');

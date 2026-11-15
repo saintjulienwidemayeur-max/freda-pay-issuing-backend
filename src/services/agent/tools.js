@@ -157,4 +157,15 @@ function build(scope) {
   return { definitions, run };
 }
 
-module.exports = { build, MERCHANT_TOOLS, ADMIN_TOOLS };
+/**
+ * The account summary and the card list are put in the prompt up front (read-only, bound to the merchant), so that most answers need ONE model
+ * call instead of a tool round trip first. The tools stay available for anything deeper.
+ */
+async function accountContext(merchantId) {
+  const t = build({ kind: 'merchant', merchantId });
+  const [summary, cards] = await Promise.all([t.run('get_account_summary', {}), t.run('list_cards', {})]);
+  const shortCards = Array.isArray(cards) ? cards.slice(0, 8).map((c) => ({ ref: c.reference, last4: c.last4, status: c.status, balance_usd: c.balance_usd, mode: c.mode, failure: c.failure_reason })) : cards;
+  return `Contexte du compte (lecture seule, déjà vérifié par le système) :\n${JSON.stringify({ account: summary, cards: shortCards, cards_listed: Array.isArray(cards) ? Math.min(cards.length, 8) : 0 }).slice(0, 2500)}`;
+}
+
+module.exports = { accountContext, build, MERCHANT_TOOLS, ADMIN_TOOLS };
