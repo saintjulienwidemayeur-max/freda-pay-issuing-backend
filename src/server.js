@@ -112,6 +112,7 @@ router.get('/admin/merchants/:id/ledger', adminSession.requireAdminSession, (ctx
 router.get('/admin/master-wallet/below-floor', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.belowFloor(ctx); });
 router.get('/admin/master-wallet/anomalies', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminWalletAuditHandlers.anomalies(ctx); });
 router.get('/admin/card-trace', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminCardTraceHandlers.trace(ctx); });
+router.post('/admin/agent/ping', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.ping(ctx); });
 router.get('/admin/agent/status', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.status(ctx); });
 router.put('/admin/agent/settings', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.saveSettings(ctx); });
 router.get('/admin/agent/drafts', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.drafts(ctx); });

@@ -8644,7 +8644,7 @@ test('agent speed: no long reasoning, the account is in the prompt up front (one
     assert.equal(answered.length, 2);
     assert.deepEqual(answered.map((p) => p.functionResponse.name), ['list_cards', 'get_account_summary']);
   });
-  // 3) a model that refuses the reasoning setting is asked again without it
+  // 3) a model that refuses the reasoning settings is asked again with the next one, then without any, and the working one is remembered
   const http = require('node:http');
   const config = require('../src/config');
   const seen = [];
@@ -8653,8 +8653,9 @@ test('agent speed: no long reasoning, the account is in the prompt up front (one
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
       const b = JSON.parse(raw);
-      seen.push(!!(b.generationConfig && b.generationConfig.thinkingConfig));
-      if (b.generationConfig && b.generationConfig.thinkingConfig) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 400, message: 'Thinking budget is not supported for this model' } })); }
+      const tc = b.generationConfig && b.generationConfig.thinkingConfig;
+      seen.push(tc ? JSON.stringify(tc) : null);
+      if (tc && !(tc.thinkingLevel === 'low')) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 400, message: 'Thinking budget / level is not supported for this model' } })); }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] } }], usageMetadata: {} }));
     });
@@ -8664,10 +8665,35 @@ test('agent speed: no long reasoning, the account is in the prompt up front (one
   Object.assign(config.agent, { provider: 'gemini', apiKey: 'k', baseUrl: `http://localhost:${AGENT_PORT + 1}` });
   try {
     const llm = require('../src/services/agent/llm');
-    const out = await llm.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] });
+    const out = await llm.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'speed-model-a' });
     assert.equal(out.text, 'ok');
-    assert.deepEqual(seen, [true, false]);
-    await llm.generate({ system: 's', messages: [{ role: 'user', content: 'hi again' }] });
-    assert.deepEqual(seen, [true, false, false]); // remembered: not tried again
+    assert.deepEqual(seen, ['{"thinkingBudget":0}', '{"thinkingLevel":"minimal"}', '{"thinkingLevel":"low"}']); // the third one is accepted
+    assert.equal(out.thinking, '{"thinkingLevel":"low"}');
+    await llm.generate({ system: 's', messages: [{ role: 'user', content: 'hi again' }], model: 'speed-model-a' });
+    assert.equal(seen[3], '{"thinkingLevel":"low"}'); // remembered: the working setting is used straight away
   } finally { Object.assign(config.agent, saved); await new Promise((r) => server.close(r)); }
+});
+
+test('agent ping: the admin sees where the time goes (tiny question, then the real chat prompt), or the model\'s own refusal', async () => {
+  const admin = await adminLogin('owner');
+  await withAgent((body) => [{ text: 'OK' }], async () => {
+    const r = await api('POST', '/admin/agent/ping', { token: admin.token });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+    assert.equal(r.data.steps.length, 2);
+    assert.ok(r.data.steps.every((s) => s.ok && typeof s.ms === 'number'));
+    assert.match(r.data.steps[1].name, /vrai prompt/);
+    assert.ok(r.data.steps[1].tokens_in > 0);
+  });
+  await withAgent(() => [{ text: 'OK' }], async (calls) => {
+    calls.forceError = 402;
+    const r = await api('POST', '/admin/agent/ping', { token: admin.token });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, false);
+    assert.match(r.data.steps[0].error, /HTTP 402/);
+  });
+  const config = require('../src/config');
+  const savedKey = config.agent.apiKey; config.agent.apiKey = '';
+  assert.equal((await api('POST', '/admin/agent/ping', { token: admin.token })).data.ok, false);
+  config.agent.apiKey = savedKey;
 });

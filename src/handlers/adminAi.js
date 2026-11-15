@@ -51,6 +51,34 @@ async function chat(ctx) {
   return { status: 200, body: await adminAgent.chat(ctx.body && ctx.body.messages, who(ctx)) };
 }
 
+/**
+ * POST /admin/agent/ping : where the time goes. One tiny question, then one with the real chat prompt (rules + knowledge, no tools): each is timed, with
+ * the model, the reasoning setting used and the model's own error if it refuses. The answer is always 200 so the page can show it.
+ */
+async function ping() {
+  if (!llm.configured()) return { status: 200, body: { ok: false, error: "Aucune clé : ajoutez GEMINI_API_KEY (ou ANTHROPIC_API_KEY) sur le serveur." } };
+  const cfg = await settings.get();
+  const model = cfg.model || config.agent.model;
+  const out = { ok: true, provider: config.agent.provider, model, steps: [] };
+  const prompts = require('../services/agent/prompts');
+  const tries = [
+    { name: 'Question minuscule', system: 'Tu es un test de connexion.', content: 'Réponds uniquement : OK', maxTokens: 64 },
+    { name: 'Question avec le vrai prompt du chat (règles + connaissances)', system: await prompts.chatSystem({ businessName: 'Test' }), content: 'Bonjour, combien coûte la création d\'une carte ?', maxTokens: 600 },
+  ];
+  for (const t of tries) {
+    const started = Date.now();
+    try {
+      const r = await llm.generate({ system: t.system, messages: [{ role: 'user', content: t.content }], model, maxTokens: t.maxTokens, timeoutMs: 40000 });
+      out.steps.push({ name: t.name, ok: true, ms: Date.now() - started, reasoning: r.thinking || null, tokens_in: r.usage.input, tokens_out: r.usage.output, reply: String(r.text).slice(0, 160) });
+    } catch (e) {
+      out.ok = false;
+      out.steps.push({ name: t.name, ok: false, ms: Date.now() - started, error: e.message });
+      break;
+    }
+  }
+  return { status: 200, body: out };
+}
+
 async function reportOf(ctx) { return { status: 200, body: await report.build(ctx.query && ctx.query.days) }; }
 
 async function alerts(ctx) {
@@ -96,4 +124,4 @@ async function chatStateSet(ctx) {
   return { status: 200, body: { state: await chatAgent.stateOf(ctx.params.merchantId) } };
 }
 
-module.exports = { status, saveSettings, drafts, approve, reject, runOnMessage, chat, reportOf, alerts, ackAlert, knowledgeList, knowledgeSave, knowledgeDelete, chatStateGet, chatStateSet };
+module.exports = { ping, status, saveSettings, drafts, approve, reject, runOnMessage, chat, reportOf, alerts, ackAlert, knowledgeList, knowledgeSave, knowledgeDelete, chatStateGet, chatStateSet };

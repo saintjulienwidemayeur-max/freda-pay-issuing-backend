@@ -19,10 +19,10 @@ function agentError(code, message) {
 
 const configured = () => !!(config.agent.provider && config.agent.apiKey);
 
-async function post(url, headers, body) {
+async function post(url, headers, body, timeoutMs) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), config.agent.timeoutMs);
+    const timer = setTimeout(() => ctl.abort(), timeoutMs || config.agent.timeoutMs);
     let res;
     try {
       res = await fetch(url, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers), body: JSON.stringify(body), signal: ctl.signal });
@@ -57,37 +57,52 @@ function geminiDeclaration(t) {
   return decl;
 }
 
-// Gemini "flash" models reason before answering, which can take many seconds. For support answers a short reasoning is enough: the budget is
-// set by AGENT_THINKING_BUDGET (default 0 = none, "" = leave the model's own default). A model that does not accept the setting is asked again without it.
-let thinkingUnsupported = false;
-const thinkingBudget = () => { const v = process.env.AGENT_THINKING_BUDGET; if (v === '') return null; const n = v === undefined ? 0 : Number(v); return Number.isFinite(n) ? n : 0; };
+// Gemini "flash" models reason before answering, which can take many seconds (a minute on some). For support answers a short reasoning is enough.
+// The setting differs between model generations, so it is tried in order and the first one the model accepts is remembered:
+//   1. thinkingBudget: 0 (Gemini 2.5)   2. thinkingLevel: "minimal" (Gemini 3)   3. thinkingLevel: "low"   4. nothing (the model's own default)
+// AGENT_THINKING_BUDGET (a number) forces a budget, AGENT_THINKING_BUDGET="" leaves the model's default.
+const THINKING_STEPS = [{ thinkingBudget: 0 }, { thinkingLevel: 'minimal' }, { thinkingLevel: 'low' }, null];
+const thinkingStepFor = {}; // model -> index of the step that works
+function thinkingConfigFor(model) {
+  const forced = process.env.AGENT_THINKING_BUDGET;
+  if (forced === '') return { cfg: null, step: THINKING_STEPS.length - 1 };
+  if (forced !== undefined && Number.isFinite(Number(forced))) return { cfg: { thinkingBudget: Number(forced) }, step: -1 };
+  const step = thinkingStepFor[model] || 0;
+  return { cfg: THINKING_STEPS[step], step };
+}
 
-async function runGemini({ system, messages, tools, runTool, maxIterations, maxTokens, model }) {
+async function runGemini({ system, messages, tools, runTool, maxIterations, maxTokens, model, timeoutMs }) {
+  let thinkingUsed = null;
   const contents = messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content) }] }));
   const usage = { input: 0, output: 0 };
   const toolsUsed = [];
   for (let i = 0; i < maxIterations; i += 1) {
     const body = { systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: { maxOutputTokens: maxTokens, temperature: 0.3 } };
     if (tools.length) body.tools = [{ functionDeclarations: tools.map((t) => geminiDeclaration(t)) }];
-    const budget = thinkingBudget();
-    if (budget !== null && !thinkingUnsupported) body.generationConfig.thinkingConfig = { thinkingBudget: budget };
     const url = `${config.agent.baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    let { cfg, step } = thinkingConfigFor(model);
     let data;
-    try {
-      data = await post(url, { 'x-goog-api-key': config.agent.apiKey }, body);
-    } catch (e) {
-      if (!(e.providerStatus === 400 && /thinking/i.test(e.message) && body.generationConfig.thinkingConfig)) throw e;
-      thinkingUnsupported = true; // this model does not take the setting: same request without it, and not tried again
-      delete body.generationConfig.thinkingConfig;
-      data = await post(url, { 'x-goog-api-key': config.agent.apiKey }, body);
+    const t0 = Date.now();
+    for (;;) {
+      if (cfg) body.generationConfig.thinkingConfig = cfg; else delete body.generationConfig.thinkingConfig;
+      try {
+        data = await post(url, { 'x-goog-api-key': config.agent.apiKey }, body, timeoutMs);
+        break;
+      } catch (e) {
+        // A model that does not know this reasoning setting answers 400 mentioning it: the next setting is tried (and remembered).
+        if (!(e.providerStatus === 400 && /thinking/i.test(e.message) && cfg && step >= 0 && step < THINKING_STEPS.length - 1)) throw e;
+        step += 1; cfg = THINKING_STEPS[step]; thinkingStepFor[model] = step;
+      }
     }
+    thinkingUsed = cfg ? JSON.stringify(cfg) : 'défaut du modèle';
+    console.log(`Agent model call: ${model} ${Date.now() - t0} ms, reasoning ${thinkingUsed}, tokens in ${Number(data.usageMetadata && data.usageMetadata.promptTokenCount) || 0} out ${Number(data.usageMetadata && data.usageMetadata.candidatesTokenCount) || 0}`); // eslint-disable-line no-console
     usage.input += Number(data.usageMetadata && data.usageMetadata.promptTokenCount) || 0;
     usage.output += Number(data.usageMetadata && data.usageMetadata.candidatesTokenCount) || 0;
     const cand = data.candidates && data.candidates[0];
     if (!cand || !cand.content) throw agentError('AGENT_NO_ANSWER', `Le modèle n'a pas donné de réponse${data.promptFeedback && data.promptFeedback.blockReason ? ` (${data.promptFeedback.blockReason})` : ''}.`);
     const parts = cand.content.parts || [];
     const calls = parts.filter((p) => p.functionCall);
-    if (!calls.length) return { text: parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim(), usage, toolsUsed };
+    if (!calls.length) return { text: parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim(), usage, toolsUsed, thinking: thinkingUsed };
     contents.push(cand.content); // returned unchanged (the model's own parts, thought signatures included)
     // Several tool calls asked at once are run at the same time (each one is only a read).
     const responses = await Promise.all(calls.map(async (c) => {
@@ -126,9 +141,9 @@ async function runAnthropic({ system, messages, tools, runTool, maxIterations, m
   throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.');
 }
 
-async function generate({ system, messages, tools = [], runTool = async () => ({}), maxIterations = 6, maxTokens, model }) {
+async function generate({ system, messages, tools = [], runTool = async () => ({}), maxIterations = 6, maxTokens, model, timeoutMs }) {
   if (!configured()) throw agentError('AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré (GEMINI_API_KEY ou ANTHROPIC_API_KEY manquante sur le serveur).");
-  const opts = { system, messages, tools, runTool, maxIterations, maxTokens: maxTokens || config.agent.maxTokens, model: model || config.agent.model };
+  const opts = { system, messages, tools, runTool, maxIterations, maxTokens: maxTokens || config.agent.maxTokens, model: model || config.agent.model, timeoutMs };
   const out = config.agent.provider === 'gemini' ? await runGemini(opts) : await runAnthropic(opts);
   return Object.assign(out, { provider: config.agent.provider, model: opts.model });
 }
