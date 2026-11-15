@@ -47,7 +47,7 @@ async function runOnMessage(ctx) {
 }
 
 async function chat(ctx) {
-  if (!llm.configured()) throw httpError(503, 'AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré : ajoutez GEMINI_API_KEY (ou ANTHROPIC_API_KEY) dans les variables d'environnement du serveur.");
+  if (!llm.configured()) throw httpError(424, 'AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré : ajoutez GEMINI_API_KEY (ou ANTHROPIC_API_KEY) dans les variables d'environnement du serveur.");
   return { status: 200, body: await adminAgent.chat(ctx.body && ctx.body.messages, who(ctx)) };
 }
 
