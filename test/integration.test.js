@@ -8306,6 +8306,10 @@ async function withAgent(script, fn, { autoSend = false, chat = true, email = tr
     req.on('end', () => {
       const body = JSON.parse(raw || '{}');
       calls.push({ url: req.url, key: req.headers['x-goog-api-key'], body });
+      // What the real API refuses: an object schema with no properties (or an empty "required") in a function declaration.
+      const bad = ((body.tools && body.tools[0] && body.tools[0].functionDeclarations) || []).find((d) => d.parameters && (!d.parameters.properties || !Object.keys(d.parameters.properties).length || (d.parameters.required && !d.parameters.required.length)));
+      if (bad) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 400, message: `Invalid function declaration ${bad.name}: parameters.properties: should be non-empty for OBJECT type` } })); }
+      if (calls.forceError) { res.writeHead(calls.forceError, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: { code: calls.forceError, message: 'API key not valid. Please pass a valid API key.' } })); }
       const parts = script(body, calls.length);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ candidates: [{ content: { role: 'model', parts } }], usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 40 } }));
@@ -8558,7 +8562,7 @@ test('agent admin chat: read-only tools over the whole platform, secrets never w
   const config = require('../src/config');
   const savedKey = config.agent.apiKey;
   config.agent.apiKey = '';
-  assert.equal((await api('POST', '/admin/agent/chat', { token: admin.token, body: { messages: [{ role: 'user', content: 'Bonjour' }] } })).status, 503);
+  assert.equal((await api('POST', '/admin/agent/chat', { token: admin.token, body: { messages: [{ role: 'user', content: 'Bonjour' }] } })).status, 424);
   config.agent.apiKey = savedKey;
   await withAgent((body) => {
     const last = JSON.stringify(body.contents[body.contents.length - 1]);
@@ -8574,6 +8578,11 @@ test('agent admin chat: read-only tools over the whole platform, secrets never w
     const names = calls[0].body.tools[0].functionDeclarations.map((t) => t.name);
     assert.ok(names.includes('platform_report') && names.includes('trace_card') && names.includes('list_inbox'));
     assert.equal((await api('POST', '/admin/agent/chat', { token: admin.token, body: { messages: [] } })).status, 400);
+    // The model's own refusal (bad key...) reaches the admin as a readable 424 (a 502/503 would be swallowed by the host's proxy).
+    calls.forceError = 403;
+    const refused = await api('POST', '/admin/agent/chat', { token: admin.token, body: { messages: [{ role: 'user', content: 'Bonjour' }] } });
+    assert.equal(refused.status, 424);
+    assert.match(refused.data.error.message, /HTTP 403.*API key not valid/);
   });
 });
 

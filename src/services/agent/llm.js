@@ -8,10 +8,12 @@ const config = require('../../config');
  *   tools:    [{ name, description, parameters: { type: 'object', properties, required } }]
  *   runTool:  async (name, args) => any JSON-able value (already redacted by the caller)
  */
-function agentError(code, message, status) {
+// 424 (Failed Dependency), never 502/503/504: the hosting proxy replaces those by its own error page (no CORS headers), and the admin page then
+// only says "cannot reach the server" instead of showing the real reason.
+function agentError(code, message) {
   const err = new Error(message);
   err.code = code;
-  err.httpStatus = status || 503;
+  err.httpStatus = 424;
   return err;
 }
 
@@ -25,18 +27,32 @@ async function post(url, headers, body) {
     try {
       res = await fetch(url, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers), body: JSON.stringify(body), signal: ctl.signal });
     } catch (e) {
-      throw agentError('AGENT_UNREACHABLE', e.name === 'AbortError' ? "Le modèle n'a pas répondu à temps." : `Le modèle est injoignable : ${e.message}`, 502);
+      throw agentError('AGENT_UNREACHABLE', e.name === 'AbortError' ? "Le modèle n'a pas répondu à temps." : `Le modèle est injoignable : ${e.message}`);
     } finally { clearTimeout(timer); }
     if ((res.status === 429 || res.status === 503 || res.status === 529) && attempt === 0) { await new Promise((r) => setTimeout(r, 1500)); continue; }
     let data = null;
     try { data = await res.json(); } catch (e) { /* not JSON */ }
     if (!res.ok) {
       const msg = (data && (data.error && (data.error.message || data.error))) || `HTTP ${res.status}`;
-      throw agentError('AGENT_PROVIDER_ERROR', `Le modèle a refusé la requête : ${String(msg).slice(0, 200)}`, 502);
+      console.error(`Agent model error: HTTP ${res.status} ${String(msg).slice(0, 300)}`); // eslint-disable-line no-console
+      throw agentError('AGENT_PROVIDER_ERROR', `Le modèle a refusé la requête (HTTP ${res.status}) : ${String(msg).slice(0, 200)}`);
     }
     return data || {};
   }
-  throw agentError('AGENT_PROVIDER_ERROR', 'Le modèle est surchargé, réessayez.', 502);
+  throw agentError('AGENT_PROVIDER_ERROR', 'Le modèle est surchargé, réessayez.');
+}
+
+/**
+ * Gemini rejects an object schema with no properties (and an empty "required" list): a tool without arguments is declared without "parameters".
+ */
+function geminiDeclaration(t) {
+  const decl = { name: t.name, description: t.description };
+  const props = t.parameters && t.parameters.properties;
+  if (props && Object.keys(props).length) {
+    decl.parameters = { type: 'object', properties: props };
+    if (t.parameters.required && t.parameters.required.length) decl.parameters.required = t.parameters.required;
+  }
+  return decl;
 }
 
 async function runGemini({ system, messages, tools, runTool, maxIterations, maxTokens, model }) {
@@ -45,12 +61,12 @@ async function runGemini({ system, messages, tools, runTool, maxIterations, maxT
   const toolsUsed = [];
   for (let i = 0; i < maxIterations; i += 1) {
     const body = { systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: { maxOutputTokens: maxTokens, temperature: 0.3 } };
-    if (tools.length) body.tools = [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+    if (tools.length) body.tools = [{ functionDeclarations: tools.map((t) => geminiDeclaration(t)) }];
     const data = await post(`${config.agent.baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, { 'x-goog-api-key': config.agent.apiKey }, body);
     usage.input += Number(data.usageMetadata && data.usageMetadata.promptTokenCount) || 0;
     usage.output += Number(data.usageMetadata && data.usageMetadata.candidatesTokenCount) || 0;
     const cand = data.candidates && data.candidates[0];
-    if (!cand || !cand.content) throw agentError('AGENT_NO_ANSWER', `Le modèle n'a pas donné de réponse${data.promptFeedback && data.promptFeedback.blockReason ? ` (${data.promptFeedback.blockReason})` : ''}.`, 502);
+    if (!cand || !cand.content) throw agentError('AGENT_NO_ANSWER', `Le modèle n'a pas donné de réponse${data.promptFeedback && data.promptFeedback.blockReason ? ` (${data.promptFeedback.blockReason})` : ''}.`);
     const parts = cand.content.parts || [];
     const calls = parts.filter((p) => p.functionCall);
     if (!calls.length) return { text: parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim(), usage, toolsUsed };
@@ -64,7 +80,7 @@ async function runGemini({ system, messages, tools, runTool, maxIterations, maxT
     }
     contents.push({ role: 'user', parts: responses });
   }
-  throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.', 502);
+  throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.');
 }
 
 async function runAnthropic({ system, messages, tools, runTool, maxIterations, maxTokens, model }) {
@@ -90,11 +106,11 @@ async function runAnthropic({ system, messages, tools, runTool, maxIterations, m
     }
     convo.push({ role: 'user', content: results });
   }
-  throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.', 502);
+  throw agentError('AGENT_TOO_MANY_STEPS', 'Le modèle a demandé trop de consultations.');
 }
 
 async function generate({ system, messages, tools = [], runTool = async () => ({}), maxIterations = 6, maxTokens, model }) {
-  if (!configured()) throw agentError('AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré (GEMINI_API_KEY ou ANTHROPIC_API_KEY manquante sur le serveur).", 503);
+  if (!configured()) throw agentError('AGENT_NOT_CONFIGURED', "L'agent IA n'est pas configuré (GEMINI_API_KEY ou ANTHROPIC_API_KEY manquante sur le serveur).");
   const opts = { system, messages, tools, runTool, maxIterations, maxTokens: maxTokens || config.agent.maxTokens, model: model || config.agent.model };
   const out = config.agent.provider === 'gemini' ? await runGemini(opts) : await runAnthropic(opts);
   return Object.assign(out, { provider: config.agent.provider, model: opts.model });
