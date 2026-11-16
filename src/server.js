@@ -186,6 +186,10 @@ router.get('/dashboard/bank-account', session.requireSession, bankAccountHandler
 router.put('/dashboard/bank-account', session.requireSession, bankAccountHandlers.put);
 router.del('/dashboard/bank-account', session.requireSession, bankAccountHandlers.remove);
 router.get('/dashboard/wallet/summary', session.requireSession, walletSummaryHandlers.summary);
+router.get('/dashboard/activity', session.requireSession, walletSummaryHandlers.activity);
+router.get('/dashboard/notice', session.requireSession, async () => { const n = await require('./services/notice').get(); return { status: 200, body: { notice: n.enabled ? { message: n.message, tone: n.tone } : null } }; });
+router.get('/admin/notice', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: { notice: await require('./services/notice').get() } }; });
+router.put('/admin/notice', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: { notice: await require('./services/notice').save(ctx.body || {}, (ctx.admin && ctx.admin.email) || null) } }; });
 
 // ---- Dashboard views of payments/payouts (same handlers as the merchant API,
 // just authenticated via the dashboard session instead of an API key) ----
