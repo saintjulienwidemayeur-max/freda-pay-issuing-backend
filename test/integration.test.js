@@ -9283,6 +9283,8 @@ function monerailsMock(port) {
       if ((m = u.match(/^\/v1\/test\/cards\/([^/]+)\/authorizations$/))) { const t = { id: id('tx'), object: 'transaction', type: 'card_payment', amount: -body.amount, card: m[1], status: body.status === 'approved' ? 'succeeded' : 'failed', description: body.merchant }; st.tx.push(t); return send(200, { object: 'authorization', ...body }); }
       if (req.method === 'GET' && u === '/v1/transactions') return send(200, { object: 'list', data: st.tx, has_more: false });
       if (req.method === 'POST' && u === '/v1/webhook_endpoints') { const e = { id: id('we'), object: 'webhook_endpoint', url: body.url, events: body.events, status: 'enabled', secret: 'whsec_monerails_test_secret' }; st.endpoints.push(e); return send(201, e); }
+      if ((m = u.match(/^\/v1\/webhook_endpoints\/([^/]+)\/rotate_secret$/))) { const e = st.endpoints.find((x) => x.id === m[1]); e.secret = 'whsec_rotated_secret'; return send(200, { id: e.id, object: 'webhook_endpoint', secret: e.secret, previous_secret_expires_at: new Date().toISOString() }); }
+      if (req.method === 'GET' && u === '/v1/events') return send(200, { object: 'list', data: [{ id: 'evt_api', object: 'event', type: 'card.created', livemode: false, created_at: new Date().toISOString(), data: { object: { id: 'card_x', object: 'card', status: 'pending', last4: null } } }], has_more: false });
       if (req.method === 'GET' && u === '/v1/webhook_endpoints') return send(200, { object: 'list', data: st.endpoints.map((e) => ({ ...e, secret: undefined })) });
       return fail(404, 'route_unknown', u);
     });
@@ -9352,11 +9354,22 @@ test('Monerails sandbox (admin only): holder, verification, card, fund/withdraw/
     assert.equal((await api('POST', '/admin/monerails/cards', { token: owner.token, body: { cardholder: h.data.id, amount_usd: -1 } })).status, 400);
 
     // webhook: registered at Monerails, secret kept (encrypted), signed events stored once, bad signatures and live events refused
+    // before the webhook is branched, the events are read from Monerails directly
+    const apiEvents = await api('GET', '/admin/monerails/events', { token: owner.token });
+    assert.equal(apiEvents.data.source, 'api');
+    assert.equal(apiEvents.data.events[0].type, 'card.created');
     const wh = await api('POST', '/admin/monerails/webhook', { token: owner.token });
     assert.equal(wh.status, 201);
     assert.equal(wh.data.secret_saved, true);
     assert.match(st.endpoints[0].url, /\/webhooks\/monerails$/);
     assert.equal(config.monerails.webhookSecret, 'whsec_monerails_test_secret');
+    // a second click (or an endpoint created by hand) does not create a duplicate: it rotates the secret and keeps the new one
+    const again = await api('POST', '/admin/monerails/webhook', { token: owner.token });
+    assert.equal(again.status, 200);
+    assert.equal(again.data.already_existed, true);
+    assert.equal(st.endpoints.length, 1);
+    assert.equal(config.monerails.webhookSecret, 'whsec_rotated_secret');
+    await secrets.save({ monerails_webhook_secret: 'whsec_monerails_test_secret' });
     const crypto = require('crypto');
     const ev = { id: 'evt_1', object: 'event', type: 'card.issued', livemode: false, created_at: new Date().toISOString(), data: { object: { ...st.cards[0], object: 'card' } } };
     const raw = JSON.stringify(ev);

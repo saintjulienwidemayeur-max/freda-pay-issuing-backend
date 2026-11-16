@@ -79,6 +79,7 @@ module.exports = {
   listEvents: (q) => call('GET', `/events${qs({ limit: 50, ...q })}`),
   listWebhookEndpoints: () => call('GET', '/webhook_endpoints'),
   createWebhookEndpoint: (url, events) => call('POST', '/webhook_endpoints', { url, events }),
+  rotateWebhookSecret: (id) => call('POST', `/webhook_endpoints/${encodeURIComponent(id)}/rotate_secret`, { overlap_minutes: 0 }),
 
   /**
    * Monerail-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(t + "." + raw body, full whsec_ secret)> ; during a secret rotation two v1 values come.
