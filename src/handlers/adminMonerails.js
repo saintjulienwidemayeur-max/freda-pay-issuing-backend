@@ -135,6 +135,10 @@ async function transactions(ctx) {
 
 // ----- Events / webhook -----
 async function events() {
+  if (!config.monerails.webhookSecret && mr.configured()) {
+    const r = await mr.listEvents();
+    return { status: 200, body: { sandbox: true, source: 'api', events: (r.data.data || []).map((e) => ({ id: e.id, type: e.type, livemode: e.livemode, received_at: e.created_at, object_id: e.data && e.data.object && e.data.object.id, summary: summaryOf(e.data && e.data.object) })), note: 'Webhook pas encore branché : événements lus directement chez Monerails.' } };
+  }
   try {
     const rows = await supabase.select('monerails_events', {}, { order: 'received_at.desc', limit: 100 });
     return { status: 200, body: { sandbox: true, source: 'webhook', events: rows.map((e) => ({ id: e.id, type: e.type, livemode: e.livemode, received_at: e.received_at, object_id: e.object_id, summary: e.summary })) } };
@@ -149,10 +153,19 @@ async function events() {
 async function registerWebhook(ctx) {
   if (ctx.adminRole !== 'owner') throw httpError(403, 'INSUFFICIENT_ROLE', 'Seul le propriétaire peut enregistrer le webhook Monerails.');
   const url = `${config.apiUrl}/webhooks/monerails`;
-  const r = await mr.createWebhookEndpoint(url, ['card.*', 'cardholder.*', 'cards_balance.*']);
-  if (r.data && r.data.secret) await require('../services/agent/secrets').save({ monerails_webhook_secret: r.data.secret }, who(ctx));
-  audit(ctx, 'webhook.register', r.data && r.data.id);
-  return { status: 201, body: { sandbox: true, id: r.data.id, url: r.data.url, events: r.data.events, status: r.data.status, secret_saved: !!(r.data && r.data.secret) } };
+  // Already registered (by this button or by hand in the Monerails dashboard): never create a second one; get a fresh secret instead.
+  const existing = ((await mr.listWebhookEndpoints()).data.data || []).find((w) => w.url === url);
+  let r;
+  if (existing) {
+    r = await mr.rotateWebhookSecret(existing.id);
+    r.data = Object.assign({ id: existing.id, url: existing.url, events: existing.events, status: existing.status }, r.data);
+  } else {
+    r = await mr.createWebhookEndpoint(url, ['card.*', 'cardholder.*', 'cards_balance.*']);
+  }
+  const secret = r.data && (r.data.secret || (r.data.webhook_endpoint && r.data.webhook_endpoint.secret));
+  if (secret) await require('../services/agent/secrets').save({ monerails_webhook_secret: secret }, who(ctx));
+  audit(ctx, existing ? 'webhook.rotate_secret' : 'webhook.register', r.data && r.data.id);
+  return { status: existing ? 200 : 201, body: { sandbox: true, id: r.data.id, url: r.data.url || url, events: r.data.events, status: r.data.status, already_existed: !!existing, secret_saved: !!secret } };
 }
 
 const summaryOf = (o) => {
