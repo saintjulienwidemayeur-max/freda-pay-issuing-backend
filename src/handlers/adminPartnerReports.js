@@ -131,7 +131,9 @@ async function pdfFor(report) {
   const company = await companyProfile.get();
   const lacking = companyProfile.missing(company);
   if (lacking.length) throw httpError(409, 'COMPANY_PROFILE_INCOMPLETE', `Complétez d'abord l'identité légale : il manque ${lacking.join(', ')}.`);
-  const buf = await partnerReportPdf.build(report, company);
+  // The split by activity (Gateway / Issuing / other) comes from the real operations of the period, read when the PDF is made.
+  const breakdown = await adminStats.profitBetween(report.mode, report.period_from, report.period_to).catch(() => null);
+  const buf = await partnerReportPdf.build(report, company, breakdown);
   const slug = String(report.partner_name).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'partenaire';
   return { buf, filename: `rapport-${slug}-${report.period_from}-${report.period_to}.pdf` };
 }
