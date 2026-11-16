@@ -8117,6 +8117,17 @@ test('admin profit by operation: creation / recharge / withdrawal / deposit are 
   assert.equal(r.data.by_kind.find((k) => k.kind === 'wallet_deposit').profit_usd, 4);
   assert.equal(r.data.total.profit_usd, 9.5); // 4 + 1.5 + 4
   assert.equal(r.data.rows.length, 4);
+  // Gateway and Issuing profits are separated
+  const grp = Object.fromEntries(r.data.by_group.map((g) => [g.group, g]));
+  assert.equal(grp.issuing.profit_usd, 9.5);
+  assert.equal(grp.gateway.profit_usd, 0);
+  assert.equal(r.data.rows[0].group, 'issuing');
+  mockTables.fee_revenue.push({ id: 'fp6', merchant_id: 'mch_p', kind: 'gateway_payment', amount: 4, currency: 'USD', partner_cost_usd: 1.5, mode: 'live', created_at: at, related_id: 'pay_x' });
+  const r2 = await api('GET', `/admin/profit?mode=live&from=${day}&to=${day}`, { token: admin.token });
+  const grp2 = Object.fromEntries(r2.data.by_group.map((g) => [g.group, g]));
+  assert.deepEqual([grp2.gateway.count, grp2.gateway.revenue_usd, grp2.gateway.profit_usd, grp2.issuing.profit_usd], [1, 4, 2.5, 9.5]);
+  assert.equal(r2.data.total.profit_usd, 12);
+  mockTables.fee_revenue.splice(mockTables.fee_revenue.findIndex((x) => x.id === 'fp6'), 1);
   const only = await api('GET', `/admin/profit?mode=live&from=${day}&to=${day}&kind=card_withdrawal`, { token: admin.token });
   assert.deepEqual(only.data.rows.map((x) => x.kind), ['card_withdrawal']);
   assert.equal(only.data.total.profit_usd, 9.5); // the summary always covers the whole period
