@@ -9190,3 +9190,38 @@ test('agent email: sounds human - a legit/legal question is not handed off, a fo
     assert.match(userMsg, /Est-ce que Freda Pay est légal/);
   }, { autoSend: true });
 });
+
+test('Freda Mail reply: a 404 on the stored mailbox tries the others; if none knows the message, the answer still goes out by email', async () => {
+  const config = require('../src/config');
+  const fm = require('../src/services/fredaMail');
+  const adminInbox = require('../src/handlers/adminInbox');
+  const saved = { keys: Object.assign({}, config.fredaMail.keys), base: config.fredaMail.baseUrl };
+  const realFetch = global.fetch;
+  const hits = [];
+  try {
+    Object.keys(config.fredaMail.keys).forEach((k) => delete config.fredaMail.keys[k]);
+    Object.assign(config.fredaMail.keys, { 'a@fredapay.com': 'fmk_aaaa', 'b@fredapay.com': 'fmk_bbbb' });
+    let knownBy = 'fmk_bbbb';
+    global.fetch = async (url, opts) => {
+      if (!String(url).startsWith(config.fredaMail.baseUrl)) return realFetch(url, opts);
+      hits.push(`${opts.method} ${String(url).replace(config.fredaMail.baseUrl, '')} ${opts.headers.Authorization}`);
+      const ok = opts.headers.Authorization === `Bearer ${knownBy}`;
+      return { ok, status: ok ? 200 : 404, headers: { get: () => null }, json: async () => (ok ? { id: 'sent1' } : { code: 'not_found', message: 'Message à relancer introuvable.' }) };
+    };
+    const row = { id: 'in_x404', source: 'freda_mail', fm_id: 'M-1', fm_mailbox: 'a@fredapay.com', from_email: 'someone@example.com', subject: 'Question' };
+    mockTables.admin_inbox.push(Object.assign({}, row));
+    await adminInbox.sendReplyEmail(row, 'Bonjour, voici la réponse.');
+    assert.ok(hits.some((h) => /send Bearer fmk_bbbb/.test(h) || /send.*fmk_bbbb/.test(h)), hits.join(' | '));
+    assert.equal(mockTables.admin_inbox.find((m) => m.id === 'in_x404').fm_mailbox, 'b@fredapay.com');
+    // nobody knows it: falls back to the transactional email, no error
+    knownBy = 'nobody';
+    const before = sentEmails.length;
+    await adminInbox.sendReplyEmail(row, 'Bonjour, voici la réponse.');
+    assert.ok(sentEmails.length > before && sentEmails[sentEmails.length - 1].to === 'someone@example.com');
+  } finally {
+    global.fetch = realFetch;
+    Object.keys(config.fredaMail.keys).forEach((k) => delete config.fredaMail.keys[k]);
+    Object.assign(config.fredaMail.keys, saved.keys);
+  }
+  assert.equal(typeof fm.replyAnywhere, 'function');
+});

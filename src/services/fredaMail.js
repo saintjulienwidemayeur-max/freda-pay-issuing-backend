@@ -69,6 +69,22 @@ async function reply(mailbox, replyToId, text) {
   return call(mailbox, 'POST', '/api/v1/messages/send', { reply_to_message_id: replyToId, text }, { 'Idempotency-Key': idem });
 }
 
+/**
+ * Replies from the mailbox that received the message; if that mailbox says it does not know the message (404: the id was stored under another
+ * mailbox's label, or the key was renamed), the other connected mailboxes are tried. Returns the mailbox that accepted it.
+ */
+async function replyAnywhere(mailbox, replyToId, text) {
+  const order = [mailbox, ...mailboxes().filter((m) => m !== mailbox)].filter(Boolean);
+  let last = null;
+  for (const box of order) {
+    try { await reply(box, replyToId, text); return box; } catch (e) {
+      last = e;
+      if (e.code !== 'FREDA_MAIL_404') throw e;
+    }
+  }
+  throw last;
+}
+
 /** X-Freda-Signature = "sha256=" + HMAC-SHA256("<timestamp>.<raw body>", whsec_...). Rejects bad signatures and replays older than 5 minutes. */
 function verifySignature(headers, rawBody, secretOrList) {
   // Each mailbox's webhook has its own secret: several can be given (separated by commas, spaces or new lines).
@@ -223,4 +239,4 @@ async function pollUnread(limit) {
   return { stored, errors };
 }
 
-module.exports = { agentStateOf, unanswered, answerPending, listFolder, nameKeys, configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };
+module.exports = { replyAnywhere, agentStateOf, unanswered, answerPending, listFolder, nameKeys, configured, mailboxes, keyFor, me, listUnread, readMessage, markRead, reply, verifySignature, storeMessage, pollUnread, fmError };
