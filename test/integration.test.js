@@ -9408,3 +9408,32 @@ test('Monerails sandbox (admin only): holder, verification, card, fund/withdraw/
     await new Promise((r) => server.close(r));
   }
 });
+
+test('merchant activity: one list of deposits, card operations and card purchases, by category; dashboard maintenance notice set by the admin', async () => {
+  const live = await liveMerchantWithActivity('activityfeed');
+  await api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount: 20 } });
+  mockTables.card_transactions.push({ id: 'ctx_act1', merchant_id: live.merchantId, card_id: live.card.id, mode: 'live', provider_reference: 'act1', type: 'AUTHORIZATION', status: 'SUCCESS', direction: 'DEBIT', amount_usd: 7.5, merchant_name: 'Netflix', occurred_at: new Date().toISOString() });
+  const r = await api('GET', '/dashboard/activity', { token: live.token });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.mode, 'live');
+  const cards = r.data.items.filter((i) => i.category === 'cartes');
+  const last4 = String(live.card.masked_pan || '').replace(/\D/g, '').slice(-4);
+  assert.ok(cards.find((i) => /^Recharge de carte/.test(i.title) && i.amount < 0 && (!last4 || i.title.includes(last4))), JSON.stringify(cards));
+  assert.ok(cards.find((i) => /Création de carte/.test(i.title)));
+  const buy = cards.find((i) => /Achat · Netflix/.test(i.title));
+  assert.equal(buy.amount, -7.5);
+  assert.ok(r.data.items.find((i) => i.category === 'wallet' && i.amount > 0), 'the deposit is in the wallet category');
+  assert.equal(r.data.counts.all, r.data.items.length);
+  assert.equal(r.data.counts.cartes, cards.length);
+  for (let i = 1; i < r.data.items.length; i += 1) assert.ok(new Date(r.data.items[i - 1].at) >= new Date(r.data.items[i].at), 'newest first');
+
+  // the maintenance notice: on by default, worded and switched off by an admin
+  const n1 = await api('GET', '/dashboard/notice', { token: live.token });
+  assert.match(n1.data.notice.message, /fonctionner normalement/);
+  const set = await api('PUT', '/admin/notice', { token: live.adminToken, body: { enabled: true, message: 'Maintenance ce soir, tout fonctionne.' } });
+  assert.equal(set.status, 200);
+  assert.equal((await api('GET', '/dashboard/notice', { token: live.token })).data.notice.message, 'Maintenance ce soir, tout fonctionne.');
+  await api('PUT', '/admin/notice', { token: live.adminToken, body: { enabled: false } });
+  assert.equal((await api('GET', '/dashboard/notice', { token: live.token })).data.notice, null);
+  await api('PUT', '/admin/notice', { token: live.adminToken, body: { enabled: true, message: '' } }); // back to the default text for other tests
+});

@@ -96,4 +96,56 @@ const isDeposit = (e) => e.type === 'wallet_topup' && !NOT_A_DEPOSIT.test(e.refe
 /** A credit that is money coming BACK to the wallet (refund, card closed, withdrawal from a card), not a deposit. */
 const isReturn = (e) => e.type === 'wallet_topup' && NOT_A_DEPOSIT.test(e.reference || '') && Number(e.amount) > 0;
 
-module.exports = { summary, isDeposit, isReturn };
+
+/**
+ * GET /dashboard/activity : every movement of the account in one list, newest first, for the mode the merchant is in:
+ * payments received (encaissements), withdrawals and their fees (paiements), card operations and card purchases (cartes),
+ * deposits and subscriptions (wallet). Settled money comes from the ledger; payments not (yet) succeeded and card purchases are added.
+ */
+async function activity(ctx) {
+  const mode = await resolveMode(ctx);
+  const limit = Math.min(500, Math.max(20, parseInt((ctx.query && ctx.query.limit) || '300', 10) || 300));
+  const gatewayKey = ledger.walletKey('gateway', mode);
+  const walletKey = ledger.walletKey('master_wallet', mode);
+  const [walletEntries, gatewayEntries, payments, cards, cardTx] = await Promise.all([
+    supabase.select('ledger_entries', { merchant_id: ctx.merchantId, wallet: walletKey }, { order: 'created_at.desc,id.desc', limit }),
+    supabase.select('ledger_entries', { merchant_id: ctx.merchantId, wallet: gatewayKey }, { order: 'created_at.desc,id.desc', limit }),
+    supabase.select('payments', { merchant_id: ctx.merchantId, mode, status: supabase.neq('succeeded') }, { order: 'created_at.desc', limit: 100 }),
+    supabase.select('cards', { merchant_id: ctx.merchantId, mode }, { limit: 2000 }),
+    supabase.select('card_transactions', { merchant_id: ctx.merchantId, mode }, { order: 'occurred_at.desc', limit }).catch(() => []),
+  ]);
+  const last4 = new Map(cards.map((c) => [c.id, String(c.masked_pan || '').replace(/\D/g, '').slice(-4)]));
+  const cardTag = (id) => (id && last4.get(id) ? ` •••• ${last4.get(id)}` : '');
+  const isCardEntry = (e) => (e.related_id && last4.has(e.related_id)) || /^(fund:|card-|create:|card_)/.test(e.reference || '');
+  const items = [];
+  for (const e of gatewayEntries) {
+    const cat = e.type === 'payment_credit' ? 'encaissements' : 'paiements';
+    items.push({ id: `l${e.id}`, at: e.created_at, category: cat, title: labelFor(e), detail: 'Solde Gateway', amount: Number(e.amount), currency: e.currency, status: 'succeeded' });
+  }
+  for (const e of walletEntries) {
+    const card = isCardEntry(e);
+    const cat = card ? 'cartes' : 'wallet';
+    items.push({ id: `l${e.id}`, at: e.created_at, category: cat, title: `${labelFor(e)}${card ? cardTag(e.related_id) : ''}`, detail: 'Master Wallet', amount: Number(e.amount), currency: e.currency, status: 'succeeded' });
+  }
+  const METHOD = { moncash: 'MonCash', natcash: 'Natcash', card: 'carte', carte: 'carte' };
+  for (const p of payments) {
+    items.push({ id: `p${p.id}`, at: p.created_at, category: 'encaissements', title: `Paiement ${METHOD[p.method] || p.method || ''}`.trim(), detail: p.own_reference || p.id, amount: Number(p.amount), currency: p.currency, status: p.status === 'pending' ? 'pending' : 'failed' });
+  }
+  for (const t of cardTx) {
+    const declined = /DECLINE/i.test(t.type || '') || /declin|fail/i.test(t.status || '');
+    const credit = /CREDIT/i.test(t.direction || '') || /REFUND|REVERSAL/i.test(t.type || '');
+    const where = t.merchant_name || t.description || '';
+    items.push({
+      id: `c${t.id}`, at: t.occurred_at || t.created_at, category: 'cartes',
+      title: `${declined ? 'Paiement refusé' : credit ? 'Remboursement' : 'Achat'}${where ? ` · ${where}` : ''}${cardTag(t.card_id)}`,
+      detail: 'Sur la carte', amount: declined ? 0 : (credit ? 1 : -1) * Math.abs(Number(t.amount_usd || 0)), currency: 'USD', status: declined ? 'failed' : 'succeeded',
+    });
+  }
+  items.sort((a, b) => new Date(b.at) - new Date(a.at));
+  const list = items.slice(0, limit);
+  const counts = { all: list.length, encaissements: 0, paiements: 0, cartes: 0, wallet: 0 };
+  for (const i of list) counts[i.category] += 1;
+  return { status: 200, body: { mode, counts, items: list } };
+}
+
+module.exports = { summary, activity, isDeposit, isReturn };
