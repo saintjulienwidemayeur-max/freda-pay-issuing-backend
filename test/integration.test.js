@@ -9242,3 +9242,145 @@ test('Freda Mail reply: a 404 on the stored mailbox tries the others; if none kn
   }
   assert.equal(typeof fm.replyAnywhere, 'function');
 });
+
+// ===== Monerails (second card issuer), SANDBOX ONLY, driven from the admin panel =====
+function monerailsMock(port) {
+  const http = require('http');
+  const st = { holders: [], cards: [], tx: [], endpoints: [], calls: [] };
+  const id = (p) => `${p}_${Math.random().toString(16).slice(2, 10)}`;
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+      const fail = (code, c, m) => send(code, { error: { type: 'invalid_request_error', code: c, message: m, request_id: 'req_x' } });
+      st.calls.push({ method: req.method, url: req.url, auth: req.headers.authorization, idem: req.headers['idempotency-key'] });
+      if (req.headers.authorization !== 'Bearer mr_test_sandboxkey123') return fail(401, 'api_key_invalid', 'bad key');
+      const body = raw ? JSON.parse(raw) : {};
+      const u = req.url.split('?')[0];
+      let m;
+      if (req.method === 'GET' && u === '/v1/balance') return send(200, { object: 'balance', livemode: false, available: [], cards: { currency: 'USD', amount: 50000 } });
+      if (req.method === 'POST' && u === '/v1/cardholders') { const h = { id: id('ch'), object: 'cardholder', livemode: false, ...body, documents: undefined, verification: { status: 'pending', reason: null } }; st.holders.push(h); return send(201, h); }
+      if (req.method === 'GET' && u === '/v1/cardholders') return send(200, { object: 'list', data: st.holders, has_more: false });
+      if ((m = u.match(/^\/v1\/test\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); h.verification.status = body.result === 'approved' ? 'verified' : 'rejected'; return send(200, h); }
+      if (req.method === 'POST' && u === '/v1/cards') {
+        const h = st.holders.find((x) => x.id === body.cardholder);
+        if (!h || h.verification.status !== 'verified') return fail(400, 'cardholder_not_verified', 'Identité non vérifiée');
+        const c = { id: id('card'), object: 'card', livemode: false, type: body.type, status: 'active', cardholder: h.id, network: body.network, last4: '5904', balance: body.amount - 100, currency: 'USD', spending_limit: body.spending_limit || null };
+        st.cards.push(c); return send(201, c);
+      }
+      if (req.method === 'GET' && u === '/v1/cards') return send(200, { object: 'list', data: st.cards, has_more: false });
+      if ((m = u.match(/^\/v1\/cards\/([^/]+)\/details$/))) return send(200, { object: 'card_details', card: m[1], number: '4111111111111111', cvc: '123', exp_month: 10, exp_year: 2029, cardholder_name: 'Test Holder' });
+      if ((m = u.match(/^\/v1\/cards\/([^/]+)\/(fund|withdraw|freeze|unfreeze|terminate)$/))) {
+        const c = st.cards.find((x) => x.id === m[1]);
+        if (m[2] === 'fund') c.balance += body.amount;
+        if (m[2] === 'withdraw') { if (c.balance - body.amount < 100) return fail(400, 'card_minimum_balance', 'Au moins 1 $'); c.balance -= body.amount; }
+        if (m[2] === 'freeze') c.status = 'frozen';
+        if (m[2] === 'unfreeze') c.status = 'active';
+        if (m[2] === 'terminate') { c.status = 'terminated'; c.balance = 0; }
+        return send(200, c);
+      }
+      if ((m = u.match(/^\/v1\/test\/cards\/([^/]+)\/authorizations$/))) { const t = { id: id('tx'), object: 'transaction', type: 'card_payment', amount: -body.amount, card: m[1], status: body.status === 'approved' ? 'succeeded' : 'failed', description: body.merchant }; st.tx.push(t); return send(200, { object: 'authorization', ...body }); }
+      if (req.method === 'GET' && u === '/v1/transactions') return send(200, { object: 'list', data: st.tx, has_more: false });
+      if (req.method === 'POST' && u === '/v1/webhook_endpoints') { const e = { id: id('we'), object: 'webhook_endpoint', url: body.url, events: body.events, status: 'enabled', secret: 'whsec_monerails_test_secret' }; st.endpoints.push(e); return send(201, e); }
+      if (req.method === 'GET' && u === '/v1/webhook_endpoints') return send(200, { object: 'list', data: st.endpoints.map((e) => ({ ...e, secret: undefined })) });
+      return fail(404, 'route_unknown', u);
+    });
+  });
+  return new Promise((r) => server.listen(port, () => r({ server, st })));
+}
+
+test('Monerails sandbox (admin only): holder, verification, card, fund/withdraw/freeze/terminate, details, test purchase, webhook - merchants untouched', async () => {
+  const config = require('../src/config');
+  const secrets = require('../src/services/agent/secrets');
+  const { server, st } = await monerailsMock(4555);
+  const saved = Object.assign({}, config.monerails);
+  config.monerails.baseUrl = 'http://localhost:4555/v1';
+  config.monerails.testKey = '';
+  const owner = await adminLogin('owner');
+  const before = { cards: mockTables.cards.length, ledger: mockTables.ledger_entries.length, merchants: mockTables.merchants.length };
+  try {
+    // no key yet: a clear message
+    const nokey = await api('GET', '/admin/monerails/cards', { token: owner.token });
+    assert.equal(nokey.status, 409);
+    assert.equal(nokey.data.error.code, 'MONERAILS_NOT_CONFIGURED');
+    // a live key is refused at save
+    const live = await api('PUT', '/admin/agent/secrets', { token: owner.token, body: { monerails_test_key: 'mr_live_realmoney123' } });
+    assert.equal(live.status, 400);
+    assert.equal(live.data.error.code, 'MONERAILS_LIVE_KEY_REFUSED');
+    assert.equal((await api('PUT', '/admin/agent/secrets', { token: owner.token, body: { monerails_test_key: 'mr_test_sandboxkey123' } })).status, 200);
+    const s1 = await api('GET', '/admin/monerails/status', { token: owner.token });
+    assert.equal(s1.status, 200);
+    assert.equal(s1.data.configured, true);
+    assert.equal(s1.data.balance.cards.amount, 50000);
+    assert.ok(!JSON.stringify(s1.data).includes('sandboxkey123'));
+
+    // holder: the back of the ID is required except for a passport
+    const img = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    const holderBody = { first_name: 'Jean', last_name: 'Test', email: 'jean.mr@example.com', country: 'ht', phone: '+50937000000', birth_date: '1990-01-01', id_document: 'national_id', id_number: 'AB123456', documents: { front: img } };
+    const noBack = await api('POST', '/admin/monerails/cardholders', { token: owner.token, body: holderBody });
+    assert.equal(noBack.status, 400);
+    const h = await api('POST', '/admin/monerails/cardholders', { token: owner.token, body: { ...holderBody, documents: { front: img, back: img } } });
+    assert.equal(h.status, 201);
+    assert.equal(h.data.country, 'HT');
+    // a card for an unverified holder: Monerails' own error reaches the admin
+    const early = await api('POST', '/admin/monerails/cards', { token: owner.token, body: { cardholder: h.data.id, amount_usd: 10 } });
+    assert.equal(early.status, 400);
+    assert.match(early.data.error.message, /cardholder_not_verified/);
+    assert.equal((await api('POST', `/admin/monerails/cardholders/${h.data.id}/test-verification`, { token: owner.token, body: { result: 'approved' } })).data.verification.status, 'verified');
+
+    // card in cents, spending limit, idempotency key on every POST
+    const c = await api('POST', '/admin/monerails/cards', { token: owner.token, body: { cardholder: h.data.id, amount_usd: 10, network: 'mastercard', spending_limit_usd: 200, spending_interval: 'daily' } });
+    assert.equal(c.status, 201);
+    const created = st.calls.filter((x) => x.method === 'POST' && x.url === '/v1/cards').pop();
+    assert.ok(created.idem && created.idem.startsWith('fp-'));
+    assert.equal(st.cards[0].spending_limit.amount, 20000);
+    assert.equal(c.data.balance, 900);
+    assert.equal((await api('POST', `/admin/monerails/cards/${c.data.id}/fund`, { token: owner.token, body: { amount_usd: 5 } })).data.balance, 1400);
+    const tooMuch = await api('POST', `/admin/monerails/cards/${c.data.id}/withdraw`, { token: owner.token, body: { amount_usd: 14 } });
+    assert.equal(tooMuch.status, 400);
+    assert.match(tooMuch.data.error.message, /card_minimum_balance/);
+    assert.equal((await api('POST', `/admin/monerails/cards/${c.data.id}/withdraw`, { token: owner.token, body: { amount_usd: 2.5 } })).data.balance, 1150);
+    assert.equal((await api('POST', `/admin/monerails/cards/${c.data.id}/freeze`, { token: owner.token })).data.status, 'frozen');
+    assert.equal((await api('POST', `/admin/monerails/cards/${c.data.id}/unfreeze`, { token: owner.token })).data.status, 'active');
+    const det = await api('GET', `/admin/monerails/cards/${c.data.id}/details`, { token: owner.token });
+    assert.equal(det.data.number, '4111111111111111');
+    assert.equal((await api('POST', `/admin/monerails/cards/${c.data.id}/test-authorization`, { token: owner.token, body: { amount_usd: 3, merchant: 'Notion' } })).status, 200);
+    const txs = await api('GET', `/admin/monerails/transactions?card=${c.data.id}`, { token: owner.token });
+    assert.equal(txs.data.data.length, 1);
+    assert.equal((await api('POST', `/admin/monerails/cards/${c.data.id}/terminate`, { token: owner.token })).data.status, 'terminated');
+    assert.equal((await api('POST', '/admin/monerails/cards', { token: owner.token, body: { cardholder: h.data.id, amount_usd: -1 } })).status, 400);
+
+    // webhook: registered at Monerails, secret kept (encrypted), signed events stored once, bad signatures and live events refused
+    const wh = await api('POST', '/admin/monerails/webhook', { token: owner.token });
+    assert.equal(wh.status, 201);
+    assert.equal(wh.data.secret_saved, true);
+    assert.match(st.endpoints[0].url, /\/webhooks\/monerails$/);
+    assert.equal(config.monerails.webhookSecret, 'whsec_monerails_test_secret');
+    const crypto = require('crypto');
+    const ev = { id: 'evt_1', object: 'event', type: 'card.issued', livemode: false, created_at: new Date().toISOString(), data: { object: { ...st.cards[0], object: 'card' } } };
+    const raw = JSON.stringify(ev);
+    const t = Math.floor(Date.now() / 1000);
+    const sig = `t=${t},v1=${crypto.createHmac('sha256', 'whsec_monerails_test_secret').update(`${t}.${raw}`).digest('hex')}`;
+    const post = (body, signature) => fetch(`http://localhost:${APP_PORT}/webhooks/monerails`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Monerail-Signature': signature }, body });
+    assert.equal((await post(raw, sig)).status, 200);
+    assert.equal((await post(raw, sig)).status, 200); // delivered twice, stored once
+    assert.equal(mockTables.monerails_events.filter((e) => e.id === 'evt_1').length, 1);
+    assert.equal((await post(raw, `t=${t},v1=deadbeef`)).status, 401);
+    const old = t - 600;
+    assert.equal((await post(raw, `t=${old},v1=${crypto.createHmac('sha256', 'whsec_monerails_test_secret').update(`${old}.${raw}`).digest('hex')}`)).status, 401);
+    const evs = await api('GET', '/admin/monerails/events', { token: owner.token });
+    assert.equal(evs.data.events[0].type, 'card.issued');
+    assert.match(evs.data.events[0].summary, /5904/);
+
+    // nothing of the merchants was touched
+    assert.deepEqual({ cards: mockTables.cards.length, ledger: mockTables.ledger_entries.length, merchants: mockTables.merchants.length }, before);
+    // a merchant token cannot reach these routes
+    const m = await registerAndVerify({ business_name: 'MR Outsider', email: 'mr-outsider@example.com', password: 'password123' });
+    assert.equal((await api('GET', '/admin/monerails/cards', { token: m.token })).status, 401);
+  } finally {
+    await secrets.save({ monerails_test_key: '', monerails_webhook_secret: '' }).catch(() => {});
+    Object.assign(config.monerails, saved);
+    await new Promise((r) => server.close(r));
+  }
+});

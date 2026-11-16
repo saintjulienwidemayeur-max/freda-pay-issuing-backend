@@ -174,6 +174,14 @@ const config = {
     };
   })(),
 
+  // Monerails (second card issuer), SANDBOX ONLY for now: the admin tests it from the admin panel, merchants never reach it.
+  // A key that is not a test key (mr_test_...) is refused. The key can also be typed in the admin panel (Agent IA > Clés API).
+  monerails: {
+    baseUrl: (process.env.MONERAILS_BASE_URL || 'https://api.monerails.com/v1').replace(/\/+$/, ''),
+    testKey: (process.env.MONERAILS_TEST_KEY || '').trim(),
+    webhookSecret: (process.env.MONERAILS_WEBHOOK_SECRET || '').trim(),
+  },
+
   // Authenticator-app 2FA: mandatory for merchant dashboards (the tools can move money). TWO_FACTOR_ENFORCE=false is an emergency switch only.
   twoFactor: {
     enforce: String(process.env.TWO_FACTOR_ENFORCE || 'true').toLowerCase() !== 'false',

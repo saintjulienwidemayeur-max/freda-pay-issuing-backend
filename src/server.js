@@ -13,6 +13,7 @@ const adminPartnerReportHandlers = require('./handlers/adminPartnerReports');
 const adminWalletAuditHandlers = require('./handlers/adminWalletAudit');
 const adminCardTraceHandlers = require('./handlers/adminCardTrace');
 const adminAiHandlers = require('./handlers/adminAi');
+const adminMonerails = require('./handlers/adminMonerails');
 const fredaMailHandlers = require('./handlers/fredaMail');
 const adminProfitHandlers = require('./handlers/adminProfit');
 const adminTwoFactorHandlers = require('./handlers/adminTwoFactor');
@@ -118,6 +119,21 @@ router.post('/admin/agent/kyc/:id/review', adminSession.requireAdminSession, (ct
 router.post('/admin/agent/learn', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.learnNow(ctx); });
 router.get('/admin/agent/freda-mail', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.fredaMailStatus(ctx); });
 router.post('/admin/agent/knowledge/:id/toggle', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeToggle(ctx); });
+router.get('/admin/monerails/status', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.status(ctx); });
+router.get('/admin/monerails/cardholders', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.listCardholders(ctx); });
+router.post('/admin/monerails/cardholders', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.createCardholder(ctx); });
+router.get('/admin/monerails/cardholders/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.getCardholder(ctx); });
+router.post('/admin/monerails/cardholders/:id/verification', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.submitVerification(ctx); });
+router.post('/admin/monerails/cardholders/:id/test-verification', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.testVerification(ctx); });
+router.get('/admin/monerails/cards', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.listCards(ctx); });
+router.post('/admin/monerails/cards', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.createCard(ctx); });
+router.get('/admin/monerails/cards/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.getCard(ctx); });
+router.get('/admin/monerails/cards/:id/details', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.cardDetails(ctx); });
+router.post('/admin/monerails/cards/:id/test-authorization', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.testAuthorization(ctx); });
+router.post('/admin/monerails/cards/:id/:action', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.cardAction(ctx); });
+router.get('/admin/monerails/transactions', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.transactions(ctx); });
+router.get('/admin/monerails/events', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.events(ctx); });
+router.post('/admin/monerails/webhook', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.registerWebhook(ctx); });
 router.get('/admin/agent/secrets', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.secretsGet(ctx); });
 router.put('/admin/agent/secrets', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.secretsSave(ctx); });
 router.get('/admin/agent/status', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.status(ctx); });
@@ -263,6 +279,7 @@ router.post('/dashboard/cards/:id/terminate', session.requireSession, cardHandle
 
 // ---- Webhooks (PUBLIC - called by providers, authenticated via signature, not session/API key) ----
 router.post('/webhooks/maplerad', webhookHandlers.receiveMaplerad);
+router.post('/webhooks/monerails', rateLimit.middleware('monerails-webhook', 600, 60 * 1000), adminMonerails.receive);
 router.post('/webhooks/tranzak', webhookHandlers.receiveTranzak);
 router.post('/webhooks/plopplop', webhookHandlers.receivePlopplop);
 router.get('/pay/return', paymentHandlers.paymentReturn);

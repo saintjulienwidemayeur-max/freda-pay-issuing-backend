@@ -61,6 +61,7 @@ const tables = {
   agent_knowledge: [],
   agent_alerts: [],
   agent_kyc_reviews: [],
+  monerails_events: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();
