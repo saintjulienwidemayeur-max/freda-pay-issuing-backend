@@ -3849,6 +3849,11 @@ test('failed card creations (and the stale rows older versions left behind) are 
   assert.equal(r.data.revenue.partner_cost_by_kind_usd.card_creation, 1.5);
   const platform = (await api('GET', '/admin/overview', { token: live.adminToken })).data.platform;
   assert.ok(!platform.by_day.some((d) => d.revenue_usd === 25)); // 5 + 4 phantom x 5 would be 25
+  // the overview also splits the profit by activity (Gateway / Issuing / other) and gives the rate for the HTG figures
+  assert.deepEqual(platform.groups.window.map((g) => g.group), ['gateway', 'issuing', 'other']);
+  assert.ok(Number(platform.rate_htg_per_usd) > 0);
+  const sumGroups = platform.groups.window.reduce((t, g) => t + g.profit_usd, 0);
+  assert.ok(Math.abs(sumGroups - platform.window.profit_usd) < 0.05, `${sumGroups} vs ${platform.window.profit_usd}`);
 });
 
 test('card spending comes from the partner\'s notifications: purchases count once, refunds subtract, declines are not spending', async () => {
@@ -8120,6 +8125,7 @@ test('admin profit by operation: creation / recharge / withdrawal / deposit are 
   // Gateway and Issuing profits are separated
   const grp = Object.fromEntries(r.data.by_group.map((g) => [g.group, g]));
   assert.equal(grp.issuing.profit_usd, 9.5);
+  assert.ok(Number(r.data.rate_htg_per_usd) > 0);
   assert.equal(grp.gateway.profit_usd, 0);
   assert.equal(r.data.rows[0].group, 'issuing');
   mockTables.fee_revenue.push({ id: 'fp6', merchant_id: 'mch_p', kind: 'gateway_payment', amount: 4, currency: 'USD', partner_cost_usd: 1.5, mode: 'live', created_at: at, related_id: 'pay_x' });

@@ -191,6 +191,10 @@ async function platformStats(mode, days = 14) {
   const by_day = dayKeys.map(row);
   const windowSum = (f) => round2(by_day.reduce((t, d) => t + d[f], 0));
   const all = summarizeRevenue(norm);
+  const groupsFor = (keys) => groupTotals(norm.filter((r) => keys.has(dayOf(r.at))));
+  const today_groups = groupsFor(new Set([dayKeys[0]]));
+  const window_groups = groupsFor(new Set(dayKeys));
+  const all_time_groups = groupTotals(norm);
 
   // Where the Gateway money sits: one line per business that has any activity or balance.
   const names = new Map(merchants.map((m) => [m.id, m]));
@@ -218,6 +222,8 @@ async function platformStats(mode, days = 14) {
     },
     all_time: { revenue_usd: all.total_revenue_usd, partner_cost_usd: all.total_partner_cost_usd, profit_usd: all.total_profit_usd, card_spend_usd: spend.total_usd },
     partner_cost_by_kind_usd: all.partner_cost_by_kind_usd,
+    rate_htg_per_usd: config.exchangeRateHtgPerUsd,
+    groups: { today: today_groups, window: window_groups, all_time: all_time_groups },
     by_day,
     cards: {
       issued: cards.filter((c) => COUNTED_CARD.has(c.status)).length,
@@ -280,7 +286,7 @@ async function profitBreakdown(mode, fromDate, toDate, { kind, limit = 200 } = {
   const byGroup = groupTotals(inPeriod);
   const rows = inPeriod.filter((r) => !kind || r.kind === kind).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, limit)
     .map((r) => ({ id: r.id, at: r.at, kind: r.kind, group: groupOf(r.kind), merchant_id: r.merchant_id, merchant_name: names.get(r.merchant_id) || r.merchant_id, related_id: r.related_id, amount: r.amount, currency: r.currency, revenue_usd: round2(r.revenue_usd), partner_cost_usd: round2(r.partner_cost_usd), profit_usd: round2(r.revenue_usd - r.partner_cost_usd) }));
-  return { by_group: byGroup, by_kind: byKind, total: { count: total.count, revenue_usd: round2(total.revenue_usd), partner_cost_usd: round2(total.partner_cost_usd), profit_usd: round2(total.profit_usd) }, rows };
+  return { rate_htg_per_usd: config.exchangeRateHtgPerUsd, by_group: byGroup, by_kind: byKind, total: { count: total.count, revenue_usd: round2(total.revenue_usd), partner_cost_usd: round2(total.partner_cost_usd), profit_usd: round2(total.profit_usd) }, rows };
 }
 
 module.exports = { groupOf, profitBreakdown, profitBetween, merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };
