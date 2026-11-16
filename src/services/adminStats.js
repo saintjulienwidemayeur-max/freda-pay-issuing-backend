@@ -42,6 +42,17 @@ function normalizeRevenue(rows, cardsById) {
   return out;
 }
 
+/** Which business a fee belongs to: Gateway (payments and payouts), Issuing (cards and what funds them) or other (plans...). */
+const GATEWAY_KINDS = new Set(['gateway_payment', 'payout']);
+const OTHER_KINDS = new Set(['plan_subscription']);
+const groupOf = (kind) => (GATEWAY_KINDS.has(kind) ? 'gateway' : OTHER_KINDS.has(kind) ? 'other' : 'issuing');
+const GROUPS = ['gateway', 'issuing', 'other'];
+function groupTotals(items) {
+  const g = Object.fromEntries(GROUPS.map((k) => [k, { group: k, count: 0, revenue_usd: 0, partner_cost_usd: 0, profit_usd: 0 }]));
+  for (const i of items) { const b = g[groupOf(i.kind)]; b.count += i.count == null ? 1 : i.count; b.revenue_usd += i.revenue_usd; b.partner_cost_usd += i.partner_cost_usd; }
+  return GROUPS.map((k) => { const b = g[k]; return { group: k, count: b.count, revenue_usd: round2(b.revenue_usd), partner_cost_usd: round2(b.partner_cost_usd), profit_usd: round2(b.revenue_usd - b.partner_cost_usd) }; });
+}
+
 function summarizeRevenue(norm) {
   const byKind = {}; const costByKind = {}; const days = {}; const weeks = {};
   let revenue = 0; let cost = 0;
@@ -242,7 +253,7 @@ async function profitBetween(mode, fromDate, toDate) {
   ]);
   const norm = normalizeRevenue(feeRows, byId).filter((r) => { const t = new Date(r.at).getTime(); return t >= from && t <= to; });
   const sum = summarizeRevenue(norm);
-  return { revenue_usd: sum.total_revenue_usd, partner_cost_usd: sum.total_partner_cost_usd, profit_usd: sum.total_profit_usd, by_kind_usd: sum.by_kind_usd, operations: norm.length };
+  return { revenue_usd: sum.total_revenue_usd, partner_cost_usd: sum.total_partner_cost_usd, profit_usd: sum.total_profit_usd, by_kind_usd: sum.by_kind_usd, by_group: groupTotals(norm), operations: norm.length };
 }
 
 /**
@@ -264,11 +275,12 @@ async function profitBreakdown(mode, fromDate, toDate, { kind, limit = 200 } = {
     const k = kinds[r.kind] || (kinds[r.kind] = { kind: r.kind, count: 0, revenue_usd: 0, partner_cost_usd: 0 });
     k.count += 1; k.revenue_usd += r.revenue_usd; k.partner_cost_usd += r.partner_cost_usd;
   }
-  const byKind = Object.values(kinds).map((k) => ({ ...k, revenue_usd: round2(k.revenue_usd), partner_cost_usd: round2(k.partner_cost_usd), profit_usd: round2(k.revenue_usd - k.partner_cost_usd) })).sort((a, b) => b.profit_usd - a.profit_usd);
+  const byKind = Object.values(kinds).map((k) => ({ ...k, group: groupOf(k.kind), revenue_usd: round2(k.revenue_usd), partner_cost_usd: round2(k.partner_cost_usd), profit_usd: round2(k.revenue_usd - k.partner_cost_usd) })).sort((a, b) => b.profit_usd - a.profit_usd);
   const total = byKind.reduce((t, k) => ({ count: t.count + k.count, revenue_usd: t.revenue_usd + k.revenue_usd, partner_cost_usd: t.partner_cost_usd + k.partner_cost_usd, profit_usd: t.profit_usd + k.profit_usd }), { count: 0, revenue_usd: 0, partner_cost_usd: 0, profit_usd: 0 });
+  const byGroup = groupTotals(inPeriod);
   const rows = inPeriod.filter((r) => !kind || r.kind === kind).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, limit)
-    .map((r) => ({ id: r.id, at: r.at, kind: r.kind, merchant_id: r.merchant_id, merchant_name: names.get(r.merchant_id) || r.merchant_id, related_id: r.related_id, amount: r.amount, currency: r.currency, revenue_usd: round2(r.revenue_usd), partner_cost_usd: round2(r.partner_cost_usd), profit_usd: round2(r.revenue_usd - r.partner_cost_usd) }));
-  return { by_kind: byKind, total: { count: total.count, revenue_usd: round2(total.revenue_usd), partner_cost_usd: round2(total.partner_cost_usd), profit_usd: round2(total.profit_usd) }, rows };
+    .map((r) => ({ id: r.id, at: r.at, kind: r.kind, group: groupOf(r.kind), merchant_id: r.merchant_id, merchant_name: names.get(r.merchant_id) || r.merchant_id, related_id: r.related_id, amount: r.amount, currency: r.currency, revenue_usd: round2(r.revenue_usd), partner_cost_usd: round2(r.partner_cost_usd), profit_usd: round2(r.revenue_usd - r.partner_cost_usd) }));
+  return { by_group: byGroup, by_kind: byKind, total: { count: total.count, revenue_usd: round2(total.revenue_usd), partner_cost_usd: round2(total.partner_cost_usd), profit_usd: round2(total.profit_usd) }, rows };
 }
 
-module.exports = { profitBreakdown, profitBetween, merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };
+module.exports = { groupOf, profitBreakdown, profitBetween, merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };
