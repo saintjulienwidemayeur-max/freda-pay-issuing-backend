@@ -56,7 +56,20 @@ async function createCardholder(ctx) {
   Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);
   const r = await mr.createCardholder(body);
   audit(ctx, 'cardholder.create', r.data && r.data.id);
-  return { status: 201, body: Object.assign({ sandbox: true }, r.data) };
+  // Monerails needs a separate "submit verification" step before the holder can be verified (and before the test approval works):
+  // done right away with what the form already holds, so the admin does not have to think about it.
+  const extra = {};
+  if (body.id_number && body.address && body.address.line1 && body.address.city && body.address.state) {
+    try {
+      const v = await mr.submitVerification(r.data.id, { id_number: body.id_number, address: body.address, birth_date: body.birth_date, documents: body.documents });
+      Object.assign(r.data, v.data && v.data.id ? v.data : {});
+      extra.verification_submitted = true;
+    } catch (e) { extra.verification_submitted = false; extra.verification_error = e.message; }
+  } else {
+    extra.verification_submitted = false;
+    extra.verification_error = "Vérification pas encore envoyée : il manque le numéro de la pièce ou l'adresse (rue, ville, département). Complétez le formulaire puis cliquez « Soumettre ».";
+  }
+  return { status: 201, body: Object.assign({ sandbox: true }, r.data, extra) };
 }
 
 async function submitVerification(ctx) {
@@ -73,7 +86,11 @@ async function submitVerification(ctx) {
 async function testVerification(ctx) {
   const b = ctx.body || {};
   const result = b.result === 'rejected' ? 'rejected' : 'approved';
-  const r = await mr.testVerification(ctx.params.id, result, str(b.reason, 200));
+  let r;
+  try { r = await mr.testVerification(ctx.params.id, result, str(b.reason, 200)); } catch (e) {
+    if (e.code === 'MONERAILS_VERIFICATION_NOT_SUBMITTED') throw httpError(400, e.code, "La vérification de ce titulaire n'a pas encore été envoyée : remplissez le numéro de la pièce, l'adresse et les photos dans le formulaire, cliquez « Soumettre », puis « Approuver (test) ».");
+    throw e;
+  }
   audit(ctx, `cardholder.test_${result}`, ctx.params.id);
   return out(r);
 }
