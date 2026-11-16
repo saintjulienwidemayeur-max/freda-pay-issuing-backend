@@ -28,7 +28,7 @@
 1. Attendre les réponses de Monerails (Apple Pay/Google Pay, 3DS, KYB, frais, délai de résiliation).
 2. Brancher Monerails à l'API marchands SANS toucher les cartes existantes : colonne `provider` sur `cards` (défaut l'émetteur actuel), couche « fournisseur » commune, interrupteur admin pour les nouvelles cartes, pilote avec 1-2 marchands.
 3. Ajouter à l'API : `identity.imageBackUrl`, `spending_limit` (le marchand fixe le plafond), `single_use`, nouveaux codes d'erreur, résiliation différée.
-4. Publier la documentation v2 : brouillon dans `docs-drafts/cartes-v2-monerails.md` (backend), à reporter dans `openapi.yaml` et `docs/*.html` une fois codé.
+4. **URGENT : la documentation v2 est DÉJÀ PUBLIÉE** (à la demande du propriétaire, PR backend #136 et frontend #63) : `spending_limit`, `single_use`, verso obligatoire, règles des titulaires, codes `INVALID_SPENDING_LIMIT`, `AMOUNT_TOO_SMALL`, `HOLDER_*`, `CARD_MINIMUM_BALANCE`, `CARD_TERMINATE_SAME_DAY`, `CARD_OPERATION_IN_PROGRESS`, `CARD_SINGLE_USE`, `CARD_REVEAL_LIMIT`, et la section Apple Pay / Google Pay. L'API ne les applique PAS encore : les coder en priorité (voir `docs-drafts/cartes-v2-monerails.md`).
 
 ## Rappels pour le propriétaire
 - Migrations à exécuter si pas encore fait : `2026-11-12-ai-agent.sql`, `2026-11-15-agent-autonomy.sql`, `2026-11-16-monerails-sandbox.sql`.
