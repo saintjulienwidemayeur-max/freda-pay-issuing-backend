@@ -74,7 +74,7 @@ class Router {
 
 // Routes that carry base64 files (KYC/KYB documents, deposit receipts, blog
 // covers) need a larger body than the 1 MB default used for everything else.
-const UPLOAD_PATHS = [/^\/dashboard\/chat$/, /^\/admin\/chat\//, /^\/dashboard\/verification\//, /^\/dashboard\/wallet\/topup/, /^\/dashboard\/.*(receipt|deposit)/, /^\/admin\/blog\/upload-cover$/];
+const UPLOAD_PATHS = [/^\/dashboard\/chat$/, /^\/admin\/chat\//, /^\/dashboard\/verification\//, /^\/dashboard\/wallet\/topup/, /^\/dashboard\/.*(receipt|deposit)/, /^\/admin\/blog\/upload-cover$/, /^\/admin\/monerails\/cardholders/];
 // A holder carries the ID document (front and, for some countries, back) as Base64: a little more than the default.
 const HOLDER_PATH = /\/cards\/holders$/;
 function bodyLimitFor(pathname) {
