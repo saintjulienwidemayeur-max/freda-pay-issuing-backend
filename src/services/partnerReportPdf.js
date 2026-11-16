@@ -23,13 +23,19 @@ function usd(n) {
   const [i, d] = Math.abs(v).toFixed(2).split('.');
   return `${v < 0 ? '-' : ''}${i.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')},${d} $`;
 }
+/** 160 485 HTG : the amount converted at the rate given, plain spaces only. */
+function htg(n, rate) {
+  const v = Math.round(Number(n) * Number(rate || 0));
+  return `${v < 0 ? '-' : ''}${String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')} HTG`;
+}
+const GROUP_LABEL = { gateway: 'Gateway (paiements et retraits)', issuing: 'Issuing (cartes)', other: 'Autres (abonnements)' };
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 function dateFr(iso) {
   const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}` : String(iso);
 }
 
-async function build(report, company) {
+async function build(report, company, breakdown) {
   const doc = await PDFDocument.create();
   const f = { r: await doc.embedFont(StandardFonts.Helvetica), b: await doc.embedFont(StandardFonts.HelveticaBold), i: await doc.embedFont(StandardFonts.HelveticaOblique) };
   const charset = new Set(f.r.getCharacterSet());
@@ -104,9 +110,25 @@ async function build(report, company) {
   const section = (t) => { ensure(40); y -= 6; text(t.toUpperCase(), M, 9, f.b, PINK); y -= 18; };
 
   section('Résultat de la période');
-  row('Frais encaissés', usd(report.revenue_usd));
-  row('Frais facturés par les partenaires', `- ${usd(report.partner_cost_usd)}`);
-  row('Bénéfice de la période', usd(report.profit_usd), { bold: true, shade: true });
+  const rate = breakdown && breakdown.rate_htg_per_usd;
+  const both = (n, sign) => `${sign || ''}${usd(n)}${rate ? ` (${htg(n, rate)})` : ''}`;
+  // Gateway is a Gourdes business: its figures read in HTG first; Issuing (cards) in dollars first.
+  const gwBoth = (n, sign) => (rate ? `${sign || ''}${htg(n, rate)} (${usd(n)})` : both(n, sign));
+  row('Frais encaissés', both(report.revenue_usd));
+  row('Frais facturés par les partenaires', both(report.partner_cost_usd, '- '));
+  row('Bénéfice de la période', both(report.profit_usd), { bold: true, shade: true });
+
+  if (breakdown && Array.isArray(breakdown.by_group)) {
+    section('Bénéfice par activité');
+    for (const g of breakdown.by_group.filter((x) => x.group !== 'other' || x.count > 0)) {
+      const fmt = g.group === 'gateway' ? gwBoth : both;
+      row(`${GROUP_LABEL[g.group] || g.group}`, fmt(g.profit_usd), { bold: true });
+      text(`Frais encaissés ${fmt(g.revenue_usd)}  -  frais partenaires ${fmt(g.partner_cost_usd)}  (${g.count} opération${g.count > 1 ? 's' : ''})`, M + 8, 8.5, f.r, MUTED); y -= 18;
+    }
+    const sum = breakdown.by_group.reduce((t, g) => t + g.profit_usd, 0);
+    if (Math.abs(sum - Number(report.profit_usd)) > 0.01) { text(`Le bénéfice retenu (${usd(report.profit_usd)}) a été ajusté à la main : le détail ci-dessus montre les opérations réelles.`, M + 8, 8.5, f.i, MUTED); y -= 16; }
+    if (rate) { text(`Montants en gourdes convertis au taux de ${rate} HTG pour 1 $.`, M + 8, 8.5, f.i, MUTED); y -= 16; }
+  }
 
   section('Dépenses');
   const exp = report.expenses || [];

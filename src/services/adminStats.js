@@ -259,7 +259,7 @@ async function profitBetween(mode, fromDate, toDate) {
   ]);
   const norm = normalizeRevenue(feeRows, byId).filter((r) => { const t = new Date(r.at).getTime(); return t >= from && t <= to; });
   const sum = summarizeRevenue(norm);
-  return { revenue_usd: sum.total_revenue_usd, partner_cost_usd: sum.total_partner_cost_usd, profit_usd: sum.total_profit_usd, by_kind_usd: sum.by_kind_usd, by_group: groupTotals(norm), operations: norm.length };
+  return { revenue_usd: sum.total_revenue_usd, partner_cost_usd: sum.total_partner_cost_usd, profit_usd: sum.total_profit_usd, by_kind_usd: sum.by_kind_usd, by_group: groupTotals(norm), rate_htg_per_usd: config.exchangeRateHtgPerUsd, operations: norm.length };
 }
 
 /**
