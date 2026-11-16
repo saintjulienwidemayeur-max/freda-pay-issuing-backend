@@ -9262,7 +9262,8 @@ function monerailsMock(port) {
       if (req.method === 'GET' && u === '/v1/balance') return send(200, { object: 'balance', livemode: false, available: [], cards: { currency: 'USD', amount: 50000 } });
       if (req.method === 'POST' && u === '/v1/cardholders') { const h = { id: id('ch'), object: 'cardholder', livemode: false, ...body, documents: undefined, verification: { status: 'pending', reason: null } }; st.holders.push(h); return send(201, h); }
       if (req.method === 'GET' && u === '/v1/cardholders') return send(200, { object: 'list', data: st.holders, has_more: false });
-      if ((m = u.match(/^\/v1\/test\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); h.verification.status = body.result === 'approved' ? 'verified' : 'rejected'; return send(200, h); }
+      if ((m = u.match(/^\/v1\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (!body.id_number || !body.address) return fail(400, 'parameter_missing', 'id_number/address'); h.verification.status = 'in_review'; return send(202, h); }
+      if ((m = u.match(/^\/v1\/test\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (h.verification.status === 'pending') return fail(400, 'verification_not_submitted', 'Vérification non envoyée'); h.verification.status = body.result === 'approved' ? 'verified' : 'rejected'; return send(200, h); }
       if (req.method === 'POST' && u === '/v1/cards') {
         const h = st.holders.find((x) => x.id === body.cardholder);
         if (!h || h.verification.status !== 'verified') return fail(400, 'cardholder_not_verified', 'Identité non vérifiée');
@@ -9322,8 +9323,18 @@ test('Monerails sandbox (admin only): holder, verification, card, fund/withdraw/
     const holderBody = { first_name: 'Jean', last_name: 'Test', email: 'jean.mr@example.com', country: 'ht', phone: '+50937000000', birth_date: '1990-01-01', id_document: 'national_id', id_number: 'AB123456', documents: { front: img } };
     const noBack = await api('POST', '/admin/monerails/cardholders', { token: owner.token, body: holderBody });
     assert.equal(noBack.status, 400);
-    const h = await api('POST', '/admin/monerails/cardholders', { token: owner.token, body: { ...holderBody, documents: { front: img, back: img } } });
+    // without an address the verification cannot be sent yet: the test approval explains what to do
+    const bare = await api('POST', '/admin/monerails/cardholders', { token: owner.token, body: { ...holderBody, email: 'bare.mr@example.com', documents: { front: img, back: img } } });
+    assert.equal(bare.status, 201);
+    assert.equal(bare.data.verification_submitted, false);
+    const notSent = await api('POST', `/admin/monerails/cardholders/${bare.data.id}/test-verification`, { token: owner.token, body: { result: 'approved' } });
+    assert.equal(notSent.status, 400);
+    assert.match(notSent.data.error.message, /Soumettre/);
+    // with the address, the verification is sent right after the creation
+    const h = await api('POST', '/admin/monerails/cardholders', { token: owner.token, body: { ...holderBody, address: { line1: '12 Rue Test', city: 'Port-au-Prince', state: 'Ouest' }, documents: { front: img, back: img } } });
     assert.equal(h.status, 201);
+    assert.equal(h.data.verification_submitted, true);
+    assert.equal(h.data.verification.status, 'in_review');
     assert.equal(h.data.country, 'HT');
     // a card for an unverified holder: Monerails' own error reaches the admin
     const early = await api('POST', '/admin/monerails/cards', { token: owner.token, body: { cardholder: h.data.id, amount_usd: 10 } });
