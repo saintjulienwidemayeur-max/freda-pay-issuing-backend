@@ -146,9 +146,15 @@ async function sendReplyEmail(row, text) {
   if (row.source === 'freda_mail' && row.fm_id && require('../services/fredaMail').keyFor(row.fm_mailbox)) {
     // Same thread, from the mailbox that received it (plain text: Freda Mail builds the headers and the "Re:" subject).
     const fm = require('../services/fredaMail');
-    await fm.reply(row.fm_mailbox, row.fm_id, text);
-    await fm.markRead(row.fm_mailbox, row.fm_id).catch(() => {});
-    return;
+    try {
+      const used = await fm.replyAnywhere(row.fm_mailbox, row.fm_id, text);
+      if (used !== row.fm_mailbox) await supabase.update('admin_inbox', { id: row.id }, { fm_mailbox: used }).catch(() => {});
+      await fm.markRead(used, row.fm_id).catch(() => {});
+      return;
+    } catch (e) {
+      // Freda Mail does not know that message any more (deleted, moved): the answer still goes out by the transactional email, never lost.
+      if (e.code !== 'FREDA_MAIL_404') throw e;
+    }
   }
   await brevo.sendEmail({
     to: row.from_email,
