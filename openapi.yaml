@@ -291,6 +291,7 @@ paths:
           application/json:
             schema:
               type: object
+              description: "Titulaire de 18 ans ou plus (HOLDER_UNDERAGE), nom et date de naissance identiques à la pièce. Pays refusés : CU, IR, KP, SY, RU, BY (HOLDER_COUNTRY_UNSUPPORTED). Email unique par compte (HOLDER_EMAIL_EXISTS). 5 vérifications maximum par 24 h (HOLDER_VERIFICATION_LIMIT)."
               required: [firstName, lastName, email, country, dob, identificationNumber, identity, phoneShortCode, phoneNumber, address]
               properties:
                 firstName: { type: string }
@@ -306,7 +307,8 @@ paths:
                   properties:
                     type: { type: string, enum: [NIN, PASSPORT, VOTERS_CARD, DRIVERS_LICENSE] }
                     number: { type: string, example: "P1234567" }
-                    imageUrl: { type: string, description: "Image de la pièce en Base64 (data:image/jpeg;base64,...), ou lien https direct vers l'image (téléchargé et converti par Freda Pay)" }
+                    imageUrl: { type: string, description: "Recto de la pièce en Base64 (data:image/jpeg;base64,...), ou lien https direct vers l'image (téléchargé et converti par Freda Pay)" }
+                    imageBackUrl: { type: string, description: "Verso de la pièce, même format. Obligatoire sauf pour un passeport (HOLDER_DOCUMENT_BACK_REQUIRED)." }
                     country: { type: string, example: HT, description: "Pays émetteur de la pièce (2 lettres). Par défaut : country du titulaire." }
                 restart_verification: { type: boolean, default: false, description: "À envoyer avec les nouvelles photos quand la vérification d'identité du titulaire a été refusée (par exemple « document refusé avant » : photo coupée ou illisible). Une nouvelle vérification repart de zéro chez le fournisseur ; le titulaire garde le même id (mpc_...). Réponse 200 avec restarted: true. Utile aussi quand GET /cards/holders/{id} montre verification.ready_for_cards à false." }
                 phoneShortCode: { type: string, example: "+509" }
@@ -425,13 +427,21 @@ paths:
                 amount: { type: number, description: "En dollars, débité du Master Wallet" }
                 business_name: { type: string, description: "Requis si kind=business" }
                 holder_id: { type: string, description: "Carte individuelle : id du titulaire (voir /cards/holders). Recommandé : toujours l'envoyer. Sans lui : titulaire enrolled le plus récent du compte, dans le mode de la clé." }
+                spending_limit:
+                  type: object
+                  description: "Plafond de dépense fixé par le marchand. Sans plafond, la carte peut dépenser tout son solde. Interdit avec single_use."
+                  required: [amount, interval]
+                  properties:
+                    amount: { type: number, example: 20, description: "Montant maximum en dollars" }
+                    interval: { type: string, enum: [daily, per_transaction] }
+                single_use: { type: boolean, default: false, description: "Carte pour un seul achat : ni recharge ni retrait ; fermée seule après 30 jours si inutilisée (solde rendu au Master Wallet)." }
       responses:
         "202":
           description: Création initiée (asynchrone - voir status)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Card" }
-        "400": { description: "MISSING_FIELDS, INVALID_BRAND, HOLDER_PROFILE_REQUIRED (aucun titulaire dans ce mode), BELOW_MINIMUM_BALANCE, CARD_LIMIT_REACHED" }
+        "400": { description: "MISSING_FIELDS, INVALID_BRAND, HOLDER_PROFILE_REQUIRED (aucun titulaire dans ce mode), BELOW_MINIMUM_BALANCE, CARD_LIMIT_REACHED, INVALID_SPENDING_LIMIT, AMOUNT_TOO_SMALL (frais d'émission + 1 $ minimum)" }
         "404": { description: "NOT_FOUND (holder_id inconnu)" }
         "409": { description: "HOLDER_NOT_ENROLLED, HOLDER_MODE_MISMATCH, HOLDER_PROFILE_INCOMPLETE" }
     get:
@@ -524,8 +534,8 @@ paths:
             schema: { type: object, required: [amount], properties: { amount: { type: number, example: 5 }, reference: { type: string, maxLength: 64, description: "Clé d'idempotence (ou en-tête Idempotency-Key)." } } }
       responses:
         "200": { description: "Fonds retirés. La carte, plus fee, net_credited et idempotent_replay." }
-        "400": { description: "INSUFFICIENT_CARD_BALANCE ou AMOUNT_BELOW_FEE" }
-        "409": { description: "CARD_FROZEN si la carte est gelée" }
+        "400": { description: "INSUFFICIENT_CARD_BALANCE, AMOUNT_BELOW_FEE, CARD_MINIMUM_BALANCE (au moins 1 $ doit rester sur la carte), CARD_SINGLE_USE" }
+        "409": { description: "CARD_FROZEN si la carte est gelée, CARD_OPERATION_IN_PROGRESS si une autre opération est en cours" }
 
   /cards/{id}/freeze:
     post:
@@ -553,6 +563,7 @@ paths:
         - $ref: "#/components/parameters/IdPath"
       responses:
         "200": { description: "Carte fermée, solde reversé au Master Wallet" }
+        "400": { description: "CARD_TERMINATE_SAME_DAY : une carte ne peut pas être fermée le jour de sa création (gelez-la, fermez-la le lendemain)" }
 
   /cards/{id}/reveal:
     post:
