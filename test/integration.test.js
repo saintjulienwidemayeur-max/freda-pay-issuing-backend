@@ -9445,9 +9445,9 @@ test('merchant activity: one list of deposits, card operations and card purchase
   assert.equal(r.data.counts.cartes, cards.length);
   for (let i = 1; i < r.data.items.length; i += 1) assert.ok(new Date(r.data.items[i - 1].at) >= new Date(r.data.items[i].at), 'newest first');
 
-  // the maintenance notice: on by default, worded and switched off by an admin
+  // the dashboard notice (physical cards coming soon): on by default, worded and switched off by an admin
   const n1 = await api('GET', '/dashboard/notice', { token: live.token });
-  assert.match(n1.data.notice.message, /fonctionner normalement/);
+  assert.match(n1.data.notice.message, /Cartes physiques : bientôt disponibles/);
   const set = await api('PUT', '/admin/notice', { token: live.adminToken, body: { enabled: true, message: 'Maintenance ce soir, tout fonctionne.' } });
   assert.equal(set.status, 200);
   assert.equal((await api('GET', '/dashboard/notice', { token: live.token })).data.notice.message, 'Maintenance ce soir, tout fonctionne.');

@@ -3,13 +3,14 @@ const supabase = require('../lib/supabase');
 
 /**
  * The banner shown at the top of every merchant dashboard (platform_settings "dashboard_notice"), switched on/off and worded by an admin.
- * Default: a maintenance notice that says operations keep working normally.
+ * Default: "physical cards coming soon". (The old default, a maintenance notice, is replaced wherever it was still the saved text.)
  */
 const KEY = 'dashboard_notice';
+const MAINTENANCE_MESSAGE = 'Maintenance en cours : nous améliorons la plateforme. Toutes les opérations (paiements, retraits, cartes, wallet) continuent de fonctionner normalement.';
 const DEFAULT = {
   enabled: true,
   tone: 'info',
-  message: 'Maintenance en cours : nous améliorons la plateforme. Toutes les opérations (paiements, retraits, cartes, wallet) continuent de fonctionner normalement.',
+  message: 'Cartes physiques : bientôt disponibles sur Freda Pay Issuing. Restez connecté, nous vous préviendrons dès l\'ouverture.',
 };
 let cache = null; let at = 0;
 
@@ -17,6 +18,7 @@ async function get() {
   if (cache && Date.now() - at < 30 * 1000) return cache;
   let saved = {};
   try { const row = await supabase.selectOne('platform_settings', { key: KEY }); if (row) saved = JSON.parse(row.value) || {}; } catch (e) { /* default */ }
+  if (saved.message === MAINTENANCE_MESSAGE) delete saved.message; // the retired maintenance banner never comes back by itself
   cache = Object.assign({}, DEFAULT, saved); at = Date.now();
   return cache;
 }
