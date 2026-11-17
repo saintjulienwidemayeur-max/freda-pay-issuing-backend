@@ -23,6 +23,8 @@ async function loadMerchant(ctx, mode) {
 }
 
 async function fundingPctFor(merchant, mode) {
+  const memberPct = await require('../services/cardProgram').depositPctFor(merchant.id, mode);
+  if (memberPct != null) return memberPct;
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: merchant.id });
   return pricing.walletFundingPct(planKeyFor(merchant, 'issuing', mode), override);
 }

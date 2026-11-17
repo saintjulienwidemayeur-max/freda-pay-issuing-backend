@@ -62,7 +62,8 @@ async function approve(ctx) {
   // The funding fee of the merchant's plan (4.5 % on Startup, or the admin's custom rate) is taken OUT of the amount received.
   const payer = await supabase.selectOne('merchants', { id: t.merchant_id });
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: t.merchant_id });
-  const pct = pricing.effectiveIssuingPricing(planKeyFor(payer, 'issuing', mode), override).walletFundingPct || 0;
+  const memberPct = await require('../services/cardProgram').depositPctFor(t.merchant_id, mode); // members of the new card program: their plan's rate
+  const pct = memberPct != null ? memberPct : (pricing.effectiveIssuingPricing(planKeyFor(payer, 'issuing', mode), override).walletFundingPct || 0);
   const fee = Math.round(amount * pct * 100) / 100;
   const credit = Math.round((amount - fee) * 100) / 100;
 

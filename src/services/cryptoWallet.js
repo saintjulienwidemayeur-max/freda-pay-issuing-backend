@@ -480,7 +480,8 @@ async function convert(merchant, mode, { coin, amount, reference }) {
   if (done) return done;
 
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: merchant.id });
-  const fundingPct = pricing.walletFundingPct(planKeyFor(merchant, 'issuing', mode), override);
+  const memberPct = await require('./cardProgram').depositPctFor(merchant.id, mode); // members of the new card program: their plan's rate
+  const fundingPct = memberPct != null ? memberPct : pricing.walletFundingPct(planKeyFor(merchant, 'issuing', mode), override);
   const calc = cryptoFees.computeConvert(value, await cryptoFees.get(), fundingPct);
   if (calc.credited <= 0) throw httpError(400, 'AMOUNT_TOO_SMALL', 'Ce montant ne couvre pas les frais.');
   let row;

@@ -644,7 +644,8 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
     const merchantM = await getMerchant(merchantId);
     const planM = planKeyFor(merchantM, 'issuing', mode);
     await assertUnderCardLimit(merchantId, planM, mode);
-    const feeM = pricing.cardCreationFee(planM, await require('./cardProgram').pricingOverrideFor(merchantId, { provider: 'monerails' })); // new program prices
+    const creationM = await require('./cardProgram').creationFeeFor(merchantId, effMode); // the member's plan (Premium: free cards each month)
+    const feeM = creationM.fee;
     if (amountUsd != null && (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 0)) {
       const err = new Error('amount doit être un nombre positif.');
       err.code = 'INVALID_AMOUNT';
@@ -658,7 +659,9 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
       err.httpStatus = 400;
       throw err;
     }
-    return createMonerailsCard({ merchantId, id, ownReference, brand, profile, mode: effMode, totalDebit: pricing.round2(preloadM + feeM), preload: preloadM, creationFee: feeM, rules });
+    const madeM = await createMonerailsCard({ merchantId, id, ownReference, brand, profile, mode: effMode, totalDebit: pricing.round2(preloadM + feeM), preload: preloadM, creationFee: feeM, rules });
+    if (creationM.free && madeM && madeM.status !== 'failed') await require('./cardProgram').countFreeCard(merchantId, effMode);
+    return madeM;
   }
   if (!profile.maplerad_customer_id) {
     // Older holders were saved as "verified" without an id. Recover it by
@@ -1075,7 +1078,9 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
   await require('./cardRules').assertCanMoveFunds(card.id);
   const merchant = await getMerchant(merchantId);
   const issuingPlanKey = planKeyFor(merchant, 'issuing', card.mode);
-  const withdrawalFee = pricing.cardWithdrawalFee(issuingPlanKey, await require('./cardProgram').pricingOverrideFor(merchantId, card));
+  const withdrawalFee = card.provider === 'monerails'
+    ? await require('./cardProgram').withdrawalFeeFor(merchantId, card.mode, amountUsd) // program card: a % of the amount
+    : pricing.cardWithdrawalFee(issuingPlanKey, await require('./cardProgram').pricingOverrideFor(merchantId, card));
   const netCredited = pricing.round2(amountUsd - withdrawalFee);
   const ref = key ? `card-withdraw:${card.id}:${key}` : `card-withdraw:${card.own_reference}`;
 
@@ -1205,8 +1210,7 @@ async function terminateNow(merchantId, card, options) {
   await require('./cardIssuer').call(card, (o) => o.terminate()); // must succeed: the card is really closed
   // The balance follows purchases and refunds (applyCardSpendToBalance), so what is left on the card is what goes back to the Master Wallet.
   const remaining = Math.max(0, pricing.round2(Number(card.balance || 0)));
-  const progClosure = card.provider === 'monerails' ? (await require('./cardProgram').settings()).prices.card_closure_usd : null;
-  const closureFee = Math.min(remaining, Math.max(0, pricing.round2(progClosure != null ? progClosure : (config.cardClosureFeeUsd || 0))));
+  const closureFee = card.provider === 'monerails' ? 0 : Math.min(remaining, Math.max(0, pricing.round2(config.cardClosureFeeUsd || 0))); // no closure fee in the program's price list
   const refundable = pricing.round2(remaining - closureFee);
   const [claimed] = await supabase.update('cards', { id: card.id, status: card.status }, { status: 'terminated', balance: 0, updated_at: now });
   if (claimed && refundable > 0) {
@@ -1706,8 +1710,9 @@ async function chargeCardSpendFee(card, row) {
   if (/DECLIN|FAIL|REJECT/.test(String(row.status || ''))) return { charged: 0, reason: 'not-successful' };
   const mode = card.mode === 'live' ? 'live' : 'sandbox';
   const merchant = await getMerchant(card.merchant_id);
-  const progSpend = card.provider === 'monerails' ? (await require('./cardProgram').settings()).prices.card_spend_usd : null;
-  const fee = progSpend != null ? Number(progSpend) : pricing.cardSpendFee(planKeyFor(merchant, 'issuing', mode)); // a program card: the program's price
+  const fee = card.provider === 'monerails'
+    ? await require('./cardProgram').purchaseFeeFor(card.merchant_id, mode, Number(row.amount_usd || 0)) // program: a % of the purchase (Startup 1 %)
+    : pricing.cardSpendFee(planKeyFor(merchant, 'issuing', mode));
   if (!(fee > 0)) return { charged: 0, reason: 'no-fee-on-plan' };
   const ref = `card-spend-fee:${row.provider_reference}`;
   if (await supabase.selectOne('ledger_entries', { merchant_id: card.merchant_id, reference: ref })) return { charged: 0, reason: 'already-charged' };

@@ -97,10 +97,28 @@ function apiReference() {
   return apiDoc;
 }
 
+function programPricing() {
+  const prog = require('../cardProgram');
+  const s = prog.cachedSettings();
+  prog.settings().catch(() => {}); // refresh for the next time
+  const pl = s.plans || {};
+  const lines = ['startup', 'pro', 'premium'].filter((k) => pl[k]).map((k) => {
+    const p = pl[k];
+    return `- Plan ${p.label} : abonnement ${p.monthly_usd ? `${money(p.monthly_usd)} par mois` : 'gratuit'} ; création d'une carte ${p.free_cards_per_month ? `${p.free_cards_per_month} cartes offertes par mois puis ` : ''}${money(p.card_creation_usd)} ; recharge ${money(p.card_recharge_usd)} ; dépôt au Master Wallet ${p.deposit_pct} % ; retrait sur une carte ${p.withdrawal_pct} % du montant ; commission sur achats réussis ${p.purchase_pct} % ; maintenance ${p.maintenance_usd ? `${money(p.maintenance_usd)} par mois par carte active` : 'offerte'} ; autorisation refusée ${money(p.decline_usd)} ; transactions internationales ${p.international_pct} % + ${money(p.international_fixed_usd)}.`;
+  });
+  return `Nouveau programme de cartes (cartes tokenisées compatibles Apple Pay et Google Pay, plafonds appliqués au paiement, cartes à usage unique). C'est la grille affichée sur le site.
+${lines.join('\n')}
+- Entrée dans le programme : ${money(s.join_fee_usd)} une seule fois, plus le premier mois du plan, prélevés sur le Master Wallet Live (gratuit en Sandbox). Rejoindre : bandeau « Nouveau programme de cartes » du tableau de bord. Changement de plan depuis ce bandeau.
+- Membres : chaque recharge du Master Wallet doit être d'au moins ${money(s.min_topup_usd)}.
+- Maintenance, autorisations refusées et transactions internationales sont prélevées sur le solde de la carte par l'émetteur, sans mettre la carte à découvert.
+- Les cartes créées avant le programme gardent leurs anciens prix (plans Issuing ci-dessus). Les nouvelles cartes individuelles des membres sont au prix du programme ; les cartes entreprise restent comme avant.`;
+}
+
 function builtin() {
   return [
     { id: 'kb_rules', title: "Règles de sécurité et d'escalade", content: safetyRules(), core: true },
-    { id: 'kb_issuing', title: 'Tarifs Issuing (cartes) : création, recharge, retrait, refus, abonnement', content: issuingPricing() },
+    { id: 'kb_program', title: 'Nouveau programme de cartes : plans Startup Pro Premium, prix, Apple Pay, Google Pay, entrée 20 $', content: programPricing() },
+    { id: 'kb_issuing', title: 'Anciens tarifs Issuing (cartes créées avant le programme) : création, recharge, retrait, refus, abonnement', content: issuingPricing() },
     { id: 'kb_gateway', title: 'Tarifs Payment Gateway : MonCash, Natcash, carte, retraits', content: gatewayPricing() },
     { id: 'kb_wallet', title: 'Master Wallet : dépôt de garantie, solde bas, comment recharger', content: masterWalletRules() },
     { id: 'kb_cards', title: 'Cartes virtuelles : création, titulaire, limites, solde, gel, fermeture', content: cardRules() },
