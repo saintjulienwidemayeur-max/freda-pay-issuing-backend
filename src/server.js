@@ -190,7 +190,12 @@ router.del('/dashboard/bank-account', session.requireSession, bankAccountHandler
 router.get('/dashboard/wallet/summary', session.requireSession, walletSummaryHandlers.summary);
 router.get('/dashboard/activity', session.requireSession, walletSummaryHandlers.activity);
 // The new card program (tokenized cards, Apple Pay / Google Pay): status for the dashboard banner, and joining (20 $ in Live, free in Sandbox).
-router.get('/dashboard/card-program', session.requireSession, async (ctx) => ({ status: 200, body: await require('./services/cardProgram').status(ctx.merchantId, await require('./utils/mode').resolveMode(ctx)) }));
+router.get('/dashboard/card-program', session.requireSession, async (ctx) => {
+  const program = require('./services/cardProgram');
+  program.recordView(ctx.merchantId, 'seen');
+  return { status: 200, body: await program.status(ctx.merchantId, await require('./utils/mode').resolveMode(ctx)) };
+});
+router.post('/dashboard/card-program/view', session.requireSession, async (ctx) => { await require('./services/cardProgram').recordView(ctx.merchantId, 'opened'); return { status: 200, body: { ok: true } }; });
 router.post('/dashboard/card-program/join', session.requireSession, async (ctx) => {
   if (ctx.role && !['owner', 'admin'].includes(ctx.role)) throw Object.assign(new Error("Seul le propriétaire ou un administrateur du compte peut rejoindre le programme."), { httpStatus: 403, code: 'FORBIDDEN' });
   const mode = await require('./utils/mode').resolveMode(ctx);
@@ -216,7 +221,7 @@ router.get('/admin/card-program', adminSession.requireAdminSession, async (ctx) 
   const members = await supabase.select('card_program_members', {}, { order: 'joined_at.desc', limit: 1000 }).catch(() => []);
   const merchants = members.length ? await supabase.select('merchants', { id: supabase.inList([...new Set(members.map((m) => m.merchant_id))]) }, { limit: 1000 }) : [];
   const names = new Map(merchants.map((m) => [m.id, m]));
-  return { status: 200, body: { settings: await require('./services/cardProgram').settings(), members: members.map((m) => ({ ...m, business_name: names.get(m.merchant_id) ? names.get(m.merchant_id).business_name : null, email: names.get(m.merchant_id) ? names.get(m.merchant_id).email : null })) } };
+  return { status: 200, body: { ...(await require('./services/cardProgram').adminOverview()), settings: await require('./services/cardProgram').settings(), members: members.map((m) => ({ ...m, business_name: names.get(m.merchant_id) ? names.get(m.merchant_id).business_name : null, email: names.get(m.merchant_id) ? names.get(m.merchant_id).email : null })) } };
 });
 router.put('/admin/card-program', adminSession.requireAdminSession, async (ctx) => {
   adminSession.requireComplianceRole(ctx);

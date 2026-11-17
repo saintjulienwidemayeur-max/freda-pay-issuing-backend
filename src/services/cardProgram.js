@@ -243,6 +243,41 @@ async function depositCostFor(merchantId, mode, amountUsd) {
   return round2(require('../config').issuingProviderCostsUSD.walletFundingPct * Number(amountUsd || 0));
 }
 
+/**
+ * Who looked at the program: 'seen' = the dashboard showed the banner (at most one count per 30 minutes), 'opened' = the merchant opened
+ * the program window. Best effort: never breaks the dashboard (and does nothing until the table exists).
+ */
+async function recordView(merchantId, kind) {
+  try {
+    const now = new Date().toISOString();
+    const row = await supabase.selectOne('card_program_views', { merchant_id: merchantId });
+    if (!row) { await supabase.insert('card_program_views', Object.assign({ merchant_id: merchantId, first_seen_at: now, last_seen_at: now, seen_count: 1, open_count: 0 }, kind === 'opened' ? { opened_at: now, last_opened_at: now, open_count: 1 } : {})); return; }
+    if (kind === 'opened') await supabase.update('card_program_views', { merchant_id: merchantId }, { opened_at: row.opened_at || now, last_opened_at: now, open_count: Number(row.open_count || 0) + 1, last_seen_at: now });
+    else if (Date.now() - new Date(row.last_seen_at || 0).getTime() > 30 * 60 * 1000) await supabase.update('card_program_views', { merchant_id: merchantId }, { last_seen_at: now, seen_count: Number(row.seen_count || 0) + 1 });
+  } catch (e) { /* optional statistic */ }
+}
+
+/** Admin: how many merchants joined, how many looked at it, and who. */
+async function adminOverview() {
+  const [members, views, merchants] = await Promise.all([
+    supabase.select('card_program_members', {}, { order: 'joined_at.desc', limit: 5000 }).catch(() => []),
+    supabase.select('card_program_views', {}, { limit: 5000 }).catch(() => []),
+    supabase.select('merchants', { deleted_at: supabase.isNull() }, { limit: 20000 }).catch(() => []),
+  ]);
+  const byId = new Map(merchants.map((m) => [m.id, m]));
+  const memberIds = (mode) => new Set(members.filter((m) => m.mode === mode).map((m) => m.merchant_id));
+  const live = memberIds('live'); const sandbox = memberIds('sandbox');
+  const joined = new Set([...live, ...sandbox]);
+  const visitors = views.map((v) => {
+    const m = byId.get(v.merchant_id) || {};
+    return { merchant_id: v.merchant_id, business_name: m.business_name || null, email: m.email || null, first_seen_at: v.first_seen_at, last_seen_at: v.last_seen_at, seen_count: Number(v.seen_count || 0), opened_at: v.opened_at || null, last_opened_at: v.last_opened_at || null, open_count: Number(v.open_count || 0), joined_live: live.has(v.merchant_id), joined_sandbox: sandbox.has(v.merchant_id) };
+  }).sort((a, b) => String(b.last_opened_at || b.last_seen_at).localeCompare(String(a.last_opened_at || a.last_seen_at)));
+  return {
+    stats: { merchants: merchants.length, members_live: live.size, members_sandbox: sandbox.size, members_total: joined.size, seen: views.length, opened: views.filter((v) => v.opened_at).length, joined_after_opening: views.filter((v) => v.opened_at && joined.has(v.merchant_id)).length },
+    visitors,
+  };
+}
+
 /** What the dashboard shows. */
 async function status(merchantId, mode) {
   const s = await settings();
@@ -258,4 +293,4 @@ async function status(merchantId, mode) {
 /** The settings last read (or the defaults), without waiting: for text that is built synchronously (the AI agent's knowledge). */
 const cachedSettings = () => cache || Object.assign({}, DEFAULTS);
 
-module.exports = { providerCostFor, depositCostFor, DEFAULT_PROVIDER_COSTS, cachedSettings, PLAN_KEYS, planFor, creationFeeFor, countFreeCard, withdrawalFeeFor, purchaseFeeFor, depositPctFor, currentPlanKey, settings, saveSettings, membership, isMember, join, assertTopupAllowed, pricingOverrideFor, status, openFor, PRICE_FIELDS };
+module.exports = { recordView, adminOverview, providerCostFor, depositCostFor, DEFAULT_PROVIDER_COSTS, cachedSettings, PLAN_KEYS, planFor, creationFeeFor, countFreeCard, withdrawalFeeFor, purchaseFeeFor, depositPctFor, currentPlanKey, settings, saveSettings, membership, isMember, join, assertTopupAllowed, pricingOverrideFor, status, openFor, PRICE_FIELDS };

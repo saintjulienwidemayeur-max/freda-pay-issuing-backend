@@ -10009,3 +10009,21 @@ test('announcement: nothing is sent until armed; then every merchant gets the em
   assert.equal(await program.providerCostFor('withdrawal', 100), 1.5);
   assert.equal(await program.providerCostFor('creation'), 1);
 });
+
+test('card program adoption: banner views and window openings are recorded and listed with the members in the admin', async () => {
+  const owner = await adminLogin('owner');
+  const v = await registerAndVerify({ email: 'viewer-prog@example.com', business_name: 'Viewer Prog', password: 'Passw0rd!x' });
+  const tok = v.data.session_token;
+  await api('GET', '/dashboard/card-program', { token: tok });
+  await new Promise((r) => setTimeout(r, 100));
+  let o = await api('GET', '/admin/card-program', { token: owner.token });
+  assert.equal(o.status, 200);
+  let row = o.data.visitors.find((x) => x.email === 'viewer-prog@example.com');
+  assert.ok(row && row.seen_count === 1 && row.open_count === 0);
+  assert.equal(o.data.stats.opened, 0);
+  assert.equal((await api('POST', '/dashboard/card-program/view', { token: tok, body: {} })).status, 200);
+  o = await api('GET', '/admin/card-program', { token: owner.token });
+  row = o.data.visitors.find((x) => x.email === 'viewer-prog@example.com');
+  assert.equal(row.open_count, 1); assert.equal(row.joined_sandbox, false);
+  assert.ok(o.data.stats.opened >= 1 && o.data.stats.seen >= 1 && typeof o.data.stats.members_total === 'number');
+});
