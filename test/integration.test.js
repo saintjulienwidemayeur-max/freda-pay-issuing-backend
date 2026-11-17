@@ -9637,7 +9637,7 @@ test('Monerails for merchants (sandbox pilot): holder enrolled there too, new in
     const tx = mockTables.card_transactions.find((t) => t.card_id === row.id && t.provider_reference === 'tx_1');
     assert.equal(tx.type, 'AUTHORIZATION');
     assert.equal(Number(tx.amount_usd), 3);
-    assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 10.97); // 14 - 3 $ purchase - 0.03 $ commission (1 %, Startup column of the program grid, taken from the card)
+    assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 11); // 14 - 3 $ purchase (the 1 % commission is taken from the Master Wallet, not the card)
     await signedPost({ id: 'evt_dec1', object: 'event', type: 'card.authorization_declined', livemode: false, created_at: new Date().toISOString(), data: { object: { object: 'authorization', card: { id: row.provider_card_id }, amount: 5000, currency: 'USD', merchant: 'Shop', reason: 'Insufficient funds' } } });
     assert.ok(mockTables.card_transactions.find((t) => t.card_id === row.id && t.type === 'DECLINE'));
 
@@ -9781,7 +9781,7 @@ test('Monerails Live: off by default; separate live key and webhook secret; real
   }
 });
 
-test('new card program: 20 $ entry only, the merchant keeps their Issuing plan whose column of the official grid applies to program cards, card-side fees, 200 $ minimum top-up', async () => {
+test('new card program: 20 $ entry only, the merchant keeps their Issuing plan whose column of the official grid applies to program cards, 1 % commission on the Master Wallet, 200 $ minimum top-up', async () => {
   const config = require('../src/config');
   const secrets = require('../src/services/agent/secrets');
   const issuer = require('../src/services/cardIssuer');
@@ -9856,9 +9856,10 @@ test('new card program: 20 $ entry only, the merchant keeps their Issuing plan w
     const balBefore = mc.balance;
     const r = await orch.recordCardTransaction({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 500, currency: 'USD', card_id: card.provider_card_id, reference: 'prog-buy-1', merchant: { name: 'Shop' } }, 'sandbox');
     assert.ok(r);
-    assert.equal(balBefore - mc.balance, 5, 'the 1 % commission (0.05 $) was taken from the card at the issuer');
-    assert.ok(mockTables.fee_revenue.find((f) => f.kind === 'card_purchase_commission' && f.related_id === r.id && Number(f.amount) === 0.05));
-    assert.equal(await ledger.getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox'), walletBefore, 'not on the Master Wallet');
+    assert.equal(mc.balance, balBefore, 'the card is not touched at the issuer');
+    // the 1 % commission (0.05 $ on 5 $) is taken from the MASTER WALLET
+    assert.equal(Math.round((walletBefore - await ledger.getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox')) * 100) / 100, 0.05);
+    assert.ok(mockTables.fee_revenue.find((f) => f.kind === 'card_spend' && f.merchant_id === sb.data.merchant.id && Number(f.amount) === 0.05));
   } finally {
     await issuer.saveSettings({ live_enabled: false, pilot_merchants: [], new_cards: 'maplerad' });
     await secrets.save({ monerails_test_key: '', monerails_webhook_secret: '', monerails_live_key: '', monerails_live_webhook_secret: '' });

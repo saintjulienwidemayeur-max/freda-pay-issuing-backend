@@ -110,7 +110,7 @@ function programPricing() {
 ${lines.join('\n')}
 - Entrée dans le programme : ${money(s.join_fee_usd)} une seule fois, plus le premier mois du plan, prélevés sur le Master Wallet Live (gratuit en Sandbox). Rejoindre : bandeau « Nouveau programme de cartes » du tableau de bord. Changement de plan depuis ce bandeau.
 - Membres : chaque recharge du Master Wallet doit être d'au moins ${money(s.min_topup_usd)}.
-- Maintenance, autorisations refusées et transactions internationales sont prélevées sur le solde de la carte par l'émetteur, sans mettre la carte à découvert.
+- La commission sur achats réussis (plan Startup) est prélevée sur le Master Wallet. Maintenance, autorisations refusées et transactions internationales sont prélevées sur le solde de la carte par l'émetteur, sans mettre la carte à découvert.
 - Les cartes créées avant le programme gardent leurs anciens prix (plans Issuing ci-dessus). Les nouvelles cartes individuelles des membres sont au prix du programme ; les cartes entreprise restent comme avant.`;
 }
 
