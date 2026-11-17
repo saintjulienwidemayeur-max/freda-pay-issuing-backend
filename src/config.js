@@ -180,6 +180,9 @@ const config = {
     baseUrl: (process.env.MONERAILS_BASE_URL || 'https://api.monerails.com/v1').replace(/\/+$/, ''),
     testKey: (process.env.MONERAILS_TEST_KEY || '').trim(),
     webhookSecret: (process.env.MONERAILS_WEBHOOK_SECRET || '').trim(),
+    // Live (real money): used only once the admin switches "Live" on in Admin > Monerails. Can also be typed in that page.
+    liveKey: (process.env.MONERAILS_LIVE_KEY || '').trim(),
+    liveWebhookSecret: (process.env.MONERAILS_LIVE_WEBHOOK_SECRET || '').trim(),
   },
 
   // Authenticator-app 2FA: mandatory for merchant dashboards (the tools can move money). TWO_FACTOR_ENFORCE=false is an emergency switch only.

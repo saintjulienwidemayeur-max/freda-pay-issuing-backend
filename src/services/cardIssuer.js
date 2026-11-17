@@ -11,7 +11,7 @@ const monerails = require('./monerails');
  * Settings (platform_settings "card_issuer"): { new_cards: 'maplerad' | 'monerails', pilot_merchants: [merchant ids], low_balance_usd }.
  */
 const KEY = 'card_issuer';
-const DEFAULTS = { new_cards: 'maplerad', pilot_merchants: [], low_balance_usd: 200 };
+const DEFAULTS = { new_cards: 'maplerad', pilot_merchants: [], low_balance_usd: 200, live_enabled: false, live_low_balance_usd: 500 };
 let cache = null; let at = 0;
 
 async function settings() {
@@ -28,6 +28,15 @@ async function saveSettings(patch, adminEmail) {
     const list = Array.isArray(patch.pilot_merchants) ? patch.pilot_merchants : String(patch.pilot_merchants || '').split(/[\s,;]+/);
     next.pilot_merchants = [...new Set(list.map((x) => String(x).trim()).filter((x) => /^mch_[A-Za-z0-9_]+$/.test(x)))].slice(0, 50);
   }
+  if (patch.live_enabled !== undefined) {
+    next.live_enabled = patch.live_enabled === true || patch.live_enabled === 'true';
+    if (next.live_enabled && !(monerails.configured('live') && require('../config').monerails.liveWebhookSecret)) {
+      const e = new Error("Ajoutez d'abord la clé Live (mr_live_...) et branchez le webhook Live avant d'activer le Live.");
+      e.httpStatus = 409; e.code = 'MONERAILS_LIVE_NOT_READY';
+      throw e;
+    }
+  }
+  if (patch.live_low_balance_usd !== undefined) { const n = Number(patch.live_low_balance_usd); if (Number.isFinite(n) && n >= 0 && n <= 1000000) next.live_low_balance_usd = n; }
   if (patch.low_balance_usd !== undefined) { const n = Number(patch.low_balance_usd); if (Number.isFinite(n) && n >= 0 && n <= 1000000) next.low_balance_usd = n; }
   const row = { value: JSON.stringify(next), updated_by: adminEmail || null, updated_at: new Date().toISOString() };
   if (await supabase.selectOne('platform_settings', { key: KEY })) await supabase.update('platform_settings', { key: KEY }, row);
@@ -38,8 +47,10 @@ async function saveSettings(patch, adminEmail) {
 
 /** The issuer for a NEW card or holder of this merchant. */
 async function issuerFor(merchantId, mode, kind) {
-  if ((mode || 'sandbox') !== 'sandbox' || (kind && kind !== 'individual') || !monerails.configured()) return 'maplerad';
+  const live = mode === 'live';
+  if ((kind && kind !== 'individual') || !monerails.configured(live ? 'live' : 'sandbox')) return 'maplerad';
   const s = await settings();
+  if (live && !s.live_enabled) return 'maplerad'; // the Live switch, off until the team turns it on
   return s.new_cards === 'monerails' || (s.pilot_merchants || []).includes(merchantId) ? 'monerails' : 'maplerad';
 }
 
@@ -56,17 +67,17 @@ async function findByProviderId(id) {
 /** The same operations, whichever issuer holds the card. Amounts in US cents. */
 function ops(card) {
   if (isMonerails(card)) {
-    if ((card.mode || 'sandbox') !== 'sandbox') { const e = new Error('Carte indisponible en Live pour le moment.'); e.code = 'CARD_SERVICE_ERROR'; e.httpStatus = 503; throw e; }
+    const m = monerails.forMode(card.mode); // a Live card uses the live key, a Sandbox card the test key: never crossed
     const id = card.provider_card_id;
     return {
-      fund: (cents) => monerails.fund(id, cents),
-      withdraw: (cents) => monerails.withdraw(id, cents),
-      freeze: () => monerails.freeze(id),
-      unfreeze: () => monerails.unfreeze(id),
-      terminate: () => monerails.terminate(id),
+      fund: (cents) => m.fund(id, cents),
+      withdraw: (cents) => m.withdraw(id, cents),
+      freeze: () => m.freeze(id),
+      unfreeze: () => m.unfreeze(id),
+      terminate: () => m.terminate(id),
       /** Raw details in the field names the reveal code understands. */
-      details: async () => { const d = (await monerails.details(id)).data || {}; return { card_number: d.number, cvv: d.cvc, expiry_month: d.exp_month, expiry_year: d.exp_year }; },
-      balanceCents: async () => { const c = (await monerails.getCard(id)).data || {}; return c.balance == null ? null : Number(c.balance); },
+      details: async () => { const d = (await m.details(id)).data || {}; return { card_number: d.number, cvv: d.cvc, expiry_month: d.exp_month, expiry_year: d.exp_year }; },
+      balanceCents: async () => { const c = (await m.getCard(id)).data || {}; return c.balance == null ? null : Number(c.balance); },
     };
   }
   const p = maplerad.forMode(card.mode);
@@ -113,17 +124,26 @@ async function call(card, fn) {
  */
 async function checkMonerailsBalance() {
   const s = await settings();
-  if (!monerails.configured() || (s.new_cards !== 'monerails' && !(s.pilot_merchants || []).length)) return { checked: false };
-  const b = (await monerails.balance()).data || {};
-  const usd = b.cards && b.cards.amount != null ? Number(b.cards.amount) / 100 : null;
-  const low = usd != null && usd < Number(s.low_balance_usd || 0);
-  if (low) {
-    await require('./adminAlerts').alert({
-      key: 'monerails-low-balance', throttleMs: 6 * 3600 * 1000, subject: `Solde cartes Monerails bas : ${usd.toFixed(2)} $`, eyebrow: 'Cartes', heading: 'Rechargez le solde cartes Monerails', tone: 'warning',
-      paragraphs: [`Le solde cartes Monerails est de ${usd.toFixed(2)} $, sous le seuil de ${Number(s.low_balance_usd).toFixed(2)} $.`, 'Sans solde, les créations et recharges des cartes émises chez Monerails échouent.', 'Rechargez-le en crypto (USDT / USDC) depuis le dashboard Monerails, puis vérifiez le solde dans Admin > Monerails.'],
-    }).catch(() => {});
+  const inUse = s.new_cards === 'monerails' || (s.pilot_merchants || []).length > 0;
+  const out = { checked: false };
+  const envs = [['sandbox', s.low_balance_usd]];
+  if (s.live_enabled) envs.push(['live', s.live_low_balance_usd]);
+  for (const [mode, threshold] of envs) {
+    if (!inUse || !monerails.configured(mode)) continue;
+    const b = (await monerails.forMode(mode).balance()).data || {};
+    const usd = b.cards && b.cards.amount != null ? Number(b.cards.amount) / 100 : null;
+    const low = usd != null && usd < Number(threshold || 0);
+    const label = mode === 'live' ? 'Live' : 'Sandbox';
+    if (low) {
+      await require('./adminAlerts').alert({
+        key: `monerails-low-balance-${mode}`, throttleMs: 6 * 3600 * 1000, subject: `Solde cartes Monerails ${label} bas : ${usd.toFixed(2)} $`, eyebrow: 'Cartes', heading: `Rechargez le solde cartes Monerails (${label})`, tone: 'warning',
+        paragraphs: [`Le solde cartes Monerails ${label} est de ${usd.toFixed(2)} $, sous le seuil de ${Number(threshold).toFixed(2)} $.`, 'Sans solde, les créations et recharges des cartes émises chez Monerails échouent.', 'Rechargez-le en crypto (USDT / USDC) depuis le dashboard Monerails, puis vérifiez le solde dans Admin > Monerails.'],
+      }).catch(() => {});
+    }
+    Object.assign(out, { checked: true, [mode]: { balance_usd: usd, low } });
+    if (mode === 'sandbox') Object.assign(out, { balance_usd: usd, low });
   }
-  return { checked: true, balance_usd: usd, low };
+  return out;
 }
 
 module.exports = { checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };

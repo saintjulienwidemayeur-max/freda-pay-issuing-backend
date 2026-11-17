@@ -17,16 +17,26 @@ function httpError(status, code, message, extra) {
   return err;
 }
 
-function key() {
+/**
+ * The key for an environment. Test (mr_test_...) and live (mr_live_...) keys are kept apart: a key of the wrong kind is refused, so the
+ * test page can never move real money and live cards never fall back to the test environment.
+ */
+function key(mode) {
+  if (mode === 'live') {
+    const k = config.monerails.liveKey;
+    if (!k) throw httpError(409, 'MONERAILS_LIVE_NOT_CONFIGURED', 'Aucune clé Live Monerails : ajoutez-la (mr_live_...) dans Admin > Monerails, ou MONERAILS_LIVE_KEY sur le serveur.');
+    if (!/^mr_live_/.test(k)) throw httpError(409, 'MONERAILS_LIVE_KEY_INVALID', 'La clé Live Monerails doit commencer par mr_live_.');
+    return k;
+  }
   const k = config.monerails.testKey;
   if (!k) throw httpError(409, 'MONERAILS_NOT_CONFIGURED', 'Aucune clé Monerails : ajoutez la clé de test (mr_test_...) dans Agent IA > Clés API, ou MONERAILS_TEST_KEY sur le serveur.');
-  if (!/^mr_test_/.test(k)) throw httpError(409, 'MONERAILS_LIVE_KEY_REFUSED', "Seule une clé de TEST Monerails (mr_test_...) est acceptée : l'intégration est en sandbox.");
+  if (!/^mr_test_/.test(k)) throw httpError(409, 'MONERAILS_LIVE_KEY_REFUSED', "Seule une clé de TEST Monerails (mr_test_...) est acceptée ici.");
   return k;
 }
-const configured = () => /^mr_test_/.test(config.monerails.testKey || '');
+const configured = (mode) => (mode === 'live' ? /^mr_live_/.test(config.monerails.liveKey || '') : /^mr_test_/.test(config.monerails.testKey || ''));
 
-async function call(method, path, body, { idempotencyKey } = {}) {
-  const headers = { Authorization: `Bearer ${key()}`, Accept: 'application/json', 'Accept-Language': 'fr' };
+async function callRaw(method, path, body, { idempotencyKey, mode } = {}) {
+  const headers = { Authorization: `Bearer ${key(mode)}`, Accept: 'application/json', 'Accept-Language': 'fr' };
   if (body) headers['Content-Type'] = 'application/json';
   if (method === 'POST') headers['Idempotency-Key'] = idempotencyKey || `fp-${crypto.randomBytes(12).toString('hex')}`;
   const ctl = new AbortController();
@@ -56,9 +66,9 @@ const cents = (usd) => {
 };
 const qs = (o) => { const p = Object.entries(o || {}).filter(([, v]) => v != null && v !== ''); return p.length ? `?${p.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}` : ''; };
 
-module.exports = {
-  configured,
-  cents,
+function api(mode) {
+  const call = (method, path, body, opts) => callRaw(method, path, body, Object.assign({}, opts, { mode }));
+  return {
   balance: () => call('GET', '/balance'),
   listCardholders: (q) => call('GET', `/cardholders${qs({ limit: 100, ...q })}`),
   getCardholder: (id) => call('GET', `/cardholders/${encodeURIComponent(id)}`),
@@ -81,6 +91,15 @@ module.exports = {
   createWebhookEndpoint: (url, events) => call('POST', '/webhook_endpoints', { url, events }),
   rotateWebhookSecret: (id) => call('POST', `/webhook_endpoints/${encodeURIComponent(id)}/rotate_secret`, { overlap_minutes: 0 }),
 
+  };
+}
+
+module.exports = Object.assign(api('sandbox'), {
+  configured,
+  cents,
+  /** The same calls for one environment: forMode('live') uses the live key, anything else the test key. */
+  forMode: (mode) => api(mode === 'live' ? 'live' : 'sandbox'),
+
   /**
    * Monerail-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(t + "." + raw body, full whsec_ secret)> ; during a secret rotation two v1 values come.
    * Rejects an old timestamp (more than 5 minutes) and compares in constant time.
@@ -96,4 +115,4 @@ module.exports = {
     return sigs.some((s) => s.length === expected.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(expected)));
   },
   httpError,
-};
+});

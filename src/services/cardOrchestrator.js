@@ -473,7 +473,8 @@ const MONERAILS_ID_DOCS = { PASSPORT: 'passport', NIN: 'national_id', DRIVERS_LI
  * cardholder.kyc_updated webhook. Never throws: the outcome is saved on the holder (monerails_status, monerails_reason).
  */
 async function enrollAtMonerails(holder, profile) {
-  const monerails = require('./monerails');
+  const live = holder.mode === 'live';
+  const monerails = require('./monerails').forMode(live ? 'live' : 'sandbox');
   const identityImage = require('./identityImage');
   const save = async (fields) => {
     const [row] = await supabase.update('maplerad_customers', { id: holder.id }, Object.assign({ updated_at: new Date().toISOString() }, fields)).catch((e) => { console.error(`Monerails holder state not saved for ${holder.id}: ${e.message}`); return []; }); // eslint-disable-line no-console
@@ -497,8 +498,10 @@ async function enrollAtMonerails(holder, profile) {
     await save({ monerails_cardholder_id: chId, monerails_status: 'pending', monerails_reason: null });
     const sent = await monerails.submitVerification(chId, { id_number: String(id.number || profile.identificationNumber || ''), address, birth_date: profile.dob });
     let status = (sent.data && sent.data.verification && sent.data.verification.status) || 'in_review';
-    if (status !== 'verified') {
-      const approved = await monerails.testVerification(chId, 'approved'); // TEST key only (the integration is sandbox): instant approval
+    if (status !== 'verified' && !live) {
+      // Sandbox only (test key): the test helper approves at once. In Live the real check takes its time and its result comes by the
+      // cardholder.kyc_updated webhook; until then this holder's cards keep going to the current issuer.
+      const approved = await monerails.testVerification(chId, 'approved');
       status = (approved.data && approved.data.verification && approved.data.verification.status) || status;
     }
     return save({ monerails_status: status, monerails_reason: null });
@@ -514,7 +517,7 @@ async function enrollAtMonerails(holder, profile) {
  * webhook finishes it. A refusal marks the card failed and refunds the wallet. The spending rules are passed to Monerails itself.
  */
 async function createMonerailsCard({ merchantId, id, ownReference, brand, profile, mode, totalDebit, preload, creationFee, rules }) {
-  const monerails = require('./monerails');
+  const monerails = require('./monerails').forMode(mode);
   await debitMasterWalletForCard(merchantId, totalDebit, ownReference, id, mode);
   const row = await insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, {
     id, merchant_id: merchantId, own_reference: ownReference, kind: 'individual', brand: brand || 'VISA', currency: 'USD', status: 'pending',
@@ -545,9 +548,10 @@ async function createMonerailsCard({ merchantId, id, ownReference, brand, profil
 }
 
 /** Monerails told us how a pending card ended (card.issued / card.issue_failed). Runs once per card. */
-async function applyMonerailsCardResult(cardObj, ok, reason) {
+async function applyMonerailsCardResult(cardObj, ok, reason, env) {
   const card = cardObj && cardObj.id ? await supabase.selectOne('cards', { provider_card_id: cardObj.id }) : null;
   if (!card || card.status !== 'pending') return card;
+  if (env && (card.mode || 'sandbox') !== env) return card; // environments never cross
   if (ok) {
     const masked = cardObj.last4 ? `•••• •••• •••• ${cardObj.last4}` : null;
     const [done] = await supabase.update('cards', { id: card.id, status: 'pending' }, { status: 'active', masked_pan: masked, balance: cardObj.balance == null ? fromCents(card.initial_amount || 0) : Number(cardObj.balance) / 100, updated_at: new Date().toISOString() });
