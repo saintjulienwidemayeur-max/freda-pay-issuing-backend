@@ -157,7 +157,7 @@ async function housekeeping() {
   for (const r of singles) {
     const card = await supabase.selectOne('cards', { id: r.card_id });
     if (!card || card.deleted_at || ['terminated', 'failed', 'pending'].includes(card.status)) continue;
-    try { await require('./cardOrchestrator').terminateCard(card.merchant_id, card.id); out.closed += 1; } catch (e) { console.error(`Single-use card ${card.id} not closed: ${e.message}`); } // eslint-disable-line no-console
+    try { await require('./cardOrchestrator').terminateCard(card.merchant_id, card.id, { force: true }); out.closed += 1; } catch (e) { console.error(`Single-use card ${card.id} not closed: ${e.message}`); } // eslint-disable-line no-console
   }
   return out;
 }

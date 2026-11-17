@@ -131,7 +131,7 @@ async function terminate(ctx) {
   const balanceBefore = Number(card.balance || 0);
   let removed;
   try {
-    removed = await cardOrchestrator.terminateCard(card.merchant_id, card.id);
+    removed = await cardOrchestrator.terminateCard(card.merchant_id, card.id, { force: true });
   } catch (err) {
     throw httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
   }

@@ -1041,6 +1041,7 @@ test('a failed card creation refunds the Master Wallet and marks the card failed
 
 test('deleting a card closes it at the partner, refunds its remaining balance and removes it from the lists', async () => {
   const before = await api('GET', '/dashboard/balance', { token: sessionToken });
+  ageCard(firstCardId); // a card cannot be closed on the day it was created
   const term = await api('POST', `/dashboard/cards/${firstCardId}/terminate`, { token: sessionToken });
   assert.equal(term.status, 200);
   assert.equal(term.data.status, 'terminated');
@@ -1707,10 +1708,11 @@ test('holder enrollment follows the documented two-step flow and sends dob as DD
       identificationNumber: 'ID-BD', identity: TEST_IDENTITY, phoneNumber: '37012346', phoneShortCode: '+509', address: { street: 'Rue Example', city: 'PAP', state: 'Ouest', postal_code: 'HT6110', country: 'HT' },
     },
   });
-  assert.ok(bad.status >= 400);
+  // A birth date that is not AAAA-MM-JJ is refused right away (it is also needed for the 18+ rule): nothing is sent or recorded.
+  assert.equal(bad.status, 400);
+  assert.equal(bad.data.error.code, 'MISSING_FIELDS');
   const list = await api('GET', '/dashboard/cards/holders', { token });
-  const failed = list.data.holders.find((h) => h.first_name === 'Bad');
-  assert.equal(failed.status, 'failed');
+  assert.ok(!list.data.holders.find((h) => h.first_name === 'Bad'));
 });
 
 /* ===== Simple errors, provider soft-failures, recovery, expiry parsing ===== */
@@ -3798,6 +3800,8 @@ test('special characters in a post slug cannot break the sitemap XML', async () 
 
 /* ===== Admin figures are REAL: cards, spending, revenue, partner cost, profit ===== */
 
+/** Makes a card look created yesterday (UTC), so the same-day closure rule does not apply. */
+function ageCard(id) { const c = mockTables.cards.find((x) => x.id === id); if (c) c.created_at = new Date(Date.now() - 2 * 86400000).toISOString(); }
 const purchase = (cardId, extra = {}) => ({
   event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 2500, currency: 'USD',
   card_id: cardId, reference: `buy-${Math.random().toString(16).slice(2)}`, description: 'Approved or completed successfully',
@@ -4437,6 +4441,7 @@ test('delete is real for every card state: active (closed at the partner + refun
   const before = (await api('GET', '/dashboard/balance', { token: m.token })).data.master_wallet.available;
 
   // active business card: closed at the partner, balance refunded, gone from the list
+  ageCard(m.businessId); // a card cannot be closed on the day it was created
   const del = await api('POST', `/dashboard/cards/${m.businessId}/terminate`, { token: m.token });
   assert.equal(del.status, 200);
   assert.equal(mockTables.cards.find((c) => c.id === m.businessId).status, 'terminated');
@@ -4471,6 +4476,7 @@ test('if the partner refuses to close the card, nothing changes: the card stays,
   const saved = config.maplerad.liveSecretKey;
   config.maplerad.liveSecretKey = 'mpr_sk_a_key_the_provider_rejects';
   try {
+    ageCard(c.data.id); // a card cannot be closed on the day it was created
     const r = await api('POST', `/dashboard/cards/${c.data.id}/terminate`, { token: live.token });
     assert.ok(r.status >= 400);
   } finally { config.maplerad.liveSecretKey = saved; }
@@ -4495,6 +4501,7 @@ test('deleted cards do not count against the plan\'s card limit, so deleting rea
   await pollUntil(() => api('GET', `/dashboard/cards/${ids[ids.length - 1]}`, { token }), (r) => r.data.status === 'active', 40, 20);
   const over = await api('POST', '/dashboard/cards', { token, body: { reference: 'LIM-OVER', kind: 'business', business_name: 'Limit Free Co', brand: 'VISA', amount: 10 } });
   assert.equal(over.data.error.code, 'CARD_LIMIT_REACHED');
+  ageCard(ids[0]); // a card cannot be closed on the day it was created
   assert.equal((await api('POST', `/dashboard/cards/${ids[0]}/terminate`, { token })).status, 200);
   const again = await api('POST', '/dashboard/cards', { token, body: { reference: 'LIM-AGAIN', kind: 'business', business_name: 'Limit Free Co', brand: 'VISA', amount: 10 } });
   assert.equal(again.status, 202);
@@ -5846,6 +5853,7 @@ test('fixer2: terminating a card does not refund what the card spent online', as
   const live = await liveMerchantWithActivity('f2term'); // business card pre-funded with 100 $
   await sendProviderEvent(purchase(live.card.maplerad_card_id, { amount: 3000, reference: 'f2-spend-1' }), MOCK_LIVE_WHSEC);
   const before = (await f2Balance(live.token)).master_wallet.available;
+  ageCard(live.card.id); // a card cannot be closed on the day it was created
   const term = await api('POST', `/dashboard/cards/${live.card.id}/terminate`, { token: live.token });
   assert.equal(term.status, 200);
   const after = (await f2Balance(live.token)).master_wallet.available;
@@ -5891,8 +5899,12 @@ test('fixer2: fund and withdraw refuse string and fractional-cent amounts', asyn
 
 test('fixer2: parallel recharges all land in the card balance (no lost update)', async () => {
   const live = await liveMerchantWithActivity('f2parfund');
-  await Promise.all([1, 2, 3].map(() => api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount: 10 } })));
-  assert.equal(mockTables.cards.find((c) => c.id === live.card.id).balance, 130);
+  // One operation at a time per card: the others are refused (409 CARD_OPERATION_IN_PROGRESS), and nothing is lost or counted twice.
+  const rs = await Promise.all([1, 2, 3].map(() => api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount: 10 } })));
+  const okCount = rs.filter((r) => r.status === 200).length;
+  assert.ok(okCount >= 1);
+  for (const r of rs.filter((x) => x.status !== 200)) assert.equal(r.data.error.code, 'CARD_OPERATION_IN_PROGRESS');
+  assert.equal(mockTables.cards.find((c) => c.id === live.card.id).balance, 100 + 10 * okCount);
 });
 
 test('fixer2: a failed-creation webhook delivered again refunds only once, and a late success does not resurrect the card', async () => {
@@ -7046,9 +7058,11 @@ test('closing a card keeps 0.50 $ from what is given back, never more than what 
   mockTables.cards.find((c) => c.id === b).balance = 0.3; // less than the fee
   const bal = async () => (await api('GET', '/dashboard/balance', { token })).data.master_wallet.available;
   const start = await bal();
+  ageCard(a); // a card cannot be closed on the day it was created
   const ra = await api('POST', `/dashboard/cards/${a}/terminate`, { token });
   assert.equal(ra.data.refunded_usd, 9.5);
   assert.equal(ra.data.closure_fee_usd, 0.5);
+  ageCard(b); // a card cannot be closed on the day it was created
   const rb = await api('POST', `/dashboard/cards/${b}/terminate`, { token });
   assert.equal(rb.data.refunded_usd, 0);
   assert.equal(rb.data.closure_fee_usd, 0.3);
@@ -9509,4 +9523,56 @@ test('card rules: spending_limit (daily, per purchase) set by the merchant and s
   await send(purchase(plain.row.maplerad_card_id, { amount: 2900 }));
   assert.equal((await statusOf(plain.data.id)).status, 'active');
   assert.ok(!mockTables.card_rules.find((r) => r.card_id === plain.data.id));
+});
+
+test('card and holder rules: ID back, 18+, blocked countries, one email per person, 5 restarts / 24 h, 1 $ left on withdrawal, no same-day closure, reveal 30/h', async () => {
+  const reg = await registerAndVerify({ business_name: 'Rules Holder Co', email: 'rules-holder@example.com', password: 'password123' });
+  const token = reg.data.session_token;
+  const base = { firstName: 'Ana', lastName: 'Rules', email: 'ana.rules@example.com', country: 'HT', dob: '1990-05-12', identificationNumber: 'ID-AR', identity: TEST_IDENTITY, phoneNumber: '37012399', phoneShortCode: '+509', address: { street: 'Rue Example', city: 'PAP', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } };
+  const holder = (over) => api('POST', '/dashboard/cards/holders', { token, body: { ...base, ...over } });
+  const code = (r) => r.data && r.data.error && r.data.error.code;
+  assert.equal(code(await holder({ identity: { ...TEST_IDENTITY, type: 'NIN' } })), 'HOLDER_DOCUMENT_BACK_REQUIRED');
+  const young = new Date(Date.now() - 17 * 365.25 * 86400000).toISOString().slice(0, 10);
+  assert.equal(code(await holder({ dob: young })), 'HOLDER_UNDERAGE');
+  assert.equal(code(await holder({ country: 'RU' })), 'HOLDER_COUNTRY_UNSUPPORTED');
+  const ok = await holder({ identity: { ...TEST_IDENTITY, type: 'NIN', imageBackUrl: TEST_IDENTITY.imageUrl } });
+  assert.equal(ok.status, 201);
+  // the same person again is simply found; another person with the same email is refused
+  assert.equal((await holder({})).data.already_existed, true);
+  const other = await holder({ firstName: 'Bob', lastName: 'Other' });
+  assert.equal(other.status, 409);
+  assert.equal(code(other), 'HOLDER_EMAIL_EXISTS');
+  // a new identity check at most 5 times per 24 h
+  for (let i = 0; i < 5; i += 1) assert.notEqual((await holder({ restart_verification: true })).status, 429);
+  const sixth = await holder({ restart_verification: true });
+  assert.equal(sixth.status, 429);
+  assert.equal(code(sixth), 'HOLDER_VERIFICATION_LIMIT');
+
+  // card rules on a live card
+  const live = await liveMerchantWithActivity('cardrules2');
+  const cardId = live.card.id;
+  const bal = Number(mockTables.cards.find((c) => c.id === cardId).balance);
+  const tooMuch = await api('POST', `/dashboard/cards/${cardId}/withdraw`, { token: live.token, body: { amount: bal } });
+  assert.equal(tooMuch.status, 400);
+  assert.equal(code(tooMuch), 'CARD_MINIMUM_BALANCE');
+  assert.equal((await api('POST', `/dashboard/cards/${cardId}/withdraw`, { token: live.token, body: { amount: 10 } })).status, 200);
+  const sameDay = await api('POST', `/dashboard/cards/${cardId}/terminate`, { token: live.token });
+  assert.equal(sameDay.status, 400);
+  assert.equal(code(sameDay), 'CARD_TERMINATE_SAME_DAY');
+  assert.equal(mockTables.cards.find((c) => c.id === cardId).status, 'active', 'nothing changed');
+  // reveal: 30 times per hour per card (API key: business card details)
+  const key = live.apiKey || live.secretKey;
+  if (key) {
+    let last;
+    for (let i = 0; i < 31; i += 1) last = await api('POST', `/v1/cards/${cardId}/reveal`, { apiKey: key });
+    assert.equal(last.status, 429);
+    assert.equal(code(last), 'CARD_REVEAL_LIMIT');
+  } else {
+    const orch = require('../src/services/cardOrchestrator');
+    for (let i = 0; i < 30; i += 1) await orch.revealCardDetails(live.merchantId, cardId).catch(() => {});
+    await assert.rejects(orch.revealCardDetails(live.merchantId, cardId), (e) => e.code === 'CARD_REVEAL_LIMIT');
+  }
+  // the next day, the card can be closed
+  ageCard(cardId);
+  assert.equal((await api('POST', `/dashboard/cards/${cardId}/terminate`, { token: live.token })).status, 200);
 });
