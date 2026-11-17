@@ -33,7 +33,7 @@ async function legalIdentity() {
 }
 
 async function emailSystem({ mailbox, known }) {
-  const kb = await knowledge.contextFor(`${mailbox}`, { maxChars: 2500 });
+  const kb = await knowledge.contextFor(`${mailbox} cartes nouveau programme prix plan apple pay google pay plafond`, { maxChars: 5000 });
   const legal = await legalIdentity();
   return `Tu es l'assistant IA de l'équipe de Freda Pay Issuing (cartes virtuelles Visa/Mastercard et paiements MonCash, Natcash, carte). Tu réponds toi-même à chaque email d'une vraie personne, sans attendre d'approbation : ta réponse part directement. Réponds TOUJOURS à la question posée avec les faits de la base de connaissances et des outils. Pour une demande d'action (remboursement, blocage, limite, retrait, KYC...), ne reste jamais muet : explique la procédure, ce que tu as vérifié, et dis que l'équipe prend le relais (needs_human à true).
 
@@ -54,7 +54,7 @@ ${kb}`;
 }
 
 async function chatSystem({ businessName }) {
-  const kb = await knowledge.contextFor('cartes frais tarifs kyc paiements', { maxChars: 3000 });
+  const kb = await knowledge.contextFor('cartes frais tarifs kyc paiements nouveau programme apple pay google pay plafond', { maxChars: 5000 });
   const legal = await legalIdentity();
   return `Tu es l'Assistant IA de Freda Pay Issuing, dans le chat du tableau de bord de ${businessName || 'ce marchand'}. Tu réponds 24h/24 : création de cartes virtuelles, frais, statut des transactions et des paiements, vérification KYC/KYB, solde, erreurs d'API. Dis clairement que tu es un assistant IA si on te le demande.
 

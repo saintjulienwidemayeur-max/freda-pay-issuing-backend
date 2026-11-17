@@ -44,7 +44,11 @@ function cardRules() {
 - Les cartes Live demandent une autorisation Issuing séparée (ISSUING_LIVE_NOT_ENABLED sinon) ; la création de cartes business est ${config.businessCardsPaused ? 'actuellement en pause' : 'ouverte'}.
 - Le solde affiché est aligné automatiquement sur celui de la banque partenaire (frais de refus, frais de change inclus).
 - Un refus pour solde insuffisant coûte les frais de refus du plan. Les numéros complets, CVV et date d'expiration ne sont visibles que par le titulaire du compte dans son tableau de bord ou via l'endpoint reveal : ils ne sont jamais envoyés par email ni dans le chat.
-- Une carte peut être gelée / dégelée par le marchand ; la fermeture (terminate) rend le solde restant au Master Wallet, moins les frais de fermeture.`;
+- Une carte peut être gelée / dégelée par le marchand ; la fermeture (terminate) rend le solde restant au Master Wallet, moins les frais de fermeture.
+- Plafond de dépense (spending_limit) : le marchand le fixe à la création de la carte (POST /v1/cards, { "spending_limit": { "amount": 20, "interval": "daily" ou "per_transaction" } }) ; il peut le changer ou le retirer ensuite avec POST /v1/cards/:id/spending-limit (sauf cartes du nouveau programme : plafond fixé à la création, erreur CARD_LIMIT_NOT_EDITABLE). Sur les cartes de l'ancien émetteur, quand le plafond est atteint la carte est gelée (jusqu'au lendemain 00:00 UTC pour « daily », jusqu'à ce que le marchand la dégèle pour « per_transaction »). Sans plafond, la carte peut dépenser tout son solde. C'est le marchand qui choisit le plafond.
+- Carte à usage unique (single_use: true) : un seul achat, puis la carte est gelée ; ni recharge ni retrait (CARD_SINGLE_USE) ; fermée seule après 30 jours si elle n'a pas servi.
+- Règles : un retrait laisse au moins 1 $ sur la carte (CARD_MINIMUM_BALANCE ; pour tout récupérer, fermer la carte) ; une carte ne peut pas être fermée le jour de sa création, UTC (CARD_TERMINATE_SAME_DAY : la geler, puis la fermer le lendemain) ; une seule opération à la fois par carte (CARD_OPERATION_IN_PROGRESS) ; l'affichage du numéro complet est limité à 30 fois par heure et par carte (CARD_REVEAL_LIMIT) ; 3 paiements refusés en 24 h gèlent la carte automatiquement.
+- Titulaire d'une carte : 18 ans ou plus (HOLDER_UNDERAGE), recto ET verso de la pièce sauf passeport (HOLDER_DOCUMENT_BACK_REQUIRED), nom et date de naissance identiques à la pièce, un email par titulaire (HOLDER_EMAIL_EXISTS), pays refusés CU, IR, KP, SY, RU, BY (HOLDER_COUNTRY_UNSUPPORTED), 5 relances de vérification par 24 h (HOLDER_VERIFICATION_LIMIT).`;
 }
 
 function kycRules() {
@@ -114,6 +118,15 @@ ${lines.join('\n')}
 - Les cartes créées avant le programme gardent leurs anciens prix (plans Issuing ci-dessus). Les nouvelles cartes individuelles des membres sont au prix du programme ; les cartes entreprise restent comme avant.`;
 }
 
+function walletRules() {
+  return `Apple Pay et Google Pay (cartes du nouveau programme, cartes virtuelles Visa ou Mastercard tokenisées).
+- Le titulaire ajoute la carte à son téléphone avec le numéro complet, la date d'expiration et le CVV (affichés par l'endpoint reveal ou dans le tableau de bord, uniquement au titulaire). L'agent ne donne jamais ces données.
+- iPhone : app Cartes (Wallet), puis +, Carte de débit ou de crédit, Saisir manuellement, entrer nom, numéro, expiration et CVV, accepter les conditions et terminer la vérification si elle est demandée.
+- Android : Google Wallet, Ajouter à Wallet, Carte de paiement, Nouvelle carte de crédit ou de débit, entrer les informations, accepter les conditions ; pour le sans contact, Google Wallet doit être l'app de paiement par défaut avec le NFC activé.
+- Le solde et le plafond de la carte s'appliquent aussi aux paiements Apple Pay / Google Pay. Une carte gelée y est refusée ; une carte fermée doit être retirée du téléphone. Si l'ajout est refusé, vérifier que le nom saisi est exactement celui du titulaire ; sinon écrire à issuing@fredapay.com.
+- Honnêteté : si un marchand rapporte que l'ajout ne marche pas, l'agent ne promet rien et passe à l'équipe.`;
+}
+
 function builtin() {
   return [
     { id: 'kb_rules', title: "Règles de sécurité et d'escalade", content: safetyRules(), core: true },
@@ -122,6 +135,7 @@ function builtin() {
     { id: 'kb_gateway', title: 'Tarifs Payment Gateway : MonCash, Natcash, carte, retraits', content: gatewayPricing() },
     { id: 'kb_wallet', title: 'Master Wallet : dépôt de garantie, solde bas, comment recharger', content: masterWalletRules() },
     { id: 'kb_cards', title: 'Cartes virtuelles : création, titulaire, limites, solde, gel, fermeture', content: cardRules() },
+    { id: 'kb_wallets', title: 'Apple Pay Google Pay : ajouter une carte au téléphone, paiement sans contact, tokenisation', content: walletRules() },
     { id: 'kb_kyc', title: 'Vérification KYC KYB : procédure et statuts', content: kycRules() },
     { id: 'kb_payments', title: 'Paiements MonCash Natcash carte : statuts, attente, retraits', content: paymentRules() },
     { id: 'kb_crypto', title: 'Wallet crypto USDT USDC : dépôt, envoi, conversion', content: cryptoRules() },
@@ -168,7 +182,12 @@ async function contextFor(query, { maxChars = 7000 } = {}) {
   let out = '';
   for (const d of picked) {
     const block = `### ${d.title}\n${d.content}\n\n`;
-    if (out.length + block.length > maxChars) break;
+    if (out.length + block.length > maxChars) {
+      // A long entry is cut to what is left (at a line end) instead of being dropped: the start of an entry is its most important part.
+      const room = maxChars - out.length;
+      if (room > 500) out += `${block.slice(0, room).replace(/\n[^\n]*$/, '')}\n[...suite : utilise l'outil search_knowledge pour le détail]\n\n`;
+      continue;
+    }
     out += block;
   }
   return out.trim();
