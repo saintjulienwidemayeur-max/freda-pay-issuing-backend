@@ -119,6 +119,8 @@ router.post('/admin/agent/kyc/:id/review', adminSession.requireAdminSession, (ct
 router.post('/admin/agent/learn', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.learnNow(ctx); });
 router.get('/admin/agent/freda-mail', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.fredaMailStatus(ctx); });
 router.post('/admin/agent/knowledge/:id/toggle', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminAiHandlers.knowledgeToggle(ctx); });
+router.get('/admin/monerails/issuer', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: { issuer: await require('./services/cardIssuer').settings() } }; });
+router.put('/admin/monerails/issuer', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); if (ctx.adminRole !== 'owner') throw Object.assign(new Error("Seul le propriétaire peut changer l'émetteur des cartes."), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' }); return { status: 200, body: { issuer: await require('./services/cardIssuer').saveSettings(ctx.body || {}, (ctx.admin && ctx.admin.email) || null) } }; });
 router.get('/admin/monerails/status', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.status(ctx); });
 router.get('/admin/monerails/cardholders', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.listCardholders(ctx); });
 router.post('/admin/monerails/cardholders', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.createCardholder(ctx); });
@@ -273,11 +275,13 @@ router.post('/v1/cards/:id/simulate-transaction', apiKey.requireApiKey, cardHand
 router.post('/v1/cards/:id/fund', apiKey.requireApiKey, cardHandlers.fund);
 router.post('/v1/cards/:id/withdraw', apiKey.requireApiKey, cardHandlers.withdraw);
 router.post('/v1/cards/:id/freeze', apiKey.requireApiKey, cardHandlers.freeze);
+router.post('/v1/cards/:id/spending-limit', apiKey.requireApiKey, cardHandlers.setSpendingLimit);
 router.post('/v1/cards/:id/unfreeze', apiKey.requireApiKey, cardHandlers.unfreeze);
 router.post('/v1/cards/:id/terminate', apiKey.requireApiKey, cardHandlers.terminate);
 router.post('/dashboard/cards/:id/fund', session.requireSession, cardHandlers.fund);
 router.post('/dashboard/cards/:id/withdraw', session.requireSession, cardHandlers.withdraw);
 router.post('/dashboard/cards/:id/freeze', session.requireSession, cardHandlers.freeze);
+router.post('/dashboard/cards/:id/spending-limit', session.requireSession, cardHandlers.setSpendingLimit);
 router.post('/dashboard/cards/:id/unfreeze', session.requireSession, cardHandlers.unfreeze);
 router.post('/dashboard/cards/:id/terminate', session.requireSession, cardHandlers.terminate);
 
@@ -573,6 +577,7 @@ if (require.main === module) {
       }, 2 * 60 * 1000).unref();
       // Card spending rules: cards frozen by a daily limit are unfrozen when the day changes (UTC); unused single-use cards close after 30 days.
       setInterval(() => { require('./services/cardRules').housekeeping().catch((e) => console.error('Card rules:', e.message)); }, 5 * 60 * 1000).unref(); // eslint-disable-line no-console
+      setInterval(() => { require('./services/cardIssuer').checkMonerailsBalance().catch((e) => console.error('Monerails balance:', e.message)); }, 15 * 60 * 1000).unref(); // eslint-disable-line no-console
       // Once a day the agent turns what the team answered into knowledge (checked every hour).
       setInterval(() => { require('./services/agent/learning').maybeLearn().catch((e) => console.error('Agent learning:', e.message)); }, 60 * 60 * 1000).unref(); // eslint-disable-line no-console
       let unsentBusy = false;

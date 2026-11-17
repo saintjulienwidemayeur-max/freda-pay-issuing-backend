@@ -9273,7 +9273,7 @@ function monerailsMock(port) {
       const body = raw ? JSON.parse(raw) : {};
       const u = req.url.split('?')[0];
       let m;
-      if (req.method === 'GET' && u === '/v1/balance') return send(200, { object: 'balance', livemode: false, available: [], cards: { currency: 'USD', amount: 50000 } });
+      if (req.method === 'GET' && u === '/v1/balance') return send(200, { object: 'balance', livemode: false, available: [], cards: { currency: 'USD', amount: st.balanceCents == null ? 50000 : st.balanceCents } });
       if (req.method === 'POST' && u === '/v1/cardholders') { const h = { id: id('ch'), object: 'cardholder', livemode: false, ...body, documents: undefined, verification: { status: 'pending', reason: null } }; st.holders.push(h); return send(201, h); }
       if (req.method === 'GET' && u === '/v1/cardholders') return send(200, { object: 'list', data: st.holders, has_more: false });
       if ((m = u.match(/^\/v1\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (!body.id_number || !body.address) return fail(400, 'parameter_missing', 'id_number/address'); h.verification.status = 'in_review'; return send(202, h); }
@@ -9281,10 +9281,12 @@ function monerailsMock(port) {
       if (req.method === 'POST' && u === '/v1/cards') {
         const h = st.holders.find((x) => x.id === body.cardholder);
         if (!h || h.verification.status !== 'verified') return fail(400, 'cardholder_not_verified', 'Identité non vérifiée');
-        const c = { id: id('card'), object: 'card', livemode: false, type: body.type, status: 'active', cardholder: h.id, network: body.network, last4: '5904', balance: body.amount - 100, currency: 'USD', spending_limit: body.spending_limit || null };
-        st.cards.push(c); return send(201, c);
+        const pending = /PENDING/.test(body.label || '');
+        const c = { id: id('card'), object: 'card', livemode: false, type: body.type, status: pending ? 'pending' : 'active', cardholder: h.id, network: body.network, last4: '5904', balance: body.amount - 100, currency: 'USD', spending_limit: body.spending_limit || null, single_use: !!body.single_use };
+        st.cards.push(c); return send(pending ? 202 : 201, c);
       }
       if (req.method === 'GET' && u === '/v1/cards') return send(200, { object: 'list', data: st.cards, has_more: false });
+      if (req.method === 'GET' && (m = u.match(/^\/v1\/cards\/([^/]+)$/))) { const c = st.cards.find((x) => x.id === m[1]); return c ? send(200, c) : fail(404, 'resource_missing', 'no card'); }
       if ((m = u.match(/^\/v1\/cards\/([^/]+)\/details$/))) return send(200, { object: 'card_details', card: m[1], number: '4111111111111111', cvc: '123', exp_month: 10, exp_year: 2029, cardholder_name: 'Test Holder' });
       if ((m = u.match(/^\/v1\/cards\/([^/]+)\/(fund|withdraw|freeze|unfreeze|terminate)$/))) {
         const c = st.cards.find((x) => x.id === m[1]);
@@ -9575,4 +9577,114 @@ test('card and holder rules: ID back, 18+, blocked countries, one email per pers
   // the next day, the card can be closed
   ageCard(cardId);
   assert.equal((await api('POST', `/dashboard/cards/${cardId}/terminate`, { token: live.token })).status, 200);
+});
+
+test('Monerails for merchants (sandbox pilot): holder enrolled there too, new individual cards issued there, operations and webhooks translated, others untouched', async () => {
+  const config = require('../src/config');
+  const crypto = require('crypto');
+  const { server, st } = await monerailsMock(4556);
+  const saved = Object.assign({}, config.monerails);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4556/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_bridge_secret' });
+  const owner = await adminLogin('owner');
+  const signedPost = (event) => {
+    const raw = JSON.stringify(event); const t = Math.floor(Date.now() / 1000);
+    return fetch(`http://localhost:${APP_PORT}/webhooks/monerails`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Monerail-Signature': `t=${t},v1=${crypto.createHmac('sha256', 'whsec_bridge_secret').update(`${t}.${raw}`).digest('hex')}` }, body: raw });
+  };
+  try {
+    const reg = await registerAndVerify({ business_name: 'Pilot Co', email: 'pilot-mr@example.com', password: 'password123' });
+    const token = reg.data.session_token; const merchantId = reg.data.merchant.id;
+    // not a pilot yet: everything stays at the current issuer
+    const iss = await api('PUT', '/admin/monerails/issuer', { token: owner.token, body: { pilot_merchants: [merchantId], low_balance_usd: 300 } });
+    assert.equal(iss.status, 200);
+    assert.deepEqual(iss.data.issuer.pilot_merchants, [merchantId]);
+    const idBack = { ...TEST_IDENTITY, type: 'NIN', imageBackUrl: TEST_IDENTITY.imageUrl };
+    const h = await api('POST', '/dashboard/cards/holders', { token, body: { firstName: 'Pia', lastName: 'Lot', email: 'pia.lot@example.com', country: 'HT', dob: '1990-01-01', identificationNumber: 'ID-PL', identity: idBack, phoneNumber: '37011111', phoneShortCode: '+509', address: { street: 'Rue 1', city: 'PAP', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } } });
+    assert.equal(h.status, 201);
+    const hrow = mockTables.maplerad_customers.find((x) => x.id === h.data.holder.id);
+    assert.ok(hrow.maplerad_customer_id, 'still enrolled at the current issuer');
+    assert.ok(hrow.monerails_cardholder_id, 'also enrolled at Monerails');
+    assert.equal(hrow.monerails_status, 'verified');
+    assert.equal(st.holders[0].phone, '+50937011111');
+
+    // a new individual card goes to Monerails, with its limit applied by Monerails itself
+    const walletBefore = (await api('GET', '/dashboard/balance', { token })).data;
+    const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'PILOT-1', kind: 'individual', holder_id: h.data.holder.id, amount: 10, spending_limit: { amount: 25, interval: 'daily' } } });
+    assert.equal(c.status, 202);
+    const row = mockTables.cards.find((x) => x.id === c.data.id);
+    assert.equal(row.provider, 'monerails');
+    assert.equal(row.status, 'active');
+    assert.equal(Number(row.balance), 9); // Monerails took its issuance fee from the preload
+    assert.equal(st.cards[0].spending_limit.amount, 2500);
+    assert.equal(mockTables.card_rules.find((r) => r.card_id === row.id).native, true);
+    assert.equal((await api('POST', `/dashboard/cards/${row.id}/spending-limit`, { token, body: { spending_limit: { amount: 50, interval: 'daily' } } })).data.error.code, 'CARD_LIMIT_NOT_EDITABLE');
+    assert.ok(walletBefore);
+
+    // operations go to Monerails
+    assert.equal((await api('POST', `/dashboard/cards/${row.id}/fund`, { token, body: { amount: 5 } })).status, 200);
+    assert.equal(st.cards[0].balance, 1400);
+    assert.equal((await api('POST', `/dashboard/cards/${row.id}/freeze`, { token })).data.status, 'disabled');
+    assert.equal(st.cards[0].status, 'frozen');
+    assert.equal((await api('POST', `/dashboard/cards/${row.id}/unfreeze`, { token })).data.status, 'active');
+    const det = await require('../src/services/cardOrchestrator').revealCardDetails(merchantId, row.id);
+    assert.equal(det.number, '4111111111111111');
+    assert.equal(det.expiry_year, 2029);
+
+    // a purchase, then a decline, reported by Monerails, reach the merchant's books
+    st.cards[0].balance -= 300;
+    assert.equal((await signedPost({ id: 'evt_tx1', object: 'event', type: 'card.transaction', livemode: false, created_at: new Date().toISOString(), data: { object: { id: 'tx_1', object: 'transaction', type: 'card_payment', amount: -300, currency: 'USD', status: 'succeeded', description: 'Netflix', counterparty: 'Netflix', card: row.provider_card_id, created_at: new Date().toISOString() } } })).status, 200);
+    const tx = mockTables.card_transactions.find((t) => t.card_id === row.id && t.provider_reference === 'tx_1');
+    assert.equal(tx.type, 'AUTHORIZATION');
+    assert.equal(Number(tx.amount_usd), 3);
+    assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 11);
+    await signedPost({ id: 'evt_dec1', object: 'event', type: 'card.authorization_declined', livemode: false, created_at: new Date().toISOString(), data: { object: { object: 'authorization', card: { id: row.provider_card_id }, amount: 5000, currency: 'USD', merchant: 'Shop', reason: 'Insufficient funds' } } });
+    assert.ok(mockTables.card_transactions.find((t) => t.card_id === row.id && t.type === 'DECLINE'));
+
+    // withdrawal keeps 1 $; closure: not the same day, then refunded
+    assert.equal((await api('POST', `/dashboard/cards/${row.id}/withdraw`, { token, body: { amount: 10.5 } })).data.error.code, 'CARD_MINIMUM_BALANCE');
+    ageCard(row.id);
+    const term = await api('POST', `/dashboard/cards/${row.id}/terminate`, { token });
+    assert.equal(term.status, 200);
+    assert.equal(st.cards[0].status, 'terminated');
+
+    // a pending creation is finished by the card.issued webhook (never failed as "unsent")
+    const p = await api('POST', '/dashboard/cards', { token, body: { reference: 'PILOT-PENDING', kind: 'individual', holder_id: h.data.holder.id, amount: 5 } });
+    assert.equal(p.status, 202);
+    const prow = mockTables.cards.find((x) => x.id === p.data.id);
+    assert.equal(prow.status, 'pending');
+    prow.created_at = new Date(Date.now() - 3600 * 1000).toISOString();
+    await require('../src/services/cardOrchestrator').failUnsentPendingCards();
+    assert.equal(prow.status, 'pending');
+    const mc = st.cards.find((x) => x.id === prow.provider_card_id); mc.status = 'active';
+    await signedPost({ id: 'evt_issued', object: 'event', type: 'card.issued', livemode: false, created_at: new Date().toISOString(), data: { object: mc } });
+    assert.equal(mockTables.cards.find((x) => x.id === prow.id).status, 'active');
+
+    // business cards and non-pilot merchants stay at the current issuer
+    const other = await registerAndVerify({ business_name: 'Not Pilot Co', email: 'not-pilot-mr@example.com', password: 'password123' });
+    const bc = await api('POST', '/dashboard/cards', { token: other.data.session_token, body: { reference: 'NP-1', kind: 'business', business_name: 'Not Pilot Co', amount: 10 } });
+    assert.equal(bc.status, 202);
+    assert.notEqual(mockTables.cards.find((x) => x.id === bc.data.id).provider, 'monerails');
+
+    // low card balance at Monerails warns the team
+    st.balanceCents = 10000;
+    const low = await require('../src/services/cardIssuer').checkMonerailsBalance();
+    assert.equal(low.low, true);
+    const status = await api('GET', '/admin/monerails/status', { token: owner.token });
+    assert.equal(status.data.low_balance, true);
+    assert.ok(status.data.merchant_cards >= 2);
+  } finally {
+    await require('../src/services/cardIssuer').saveSettings({ pilot_merchants: [], new_cards: 'maplerad' });
+    Object.assign(config.monerails, saved);
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('spending limit can be changed or removed after creation (current issuer)', async () => {
+  const live = await liveMerchantWithActivity('limitedit');
+  const r = await api('POST', `/dashboard/cards/${live.card.id}/spending-limit`, { token: live.token, body: { spending_limit: { amount: 40, interval: 'per_transaction' } } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.data.spending_limit, { amount: 40, interval: 'per_transaction' });
+  const bad = await api('POST', `/dashboard/cards/${live.card.id}/spending-limit`, { token: live.token, body: { spending_limit: { amount: 0, interval: 'daily' } } });
+  assert.equal(bad.data.error.code, 'INVALID_SPENDING_LIMIT');
+  const off = await api('POST', `/dashboard/cards/${live.card.id}/spending-limit`, { token: live.token, body: { spending_limit: null } });
+  assert.equal(off.data.spending_limit, null);
 });

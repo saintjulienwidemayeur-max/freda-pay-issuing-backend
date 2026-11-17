@@ -1,6 +1,5 @@
 'use strict';
 const supabase = require('../lib/supabase');
-const maplerad = require('./maplerad');
 const webhookDispatcher = require('./webhookDispatcher');
 
 /**
@@ -87,8 +86,8 @@ async function beforeUnfreeze(cardId) {
 }
 
 async function freezeFor(card, reason, extra) {
-  if (card.status === 'active' && card.maplerad_card_id) {
-    await maplerad.forMode(card.mode).freezeCard(card.maplerad_card_id);
+  if (card.status === 'active' && require('./cardIssuer').providerCardId(card)) {
+    await require('./cardIssuer').call(card, (o) => o.freeze());
     await supabase.update('cards', { id: card.id, status: 'active' }, { status: 'disabled', updated_at: new Date().toISOString() });
     webhookDispatcher.dispatch(card.merchant_id, 'card.frozen', { id: card.id, reference: card.own_reference, reason, ...(extra || {}) });
     return true;
@@ -104,7 +103,7 @@ async function afterTransaction(card, row) {
   try {
     if (!isPurchase(row)) return null;
     const r = await get(card.id);
-    if (!r) return null;
+    if (!r || r.native) return null; // the issuer applies this card's rules itself, at payment time
     const now = new Date().toISOString();
     if (r.single_use) {
       if (r.single_use_consumed_at) return null;
@@ -143,9 +142,9 @@ async function housekeeping() {
   for (const r of due) {
     const card = await supabase.selectOne('cards', { id: r.card_id });
     await supabase.update('card_rules', { card_id: r.card_id }, { limit_frozen_until: null, updated_at: new Date().toISOString() });
-    if (card && card.status === 'disabled' && card.maplerad_card_id && !card.deleted_at) {
+    if (card && card.status === 'disabled' && require('./cardIssuer').providerCardId(card) && !card.deleted_at) {
       try {
-        await maplerad.forMode(card.mode).unfreezeCard(card.maplerad_card_id);
+        await require('./cardIssuer').call(card, (o) => o.unfreeze());
         await supabase.update('cards', { id: card.id, status: 'disabled' }, { status: 'active', updated_at: new Date().toISOString() });
         webhookDispatcher.dispatch(card.merchant_id, 'card.unfrozen', { id: card.id, reference: card.own_reference, reason: 'spending_limit_reset' });
         out.unfrozen += 1;
@@ -162,4 +161,22 @@ async function housekeeping() {
   return out;
 }
 
-module.exports = { parse, assertAvailable, save, get, getMany, publicFields, assertCanMoveFunds, beforeUnfreeze, afterTransaction, housekeeping, isPurchase };
+/**
+ * Changes (or removes, with null) the spending limit of an existing card. A single-use card has no limit. A limit held by the issuer itself
+ * (Monerails cards) is fixed at creation: 409 CARD_LIMIT_NOT_EDITABLE.
+ */
+async function setLimit(card, spendingLimit) {
+  const parsed = spendingLimit == null ? null : parse({ spending_limit: spendingLimit });
+  await assertAvailable();
+  const r = await get(card.id);
+  if (r && r.single_use) throw httpError(400, 'CARD_SINGLE_USE', "Une carte à usage unique n'a pas de plafond.");
+  if (r && r.native) throw httpError(409, 'CARD_LIMIT_NOT_EDITABLE', 'Le plafond de cette carte est fixé à sa création et ne peut pas être modifié. Créez une nouvelle carte avec le plafond voulu.');
+  const now = new Date().toISOString();
+  const fields = { limit_amount: parsed ? parsed.limit_amount : null, limit_interval: parsed ? parsed.limit_interval : null, updated_at: now };
+  if (!parsed) fields.limit_frozen_until = null;
+  if (r) await supabase.update('card_rules', { card_id: card.id }, fields);
+  else if (parsed) await supabase.insert('card_rules', { card_id: card.id, merchant_id: card.merchant_id, mode: card.mode || 'sandbox', single_use: false, ...fields, created_at: now });
+  return get(card.id);
+}
+
+module.exports = { setLimit, parse, assertAvailable, save, get, getMany, publicFields, assertCanMoveFunds, beforeUnfreeze, afterTransaction, housekeeping, isPurchase };

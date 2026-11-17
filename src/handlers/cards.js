@@ -168,10 +168,12 @@ async function createCard(ctx) {
         amountUsd: amount,
         holderId: holder_id,
         mode,
+        rules,
       });
     }
     if (rules) {
-      await cardRules.save(card, rules).catch((e) => console.error(`Card rules not saved for ${card.id}: ${e.message}`)); // eslint-disable-line no-console
+      // A Monerails card carries its rules itself (applied at payment time): they are only recorded here, marked native.
+      await cardRules.save(card, card.provider === 'monerails' ? Object.assign({}, rules, { native: true }) : rules).catch((e) => console.error(`Card rules not saved for ${card.id}: ${e.message}`)); // eslint-disable-line no-console
       card._rules = Object.assign({}, rules);
     }
     return { status: 202, body: toPublicCard(card._rules ? card : await withRules(card), ctx) }; // 202: creation confirmed async via webhook
@@ -388,6 +390,18 @@ async function withdraw(ctx) {
   }
 }
 
+/** POST /cards/:id/spending-limit { spending_limit: { amount, interval } | null } : changes or removes the card's limit. */
+async function setSpendingLimit(ctx) {
+  const b = ctx.body || {};
+  if (!('spending_limit' in b)) throw httpError(400, 'MISSING_FIELDS', 'spending_limit est requis : { "amount": 20, "interval": "daily" }, ou null pour le retirer.');
+  const card = await cardOrchestrator.getById(ctx.merchantId, ctx.params.id);
+  if (!card) throw httpError(404, 'NOT_FOUND', 'Carte introuvable.');
+  if (['terminated', 'failed'].includes(card.status)) throw httpError(409, 'CARD_TERMINATED', 'Cette carte est fermée.');
+  const rules = await cardRules.setLimit(card, b.spending_limit);
+  card._rules = rules || null;
+  return { status: 200, body: toPublicCard(card, ctx) };
+}
+
 async function freeze(ctx) {
   try {
     const card = await cardOrchestrator.freezeCard(ctx.merchantId, ctx.params.id);
@@ -472,4 +486,5 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { getHolderProfile, submitHolderProfile, listHolders, getHolder, createHolder, createCard, list, get, getTransactions, getAllTransactions, simulateTransaction, revealDetails, fund, withdraw, freeze, unfreeze, terminate };
+module.exports = {
+  setSpendingLimit, getHolderProfile, submitHolderProfile, listHolders, getHolder, createHolder, createCard, list, get, getTransactions, getAllTransactions, simulateTransaction, revealDetails, fund, withdraw, freeze, unfreeze, terminate };

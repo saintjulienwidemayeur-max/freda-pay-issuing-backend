@@ -64,6 +64,8 @@ const tables = {
   monerails_events: [],
   card_rules: [],
   holder_verification_attempts: [],
+  card_locks: [],
+  card_reveals: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();
