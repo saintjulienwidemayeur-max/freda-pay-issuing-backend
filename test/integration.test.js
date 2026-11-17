@@ -9666,6 +9666,19 @@ test('Monerails for merchants (sandbox pilot): holder enrolled there too, new in
     assert.equal(bc.status, 202);
     assert.notEqual(mockTables.cards.find((x) => x.id === bc.data.id).provider, 'monerails');
 
+    // the admin sees each card's issuer, and can filter on it
+    const all = await api('GET', '/admin/cards?mode=sandbox&include_deleted=1', { token: owner.token });
+    const mine = all.data.cards.filter((x) => x.merchant_id === merchantId);
+    assert.ok(mine.length >= 2 && mine.every((x) => x.provider === 'monerails' && x.provider_card_id));
+    const npCard = all.data.cards.find((x) => x.id === bc.data.id);
+    assert.equal(npCard.provider, 'maplerad');
+    const onlyMr = await api('GET', '/admin/cards?provider=monerails&include_deleted=1', { token: owner.token });
+    assert.ok(onlyMr.data.cards.length >= 2 && onlyMr.data.cards.every((x) => x.provider === 'monerails'));
+    assert.ok(onlyMr.data.by_provider.monerails >= 2);
+    const byMrId = await api('GET', `/admin/cards?q=${encodeURIComponent(mine[0].provider_card_id)}`, { token: owner.token });
+    assert.equal(byMrId.data.cards[0].id, mine[0].id);
+    assert.ok((await api('GET', '/admin/cards?provider=maplerad', { token: owner.token })).data.cards.every((x) => x.provider === 'maplerad'));
+
     // low card balance at Monerails warns the team
     st.balanceCents = 10000;
     const low = await require('../src/services/cardIssuer').checkMonerailsBalance();

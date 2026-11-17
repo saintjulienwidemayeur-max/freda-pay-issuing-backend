@@ -28,6 +28,9 @@ function publicCard(c, holder) {
     brand: c.brand,
     currency: c.currency,
     status: c.status,
+    // Which issuer holds the card (every card created before Monerails is at the current issuer), and its id there.
+    provider: c.provider === 'monerails' ? 'monerails' : 'maplerad',
+    provider_card_id: (c.provider === 'monerails' ? c.provider_card_id : c.maplerad_card_id) || null,
     masked_pan: last4Only(c.masked_pan),
     name_on_card: c.holder_name || null,
     holder: holder ? { first_name: holder.first_name, last_name: holder.last_name, email: holder.email, country: holder.country, status: holder.status } : null,
@@ -81,8 +84,10 @@ async function listAll(ctx) {
   if (['pending', 'active', 'disabled', 'terminated', 'failed'].includes(q.status)) filters.status = q.status;
   if (q.kind === 'business' || q.kind === 'individual') filters.kind = q.kind;
   if (q.include_deleted !== '1') filters.deleted_at = supabase.isNull();
+  // Issuer filter: Monerails cards are marked; the others (column default or a database without the column) are the current issuer.
+  const byProvider = (c) => !q.provider || (q.provider === 'monerails' ? c.provider === 'monerails' : c.provider !== 'monerails');
   const [rows, merchants] = await Promise.all([
-    supabase.select('cards', filters, { order: 'created_at.desc', limit: 1000 }),
+    supabase.select('cards', filters, { order: 'created_at.desc', limit: 1000 }).then((r) => r.filter(byProvider)),
     supabase.select('merchants', {}, { limit: 2000 }),
   ]);
   const byId = new Map(merchants.map((m) => [m.id, m]));
@@ -92,9 +97,10 @@ async function listAll(ctx) {
       const m = byId.get(c.merchant_id);
       return { ...publicCard(c, null), merchant_id: c.merchant_id, merchant_name: m ? m.business_name : null, merchant_email: m ? m.email : null };
     })
-    .filter((c) => !needle || [c.name_on_card, c.reference, c.masked_pan, c.merchant_name, c.merchant_email].some((v) => v && String(v).toLowerCase().includes(needle)))
+    .filter((c) => !needle || [c.name_on_card, c.reference, c.masked_pan, c.merchant_name, c.merchant_email, c.provider_card_id, c.id].some((v) => v && String(v).toLowerCase().includes(needle)))
     .slice(0, 300);
-  return { status: 200, body: { cards } };
+  const by_provider = cards.reduce((t, c) => { t[c.provider] = (t[c.provider] || 0) + 1; return t; }, {});
+  return { status: 200, body: { cards, by_provider } };
 }
 
 async function loadCard(id) {
