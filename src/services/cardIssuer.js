@@ -51,7 +51,9 @@ async function issuerFor(merchantId, mode, kind) {
   if ((kind && kind !== 'individual') || !monerails.configured(live ? 'live' : 'sandbox')) return 'maplerad';
   const s = await settings();
   if (live && !s.live_enabled) return 'maplerad'; // the Live switch, off until the team turns it on
-  return s.new_cards === 'monerails' || (s.pilot_merchants || []).includes(merchantId) ? 'monerails' : 'maplerad';
+  if (s.new_cards === 'monerails' || (s.pilot_merchants || []).includes(merchantId)) return 'monerails';
+  // Members of the new card program (they joined, and paid in Live) get their new cards from the new issuer.
+  return (await require('./cardProgram').isMember(merchantId, live ? 'live' : 'sandbox')) ? 'monerails' : 'maplerad';
 }
 
 const isMonerails = (card) => !!card && card.provider === 'monerails';

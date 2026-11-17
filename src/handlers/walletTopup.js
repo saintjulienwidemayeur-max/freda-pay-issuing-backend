@@ -32,6 +32,7 @@ async function create(ctx) {
       }
       const { amount_htg } = ctx.body;
       parseAmount(amount_htg, { field: 'amount_htg' });
+      await require('../services/cardProgram').assertTopupAllowed(ctx.merchantId, mode, Number(amount_htg) / require('../config').exchangeRateHtgPerUsd);
       const plopplopReference = partnerReference(ctx.merchantId, reference, method);
       const topup = await orchestrator.createAutoTopup({
         merchantId: ctx.merchantId,
@@ -48,6 +49,7 @@ async function create(ctx) {
     // Manual path: Zelle / bank_transfer.
     const { amount_usd, receipt_filename, receipt_base64, receipt_content_type } = ctx.body;
     parseAmount(amount_usd, { field: 'amount_usd' });
+    await require('../services/cardProgram').assertTopupAllowed(ctx.merchantId, mode, amount_usd); // program members: 200 $ minimum
     let receiptBuffer = null;
     if (receipt_base64) {
       if (receipt_base64.length > 8 * 1024 * 1024) {

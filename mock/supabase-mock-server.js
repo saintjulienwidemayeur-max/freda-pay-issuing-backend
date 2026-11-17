@@ -66,6 +66,7 @@ const tables = {
   holder_verification_attempts: [],
   card_locks: [],
   card_reveals: [],
+  card_program_members: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();

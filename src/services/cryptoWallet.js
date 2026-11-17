@@ -474,6 +474,7 @@ async function convert(merchant, mode, { coin, amount, reference }) {
   const value = Number(amount);
   if (!COINS.includes(coin)) throw httpError(400, 'INVALID_CRYPTO', 'Coin invalide.');
   if (!Number.isFinite(value) || value < 1 || value > 1e6) throw httpError(400, 'INVALID_AMOUNT', 'Montant invalide (minimum 1).');
+  await require('./cardProgram').assertTopupAllowed(merchant.id, mode, value); // program members: 200 $ minimum per Master Wallet top-up
   if (!reference) throw httpError(400, 'MISSING_FIELDS', 'reference est requis.');
   const done = await replay(merchant.id, reference, 'convert', coin, value);
   if (done) return done;
