@@ -429,19 +429,20 @@ paths:
                 holder_id: { type: string, description: "Carte individuelle : id du titulaire (voir /cards/holders). Recommandé : toujours l'envoyer. Sans lui : titulaire enrolled le plus récent du compte, dans le mode de la clé." }
                 spending_limit:
                   type: object
-                  description: "Plafond de dépense fixé par le marchand. Sans plafond, la carte peut dépenser tout son solde. Interdit avec single_use."
+                  description: "Plafond de dépense fixé par le marchand, contrôlé à chaque achat. daily : quand les achats du jour (UTC) l'atteignent, la carte est gelée jusqu'au lendemain 00:00 UTC puis dégelée seule. per_transaction : un achat égal ou supérieur gèle la carte jusqu'à ce que vous la dégeliez. Webhook card.frozen avec reason spending_limit. Sans plafond, la carte peut dépenser tout son solde. Interdit avec single_use."
                   required: [amount, interval]
                   properties:
                     amount: { type: number, example: 20, description: "Montant maximum en dollars" }
                     interval: { type: string, enum: [daily, per_transaction] }
-                single_use: { type: boolean, default: false, description: "Carte pour un seul achat : ni recharge ni retrait ; fermée seule après 30 jours si inutilisée (solde rendu au Master Wallet)." }
+                single_use: { type: boolean, default: false, description: "Carte pour un seul achat : gelée définitivement après cet achat (card.frozen, reason single_use) ; ni recharge ni retrait (CARD_SINGLE_USE) ; fermée seule après 30 jours si inutilisée (solde rendu au Master Wallet)." }
       responses:
         "202":
           description: Création initiée (asynchrone - voir status)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Card" }
-        "400": { description: "MISSING_FIELDS, INVALID_BRAND, HOLDER_PROFILE_REQUIRED (aucun titulaire dans ce mode), BELOW_MINIMUM_BALANCE, CARD_LIMIT_REACHED, INVALID_SPENDING_LIMIT, AMOUNT_TOO_SMALL (frais d'émission + 1 $ minimum)" }
+        "400": { description: "MISSING_FIELDS, INVALID_BRAND, HOLDER_PROFILE_REQUIRED (aucun titulaire dans ce mode), BELOW_MINIMUM_BALANCE, CARD_LIMIT_REACHED, INVALID_SPENDING_LIMIT" }
+        "503": { description: "FEATURE_NOT_READY : plafonds / usage unique pas encore activés sur le serveur (rien n'est débité)" }
         "404": { description: "NOT_FOUND (holder_id inconnu)" }
         "409": { description: "HOLDER_NOT_ENROLLED, HOLDER_MODE_MISMATCH, HOLDER_PROFILE_INCOMPLETE" }
     get:
@@ -803,6 +804,10 @@ components:
         balance: { type: number }
         holder_name: { type: string, nullable: true }
         failure_reason: { type: string, nullable: true }
+        spending_limit: { type: object, nullable: true, properties: { amount: { type: number }, interval: { type: string, enum: [daily, per_transaction] } } }
+        single_use: { type: boolean }
+        limit_reached_until: { type: string, format: date-time, description: "Présent quand la carte est gelée par son plafond du jour : heure du dégel automatique" }
+        single_use_consumed_at: { type: string, format: date-time, description: "Carte à usage unique : moment de son achat" }
         created_at: { type: string, format: date-time }
 
     CardHolder:

@@ -571,6 +571,8 @@ if (require.main === module) {
           .catch((e) => console.error('Agent email catch-up:', e.message))
           .finally(() => { agentBusy = false; });
       }, 2 * 60 * 1000).unref();
+      // Card spending rules: cards frozen by a daily limit are unfrozen when the day changes (UTC); unused single-use cards close after 30 days.
+      setInterval(() => { require('./services/cardRules').housekeeping().catch((e) => console.error('Card rules:', e.message)); }, 5 * 60 * 1000).unref(); // eslint-disable-line no-console
       // Once a day the agent turns what the team answered into knowledge (checked every hour).
       setInterval(() => { require('./services/agent/learning').maybeLearn().catch((e) => console.error('Agent learning:', e.message)); }, 60 * 60 * 1000).unref(); // eslint-disable-line no-console
       let unsentBusy = false;

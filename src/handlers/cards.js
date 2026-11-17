@@ -1,4 +1,5 @@
 'use strict';
+const cardRules = require('../services/cardRules');
 const config = require('../config');
 const cardOrchestrator = require('../services/cardOrchestrator');
 const maplerad = require('../services/maplerad');
@@ -99,9 +100,11 @@ async function createCard(ctx) {
   if (brand && !VALID_BRANDS.includes(brand)) throw httpError(400, 'INVALID_BRAND', "brand doit être 'VISA' ou 'MASTERCARD'.");
   // Strict number before anything is charged: a string like "100" must never reach the wallet arithmetic.
   if (kind === 'business' || (amount != null && amount !== 0)) parseAmount(amount);
+  const rules = cardRules.parse(b); // spending_limit / single_use, checked before anything is charged
 
   const existing = await cardOrchestrator.getByOwnReference(ctx.merchantId, reference);
-  if (existing) return { status: 200, body: toPublicCard(existing, ctx) };
+  if (existing) return { status: 200, body: toPublicCard(await withRules(existing), ctx) };
+  if (rules) await cardRules.assertAvailable();
 
   if (kind === 'business' && config.businessCardsPaused) {
     throw httpError(503, 'BUSINESS_CARDS_PAUSED', "La création de cartes entreprise est temporairement suspendue. Aucun montant n'a été débité. Les cartes individuelles restent disponibles. Réessayez plus tard.");
@@ -146,7 +149,11 @@ async function createCard(ctx) {
         mode,
       });
     }
-    return { status: 202, body: toPublicCard(card, ctx) }; // 202: creation confirmed async via webhook
+    if (rules) {
+      await cardRules.save(card, rules).catch((e) => console.error(`Card rules not saved for ${card.id}: ${e.message}`)); // eslint-disable-line no-console
+      card._rules = Object.assign({}, rules);
+    }
+    return { status: 202, body: toPublicCard(card._rules ? card : await withRules(card), ctx) }; // 202: creation confirmed async via webhook
   } catch (err) {
     const out = err.httpStatus ? httpError(err.httpStatus, err.code, err.message) : httpError(502, 'CARD_SERVICE_ERROR', err.message);
     if (err.providerInfo) out.providerInfo = err.providerInfo; // kept for the admin "Erreurs cartes" view
@@ -160,14 +167,15 @@ async function list(ctx) {
   const { rows, pagination } = await fetchPage(ctx.query, (limit, offset) =>
     cardOrchestrator.list(ctx.merchantId, limit, offset, mode, kind)
   );
-  return { status: 200, body: { cards: rows.map((c) => toPublicCard(c, ctx)), pagination, mode } };
+  const rulesById = await cardRules.getMany(rows.map((c) => c.id));
+  return { status: 200, body: { cards: rows.map((c) => toPublicCard(Object.assign(c, { _rules: rulesById.get(c.id) || null }), ctx)), pagination, mode } };
 }
 
 async function get(ctx) {
   let card = await cardOrchestrator.getById(ctx.merchantId, ctx.params.id);
   if (!card) throw httpError(404, 'NOT_FOUND', 'Carte introuvable.');
   card = await cardOrchestrator.alignCardIfStale(card); // the figure shown is the partner's, not a stale copy
-  return { status: 200, body: toPublicCard(card, ctx) };
+  return { status: 200, body: toPublicCard(await withRules(card), ctx) };
 }
 
 const TX_LABEL = {
@@ -331,6 +339,12 @@ function withOperation(card, ctx) {
   return { ...toPublicCard(card, ctx), ...rest, idempotent_replay: !!op.replayed };
 }
 
+/** The card with its spending rules (spending_limit, single_use) for the public shape. */
+async function withRules(card) {
+  if (!card || card._rules !== undefined) return card;
+  return Object.assign(card, { _rules: await cardRules.get(card.id).catch(() => null) });
+}
+
 async function fund(ctx) {
   const amount = ctx.body && ctx.body.amount;
   parseAmount(amount);
@@ -356,7 +370,7 @@ async function withdraw(ctx) {
 async function freeze(ctx) {
   try {
     const card = await cardOrchestrator.freezeCard(ctx.merchantId, ctx.params.id);
-    return { status: 200, body: toPublicCard(card, ctx) };
+    return { status: 200, body: toPublicCard(await withRules(card), ctx) };
   } catch (err) {
     throw httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
   }
@@ -365,7 +379,7 @@ async function freeze(ctx) {
 async function unfreeze(ctx) {
   try {
     const card = await cardOrchestrator.unfreezeCard(ctx.merchantId, ctx.params.id);
-    return { status: 200, body: toPublicCard(card, ctx) };
+    return { status: 200, body: toPublicCard(await withRules(card), ctx) };
   } catch (err) {
     throw httpError(err.httpStatus || 502, err.code || 'CARD_SERVICE_ERROR', err.message);
   }
@@ -424,6 +438,7 @@ function toPublicCard(c, ctx) {
     // Only while it can still be used: where the cardholder redoes the identity check after a refusal.
     ...(c.verification_link && (!c.verification_link_expires_at || new Date(c.verification_link_expires_at) > new Date())
       ? { verification_link: c.verification_link, verification_link_expires_at: c.verification_link_expires_at || null } : {}),
+    ...(c._rules !== undefined ? cardRules.publicFields(c._rules) : {}),
     created_at: c.created_at,
     updated_at: c.updated_at,
   };
