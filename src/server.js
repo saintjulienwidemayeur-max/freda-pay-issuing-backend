@@ -194,8 +194,14 @@ router.get('/dashboard/card-program', session.requireSession, async (ctx) => ({ 
 router.post('/dashboard/card-program/join', session.requireSession, async (ctx) => {
   if (ctx.role && !['owner', 'admin'].includes(ctx.role)) throw Object.assign(new Error("Seul le propriétaire ou un administrateur du compte peut rejoindre le programme."), { httpStatus: 403, code: 'FORBIDDEN' });
   const mode = await require('./utils/mode').resolveMode(ctx);
-  const r = await require('./services/cardProgram').join(ctx.merchantId, mode);
-  return { status: r.already ? 200 : 201, body: { joined: true, already: r.already, mode, fee_usd: Number(r.member.fee_usd || 0), joined_at: r.member.joined_at } };
+  const r = await require('./services/cardProgram').join(ctx.merchantId, mode, ctx.body && ctx.body.plan);
+  return { status: r.already ? 200 : 201, body: { joined: true, already: r.already, mode, plan: r.member.plan || 'startup', fee_usd: Number(r.member.fee_usd || 0), joined_at: r.member.joined_at, paid_until: r.member.paid_until || null } };
+});
+router.post('/dashboard/card-program/plan', session.requireSession, async (ctx) => {
+  if (ctx.role && !['owner', 'admin'].includes(ctx.role)) throw Object.assign(new Error('Seul le propriétaire ou un administrateur du compte peut changer de plan.'), { httpStatus: 403, code: 'FORBIDDEN' });
+  const mode = await require('./utils/mode').resolveMode(ctx);
+  const m = await require('./services/cardProgram').changePlan(ctx.merchantId, mode, ctx.body && ctx.body.plan);
+  return { status: 200, body: { plan: m.plan, paid_until: m.paid_until, mode } };
 });
 router.get('/admin/card-program', adminSession.requireAdminSession, async (ctx) => {
   adminSession.requireComplianceRole(ctx);
@@ -598,6 +604,7 @@ if (require.main === module) {
       }, 2 * 60 * 1000).unref();
       // Card spending rules: cards frozen by a daily limit are unfrozen when the day changes (UTC); unused single-use cards close after 30 days.
       setInterval(() => { require('./services/cardRules').housekeeping().catch((e) => console.error('Card rules:', e.message)); }, 5 * 60 * 1000).unref(); // eslint-disable-line no-console
+      setInterval(() => { require('./services/cardProgram').renewDue().catch((e) => console.error('Card program renewals:', e.message)); }, 60 * 60 * 1000).unref(); // eslint-disable-line no-console
       setInterval(() => { require('./services/cardIssuer').checkMonerailsBalance().catch((e) => console.error('Monerails balance:', e.message)); }, 15 * 60 * 1000).unref(); // eslint-disable-line no-console
       // Once a day the agent turns what the team answered into knowledge (checked every hour).
       setInterval(() => { require('./services/agent/learning').maybeLearn().catch((e) => console.error('Agent learning:', e.message)); }, 60 * 60 * 1000).unref(); // eslint-disable-line no-console

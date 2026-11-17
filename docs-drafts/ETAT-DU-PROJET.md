@@ -27,7 +27,7 @@
 ## Nouveau programme de cartes (17/11)
 - Les marchands rejoignent depuis le bandeau du dashboard : 20 $ une fois sur le Master Wallet Live (gratuit en Sandbox) ; ouvert en Live seulement quand le Live Monerails est activé. Table `card_program_members` (migration `2026-11-17-card-program.sql`).
 - Membres : nouvelles cartes individuelles chez Monerails aux prix du programme (Admin > Monerails > Nouveau programme ; vide = prix du plan) ; anciennes cartes inchangées ; chaque recharge du Master Wallet ≥ 200 $ (`BELOW_PROGRAM_MINIMUM`).
-- EN ATTENTE : les nouveaux prix (le propriétaire doit les envoyer) à saisir dans l'admin ; `monthly_usd` est affiché mais pas encore prélevé.
+- Grille officielle (17/11) : plans Startup 0 $ / Pro 150 $ / Premium 500 $ (Premium : 50 cartes offertes par mois). Collecté par Freda Pay : abonnement (au moment de rejoindre ou de changer de plan, puis chaque mois ; 3 jours de grâce puis retour à Startup), création, recharge, dépôt % sur le Master Wallet, retrait % sur carte, 1 % sur achats (Startup, prélevé sur le Master Wallet). Maintenance, refus et international : frais de l'émetteur sur la carte, seulement affichés. Plans modifiables dans Admin > Monerails. Le site (landing, tarifs) montre cette grille à la place des anciens prix ; les cartes créées avant gardent les anciens prix.
 - Doc publique : `docs/nouveau-programme-cartes.html`.
 
 ## Prochaines étapes
@@ -37,6 +37,6 @@
 4. **URGENT : la documentation v2 est DÉJÀ PUBLIÉE** (à la demande du propriétaire, PR backend #136 et frontend #63) : `spending_limit`, `single_use`, verso obligatoire, règles des titulaires, codes `INVALID_SPENDING_LIMIT`, `AMOUNT_TOO_SMALL`, `HOLDER_*`, `CARD_MINIMUM_BALANCE`, `CARD_TERMINATE_SAME_DAY`, `CARD_OPERATION_IN_PROGRESS`, `CARD_SINGLE_USE`, `CARD_REVEAL_LIMIT`, et la section Apple Pay / Google Pay. FAIT le 17/11 : `spending_limit` (daily / per_transaction, contrôlé à chaque achat : la carte est gelée quand le plafond est atteint) et `single_use` (table `card_rules`, migration `2026-11-17-card-rules.sql`). FAIT aussi : règles des titulaires (`HOLDER_DOCUMENT_BACK_REQUIRED`, `HOLDER_UNDERAGE`, `HOLDER_COUNTRY_UNSUPPORTED`, `HOLDER_EMAIL_EXISTS`, `HOLDER_VERIFICATION_LIMIT`), `CARD_MINIMUM_BALANCE`, `CARD_TERMINATE_SAME_DAY` (l'admin et la fermeture auto des cartes à usage unique passent outre), `CARD_OPERATION_IN_PROGRESS`, `CARD_REVEAL_LIMIT`, et les champs plafond / usage unique dans le dashboard. La documentation publiée correspond maintenant à l'API.
 
 ## Rappels pour le propriétaire
-- Migrations à exécuter si pas encore fait : `2026-11-12-ai-agent.sql`, `2026-11-15-agent-autonomy.sql`, `2026-11-16-monerails-sandbox.sql`, `2026-11-17-card-rules.sql`, `2026-11-17-holder-attempts.sql`, `2026-11-17-card-providers.sql`, `2026-11-17-card-program.sql` (dans cet ordre).
+- Migrations à exécuter si pas encore fait : `2026-11-12-ai-agent.sql`, `2026-11-15-agent-autonomy.sql`, `2026-11-16-monerails-sandbox.sql`, `2026-11-17-card-rules.sql`, `2026-11-17-holder-attempts.sql`, `2026-11-17-card-providers.sql`, `2026-11-17-card-program.sql`, `2026-11-17-card-program-plans.sql` (dans cet ordre).
 - Changer la clé Gemini et les secrets webhook Freda Mail qui ont été collés dans le chat.
 - Éteindre le bandeau maintenance (admin > Paramètres) quand la maintenance est finie.
