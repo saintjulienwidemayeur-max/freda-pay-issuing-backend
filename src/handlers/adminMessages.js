@@ -97,8 +97,10 @@ async function send(ctx) {
   if (test) {
     const to = ctx.admin && ctx.admin.email;
     if (!to) throw httpError(400, 'NO_EMAIL', "Votre compte admin n'a pas d'adresse email.");
-    await sendOne({ email: to, business_name: 'Test' }, subj, msg);
-    return { status: 200, body: { test: true, sent: 1, to } };
+    const res = await sendOne({ email: to, business_name: 'Test' }, subj, msg);
+    // "Sent" only means Brevo accepted it: ask Brevo what became of it (up to ~8 s).
+    const delivery = await brevo.deliveryStatus(res && res.messageId, { waitMs: 8000 });
+    return { status: 200, body: { test: true, sent: 1, to, from: config.brevo.adminSenderEmail, delivery } };
   }
 
   const recipients = await resolveRecipients(a, merchantId);
