@@ -190,8 +190,9 @@ function start() {
 /** A copy to the admin who asks, to proof-read. Nothing else is sent. */
 async function sendTest(email) {
   if (!email) throw Object.assign(new Error("Votre compte admin n'a pas d'adresse email."), { httpStatus: 400, code: 'NO_EMAIL' });
-  await require('../handlers/adminMessages').sendOne({ email, business_name: 'Test' }, SUBJECT, message({ liveOpen: await liveOpen() }));
-  return { sent: 1, to: email };
+  const res = await require('../handlers/adminMessages').sendOne({ email, business_name: 'Test' }, SUBJECT, message({ liveOpen: await liveOpen() }));
+  const brevo = require('./brevo');
+  return { sent: 1, to: email, from: require('../config').brevo.adminSenderEmail, delivery: await brevo.deliveryStatus(res && res.messageId, { waitMs: 8000 }) };
 }
 
 module.exports = { status, arm, disarm, run, start, sendTest, message, chatText, SUBJECT, CAMPAIGN };
