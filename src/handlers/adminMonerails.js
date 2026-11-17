@@ -22,6 +22,11 @@ async function status() {
     try { const w = (await mr.listWebhookEndpoints()).data; body.webhook_endpoints = (w.data || []).map((x) => ({ id: x.id, url: x.url, status: x.status, events: x.events })); } catch (e) { body.webhook_error = e.message; }
   }
   body.issuer = await require('../services/cardIssuer').settings();
+  const lk = config.monerails.liveKey;
+  body.live = { configured: mr.configured('live'), key_hint: lk ? `${lk.slice(0, 8)}…${lk.slice(-4)}` : null, webhook_secret_set: !!config.monerails.liveWebhookSecret, enabled: !!body.issuer.live_enabled };
+  if (body.live.configured) {
+    try { body.live.balance = (await mr.forMode('live').balance()).data; } catch (e) { body.live.balance_error = e.message; }
+  }
   if (body.balance && body.balance.cards && body.balance.cards.amount != null) body.low_balance = Number(body.balance.cards.amount) / 100 < Number(body.issuer.low_balance_usd || 0);
   try { body.merchant_cards = (await supabase.select('cards', { provider: 'monerails' }, { select: 'id,status', limit: 1000 })).length; } catch (e) { body.merchant_cards = null; body.provider_column = false; }
   try { await supabase.select('monerails_events', {}, { limit: 1 }); body.events_table = true; } catch (e) { body.events_table = !twoFactor.isMissingTable(e); }
@@ -160,7 +165,7 @@ async function events() {
     return { status: 200, body: { sandbox: true, source: 'api', events: (r.data.data || []).map((e) => ({ id: e.id, type: e.type, livemode: e.livemode, received_at: e.created_at, object_id: e.data && e.data.object && e.data.object.id, summary: summaryOf(e.data && e.data.object) })), note: 'Webhook pas encore branché : événements lus directement chez Monerails.' } };
   }
   try {
-    const rows = await supabase.select('monerails_events', {}, { order: 'received_at.desc', limit: 100 });
+    const rows = await supabase.select('monerails_events', { livemode: false }, { order: 'received_at.desc', limit: 100 });
     return { status: 200, body: { sandbox: true, source: 'webhook', events: rows.map((e) => ({ id: e.id, type: e.type, livemode: e.livemode, received_at: e.received_at, object_id: e.object_id, summary: e.summary })) } };
   } catch (err) {
     if (!twoFactor.isMissingTable(err)) throw err;
@@ -172,20 +177,22 @@ async function events() {
 /** Registers our webhook URL at Monerails (card, holder and card-balance events) and keeps the signing secret it shows only once, encrypted. */
 async function registerWebhook(ctx) {
   if (ctx.adminRole !== 'owner') throw httpError(403, 'INSUFFICIENT_ROLE', 'Seul le propriétaire peut enregistrer le webhook Monerails.');
+  const live = ctx.body && ctx.body.mode === 'live';
+  const api = mr.forMode(live ? 'live' : 'sandbox'); // the live webhook is registered with the live key, and its secret kept apart
   const url = `${config.apiUrl}/webhooks/monerails`;
   // Already registered (by this button or by hand in the Monerails dashboard): never create a second one; get a fresh secret instead.
-  const existing = ((await mr.listWebhookEndpoints()).data.data || []).find((w) => w.url === url);
+  const existing = ((await api.listWebhookEndpoints()).data.data || []).find((w) => w.url === url);
   let r;
   if (existing) {
-    r = await mr.rotateWebhookSecret(existing.id);
+    r = await api.rotateWebhookSecret(existing.id);
     r.data = Object.assign({ id: existing.id, url: existing.url, events: existing.events, status: existing.status }, r.data);
   } else {
-    r = await mr.createWebhookEndpoint(url, ['card.*', 'cardholder.*', 'cards_balance.*']);
+    r = await api.createWebhookEndpoint(url, ['card.*', 'cardholder.*', 'cards_balance.*']);
   }
   const secret = r.data && (r.data.secret || (r.data.webhook_endpoint && r.data.webhook_endpoint.secret));
-  if (secret) await require('../services/agent/secrets').save({ monerails_webhook_secret: secret }, who(ctx));
+  if (secret) await require('../services/agent/secrets').save({ [live ? 'monerails_live_webhook_secret' : 'monerails_webhook_secret']: secret }, who(ctx));
   audit(ctx, existing ? 'webhook.rotate_secret' : 'webhook.register', r.data && r.data.id);
-  return { status: existing ? 200 : 201, body: { sandbox: true, id: r.data.id, url: r.data.url || url, events: r.data.events, status: r.data.status, already_existed: !!existing, secret_saved: !!secret } };
+  return { status: existing ? 200 : 201, body: { sandbox: !live, mode: live ? 'live' : 'sandbox', id: r.data.id, url: r.data.url || url, events: r.data.events, status: r.data.status, already_existed: !!existing, secret_saved: !!secret } };
 }
 
 const summaryOf = (o) => {
@@ -200,22 +207,26 @@ const summaryOf = (o) => {
 /** POST /webhooks/monerails : signed by Monerails (Monerail-Signature). Test events only; a live event is refused. Stored once per event id. */
 async function receive(ctx) {
   const header = ctx.req.headers['monerail-signature'];
-  if (!mr.verifySignature(header, ctx.rawBody || '', config.monerails.webhookSecret)) throw httpError(401, 'INVALID_SIGNATURE', 'Signature invalide.');
+  // The secret that validates the signature tells the environment (live or test): the only trusted source of the mode.
+  let mode = null;
+  if (mr.verifySignature(header, ctx.rawBody || '', config.monerails.liveWebhookSecret)) mode = 'live';
+  else if (mr.verifySignature(header, ctx.rawBody || '', config.monerails.webhookSecret)) mode = 'sandbox';
+  if (!mode) throw httpError(401, 'INVALID_SIGNATURE', 'Signature invalide.');
   let event;
   try { event = JSON.parse(ctx.rawBody); } catch (e) { throw httpError(400, 'INVALID_JSON', 'Corps invalide.'); }
   if (!event || !event.id || !event.type) throw httpError(400, 'INVALID_EVENT', 'Événement invalide.');
-  if (event.livemode === true) return { status: 200, body: { received: true, ignored: 'live event (the integration is sandbox only)' } };
+  if ((event.livemode === true) !== (mode === 'live')) return { status: 200, body: { received: true, ignored: 'environment mismatch' } };
   const obj = event.data && event.data.object;
   try {
     if (!(await supabase.selectOne('monerails_events', { id: event.id }))) {
-      await supabase.insert('monerails_events', { id: event.id, type: String(event.type).slice(0, 60), livemode: false, object_id: obj && obj.id ? String(obj.id) : null, summary: summaryOf(obj), payload: event, received_at: new Date().toISOString() });
+      await supabase.insert('monerails_events', { id: event.id, type: String(event.type).slice(0, 60), livemode: mode === 'live', object_id: obj && obj.id ? String(obj.id) : null, summary: summaryOf(obj), payload: event, received_at: new Date().toISOString() });
     }
   } catch (err) {
     if (!twoFactor.isMissingTable(err)) throw err; // without the table the event is acknowledged (Monerails keeps it: GET /events)
   }
   // Events about merchants' cards and holders (pilot) are applied like the current issuer's. A failure answers 500 so Monerails retries
   // (each step is safe to run twice: transactions are stored once by their id, card results only apply to a pending card).
-  try { await require('../services/monerailsBridge').handle(event); } catch (err) {
+  try { await require('../services/monerailsBridge').handle(event, mode); } catch (err) {
     console.error(`Monerails event ${event.id} (${event.type}) not applied: ${err.message}`); // eslint-disable-line no-console
     throw httpError(500, 'EVENT_NOT_APPLIED', 'Événement non appliqué, réessayez.');
   }

@@ -10,13 +10,13 @@ const fmKeys = require('../../utils/fredaMailKeys');
  * A key saved here wins over the environment variable of the same purpose; removing it falls back to the environment.
  */
 const KEY = 'agent_secrets';
-const NAMES = ['gemini_api_key', 'anthropic_api_key', 'freda_mail_keys', 'freda_mail_webhook_secret', 'monerails_test_key', 'monerails_webhook_secret'];
+const NAMES = ['gemini_api_key', 'anthropic_api_key', 'freda_mail_keys', 'freda_mail_webhook_secret', 'monerails_test_key', 'monerails_webhook_secret', 'monerails_live_key', 'monerails_live_webhook_secret'];
 const encKey = () => config.twoFactor.key || config.sessionSecret;
 
 // What the environment gave, kept so that removing an admin-entered key restores it.
 const env = {
   agent: { provider: config.agent.provider, apiKey: config.agent.apiKey, baseUrl: config.agent.baseUrl, model: config.agent.model },
-  monerails: { testKey: config.monerails.testKey, webhookSecret: config.monerails.webhookSecret },
+  monerails: { testKey: config.monerails.testKey, webhookSecret: config.monerails.webhookSecret, liveKey: config.monerails.liveKey, liveWebhookSecret: config.monerails.liveWebhookSecret },
   fm: { keys: Object.assign({}, config.fredaMail.keys), problems: config.fredaMail.keyProblems, names: config.fredaMail.envNamesFound, webhookSecret: config.fredaMail.webhookSecret },
 };
 let stored = {}; // name -> plain value
@@ -49,6 +49,8 @@ function apply() {
   config.fredaMail.webhookSecret = stored.freda_mail_webhook_secret || env.fm.webhookSecret;
   config.monerails.testKey = stored.monerails_test_key || env.monerails.testKey;
   config.monerails.webhookSecret = stored.monerails_webhook_secret || env.monerails.webhookSecret;
+  config.monerails.liveKey = stored.monerails_live_key || env.monerails.liveKey;
+  config.monerails.liveWebhookSecret = stored.monerails_live_webhook_secret || env.monerails.liveWebhookSecret;
 }
 
 /** Reads the saved keys and applies them. Called at start-up, after a save and every few minutes (other instances). */
@@ -70,6 +72,8 @@ async function save(patch, adminEmail) {
     if (patch[n] === undefined) continue;
     const v = String(patch[n] || '').trim();
     if (!v) { delete raw[n]; continue; }
+    if (n === 'monerails_live_key' && !/^mr_live_/.test(v)) { const e = new Error('La clé Live Monerails doit commencer par mr_live_.'); e.httpStatus = 400; e.code = 'MONERAILS_LIVE_KEY_INVALID'; throw e; }
+    if (/^monerails_.*webhook_secret$/.test(n) && !/^whsec_/.test(v)) { const e = new Error('Le secret du webhook Monerails commence par whsec_.'); e.httpStatus = 400; e.code = 'VALIDATION_ERROR'; throw e; }
     if (n === 'monerails_test_key' && !/^mr_test_/.test(v)) { const e = new Error("Seule une clé de TEST Monerails (mr_test_...) est acceptée : l'intégration est en sandbox."); e.httpStatus = 400; e.code = 'MONERAILS_LIVE_KEY_REFUSED'; throw e; }
     if (v.length > 4000) { const e = new Error('Valeur trop longue.'); e.httpStatus = 400; e.code = 'VALIDATION_ERROR'; throw e; }
     raw[n] = totp.encrypt(v, encKey());
@@ -93,6 +97,8 @@ function status() {
     freda_mail_webhook_secret: entry('freda_mail_webhook_secret', env.fm.webhookSecret),
     monerails_test_key: entry('monerails_test_key', env.monerails.testKey),
     monerails_webhook_secret: entry('monerails_webhook_secret', env.monerails.webhookSecret),
+    monerails_live_key: entry('monerails_live_key', env.monerails.liveKey),
+    monerails_live_webhook_secret: entry('monerails_live_webhook_secret', env.monerails.liveWebhookSecret),
     provider: config.agent.provider || null,
   };
 }

@@ -9,12 +9,13 @@ const webhookDispatcher = require('./webhookDispatcher');
  */
 const TX_TYPE = { card_payment: 'AUTHORIZATION', card_refund: 'REFUND', card_reversal: 'REVERSAL', card_fee: 'CHARGE' };
 
-async function handle(event) {
+async function handle(event, mode) {
+  const env = mode === 'live' ? 'live' : 'sandbox';
   const orch = require('./cardOrchestrator');
   const obj = (event && event.data && event.data.object) || {};
   switch (event.type) {
-    case 'card.issued': return orch.applyMonerailsCardResult(obj, true);
-    case 'card.issue_failed': return orch.applyMonerailsCardResult(obj, false, obj.failure_reason || obj.reason ? `Création refusée par le service de cartes : ${obj.failure_reason || obj.reason}. Les montants débités ont été remboursés.` : null);
+    case 'card.issued': return orch.applyMonerailsCardResult(obj, true, null, env);
+    case 'card.issue_failed': return orch.applyMonerailsCardResult(obj, false, obj.failure_reason || obj.reason ? `Création refusée par le service de cartes : ${obj.failure_reason || obj.reason}. Les montants débités ont été remboursés.` : null, env);
     case 'card.transaction':
     case 'card.refunded':
     case 'card.reversed': {
@@ -26,7 +27,7 @@ async function handle(event) {
         status: obj.status === 'succeeded' ? 'SUCCESS' : String(obj.status || '').toUpperCase(), amount: Math.abs(cents), currency: obj.currency || 'USD',
         card_id: obj.card, reference: obj.id, description: obj.description || (type === 'CHARGE' ? 'Frais de carte' : null),
         merchant: obj.counterparty ? { name: obj.counterparty } : undefined, created_at: obj.created_at,
-      }, 'sandbox');
+      }, env);
     }
     case 'card.authorization_declined': {
       const cardId = obj.card && (obj.card.id || obj.card);
@@ -35,19 +36,19 @@ async function handle(event) {
         event: 'issuing.transaction', type: 'DECLINE', mode: 'DEBIT', status: 'FAILED', amount: Number(obj.amount || 0), currency: obj.currency || 'USD',
         card_id: cardId, reference: event.id, description: `Declined: ${obj.reason || 'refused'}`, reason: obj.reason, merchant: obj.merchant ? { name: obj.merchant } : undefined, created_at: event.created_at,
       };
-      await orch.recordCardTransaction(evt, 'sandbox');
-      return orch.applyCardDeclineWebhook(evt, 'sandbox');
+      await orch.recordCardTransaction(evt, env);
+      return orch.applyCardDeclineWebhook(evt, env);
     }
     case 'card.frozen':
     case 'card.unfrozen': {
       const card = obj.id ? await supabase.selectOne('cards', { provider_card_id: obj.id }) : null;
-      if (!card) return null;
+      if (!card || (card.mode || 'sandbox') !== env) return null;
       const frozen = event.type === 'card.frozen';
       const [changed] = await supabase.update('cards', { id: card.id, status: frozen ? 'active' : 'disabled' }, { status: frozen ? 'disabled' : 'active', updated_at: new Date().toISOString() });
       if (changed) webhookDispatcher.dispatch(card.merchant_id, frozen ? 'card.frozen' : 'card.unfrozen', { id: card.id, reference: card.own_reference, reason: 'issuer' });
       return changed || card;
     }
-    case 'card.terminated': return obj.id ? orch.applyCardTerminationWebhook({ card_id: obj.id, reason: obj.reason || 'fermée par le service de cartes' }, 'sandbox') : null;
+    case 'card.terminated': return obj.id ? orch.applyCardTerminationWebhook({ card_id: obj.id, reason: obj.reason || 'fermée par le service de cartes' }, env) : null;
     case 'cardholder.kyc_updated': {
       if (!obj.id) return null;
       const v = obj.verification || {};

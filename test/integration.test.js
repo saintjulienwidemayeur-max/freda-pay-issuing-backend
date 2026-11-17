@@ -9269,12 +9269,14 @@ function monerailsMock(port) {
       const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
       const fail = (code, c, m) => send(code, { error: { type: 'invalid_request_error', code: c, message: m, request_id: 'req_x' } });
       st.calls.push({ method: req.method, url: req.url, auth: req.headers.authorization, idem: req.headers['idempotency-key'] });
-      if (req.headers.authorization !== 'Bearer mr_test_sandboxkey123') return fail(401, 'api_key_invalid', 'bad key');
+      const isLive = req.headers.authorization === 'Bearer mr_live_livekey123';
+      st.calls[st.calls.length - 1].env = isLive ? 'live' : 'test';
+      if (req.headers.authorization !== 'Bearer mr_test_sandboxkey123' && !isLive) return fail(401, 'api_key_invalid', 'bad key');
       const body = raw ? JSON.parse(raw) : {};
       const u = req.url.split('?')[0];
       let m;
       if (req.method === 'GET' && u === '/v1/balance') return send(200, { object: 'balance', livemode: false, available: [], cards: { currency: 'USD', amount: st.balanceCents == null ? 50000 : st.balanceCents } });
-      if (req.method === 'POST' && u === '/v1/cardholders') { const h = { id: id('ch'), object: 'cardholder', livemode: false, ...body, documents: undefined, verification: { status: 'pending', reason: null } }; st.holders.push(h); return send(201, h); }
+      if (req.method === 'POST' && u === '/v1/cardholders') { const h = { id: id('ch'), object: 'cardholder', livemode: isLive, ...body, documents: undefined, verification: { status: 'pending', reason: null } }; st.holders.push(h); return send(201, h); }
       if (req.method === 'GET' && u === '/v1/cardholders') return send(200, { object: 'list', data: st.holders, has_more: false });
       if ((m = u.match(/^\/v1\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (!body.id_number || !body.address) return fail(400, 'parameter_missing', 'id_number/address'); h.verification.status = 'in_review'; return send(202, h); }
       if ((m = u.match(/^\/v1\/test\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (h.verification.status === 'pending') return fail(400, 'verification_not_submitted', 'Vérification non envoyée'); h.verification.status = body.result === 'approved' ? 'verified' : 'rejected'; return send(200, h); }
@@ -9687,4 +9689,81 @@ test('spending limit can be changed or removed after creation (current issuer)',
   assert.equal(bad.data.error.code, 'INVALID_SPENDING_LIMIT');
   const off = await api('POST', `/dashboard/cards/${live.card.id}/spending-limit`, { token: live.token, body: { spending_limit: null } });
   assert.equal(off.data.spending_limit, null);
+});
+
+test('Monerails Live: off by default; separate live key and webhook secret; real verification by webhook; environments never cross', async () => {
+  const config = require('../src/config');
+  const crypto = require('crypto');
+  const issuer = require('../src/services/cardIssuer');
+  const { server, st } = await monerailsMock(4557);
+  const saved = Object.assign({}, config.monerails);
+  config.monerails.baseUrl = 'http://localhost:4557/v1';
+  await require('../src/services/agent/secrets').save({ monerails_test_key: 'mr_test_sandboxkey123', monerails_webhook_secret: 'whsec_test_side', monerails_live_key: '', monerails_live_webhook_secret: '' });
+  const owner = await adminLogin('owner');
+  const post = (event, secret) => {
+    const raw = JSON.stringify(event); const t = Math.floor(Date.now() / 1000);
+    return fetch(`http://localhost:${APP_PORT}/webhooks/monerails`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Monerail-Signature': `t=${t},v1=${crypto.createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex')}` }, body: raw });
+  };
+  try {
+    const live = await makeLiveMerchant('mrlive', { fundUsd: 300 });
+    await api('PUT', '/admin/monerails/issuer', { token: owner.token, body: { pilot_merchants: [live.merchantId] } });
+    // the switch cannot be turned on without the live key and webhook
+    const early = await api('PUT', '/admin/monerails/issuer', { token: owner.token, body: { live_enabled: true } });
+    assert.equal(early.status, 409);
+    assert.equal(early.data.error.code, 'MONERAILS_LIVE_NOT_READY');
+    // keys: a test key is refused as live key, the live key is accepted
+    assert.equal((await api('PUT', '/admin/agent/secrets', { token: owner.token, body: { monerails_live_key: 'mr_test_nope' } })).data.error.code, 'MONERAILS_LIVE_KEY_INVALID');
+    assert.equal((await api('PUT', '/admin/agent/secrets', { token: owner.token, body: { monerails_live_key: 'mr_live_livekey123' } })).status, 200);
+    const wh = await api('POST', '/admin/monerails/webhook', { token: owner.token, body: { mode: 'live' } });
+    assert.equal(wh.status, 201);
+    assert.equal(wh.data.mode, 'live');
+    assert.equal(config.monerails.liveWebhookSecret, 'whsec_monerails_test_secret');
+    assert.equal(st.calls.filter((c) => c.url === '/v1/webhook_endpoints' && c.method === 'POST').pop().env, 'live');
+    // still OFF: a Live pilot holder is not sent to Monerails
+    assert.equal(await issuer.issuerFor(live.merchantId, 'live', 'individual'), 'maplerad');
+    const on = await api('PUT', '/admin/monerails/issuer', { token: owner.token, body: { live_enabled: true } });
+    assert.equal(on.status, 200);
+    assert.equal(await issuer.issuerFor(live.merchantId, 'live', 'individual'), 'monerails');
+    assert.equal(await issuer.issuerFor(live.merchantId, 'live', 'business'), 'maplerad');
+
+    // a Live holder: created with the LIVE key, no test approval, so its first card stays at the current issuer
+    const idBack = { ...TEST_IDENTITY, type: 'NIN', imageBackUrl: TEST_IDENTITY.imageUrl };
+    const h = await api('POST', '/dashboard/cards/holders', { token: live.token, body: { firstName: 'Liv', lastName: 'E', email: 'liv.e@example.com', country: 'HT', dob: '1988-03-03', identificationNumber: 'ID-LV', identity: idBack, phoneNumber: '37022222', phoneShortCode: '+509', address: { street: 'Rue 2', city: 'PAP', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } } });
+    assert.equal(h.status, 201);
+    const hrow = mockTables.maplerad_customers.find((x) => x.id === h.data.holder.id);
+    assert.equal(hrow.monerails_status, 'in_review');
+    assert.ok(!st.calls.some((c) => /\/test\//.test(c.url) && c.env === 'live'), 'no test helper with the live key');
+    assert.equal(st.calls.filter((c) => c.url === '/v1/cardholders').pop().env, 'live');
+    const c1 = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'MRL-1', kind: 'individual', holder_id: hrow.id, amount: 10 } });
+    assert.equal(c1.status, 202);
+    assert.notEqual(mockTables.cards.find((x) => x.id === c1.data.id).provider, 'monerails');
+
+    // the verification result arrives by a LIVE-signed webhook; a test-signed copy claiming livemode is ignored
+    const kyc = { id: 'evt_kyc_live', object: 'event', type: 'cardholder.kyc_updated', livemode: true, created_at: new Date().toISOString(), data: { object: { id: hrow.monerails_cardholder_id, object: 'cardholder', verification: { status: 'verified', reason: null } } } };
+    assert.equal((await post(kyc, 'whsec_test_side')).status, 200);
+    assert.equal(hrow.monerails_status, 'in_review', 'a test-signed live event changes nothing');
+    assert.equal((await post({ ...kyc, id: 'evt_kyc_live2' }, 'whsec_monerails_test_secret')).status, 200);
+    assert.equal(hrow.monerails_status, 'verified');
+    st.holders.find((x) => x.id === hrow.monerails_cardholder_id).verification.status = 'verified';
+    const c2 = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: 'MRL-2', kind: 'individual', holder_id: hrow.id, amount: 10 } });
+    assert.equal(c2.status, 202);
+    const row2 = mockTables.cards.find((x) => x.id === c2.data.id);
+    assert.equal(row2.provider, 'monerails');
+    assert.equal(row2.mode, 'live');
+    assert.equal(st.calls.filter((c) => c.url === '/v1/cards' && c.method === 'POST').pop().env, 'live');
+    // operations on the live card use the live key
+    await api('POST', `/dashboard/cards/${row2.id}/freeze`, { token: live.token });
+    assert.equal(st.calls.filter((c) => /\/freeze$/.test(c.url)).pop().env, 'live');
+    // switching Live off again sends new cards back to the current issuer
+    await api('PUT', '/admin/monerails/issuer', { token: owner.token, body: { live_enabled: false } });
+    assert.equal(await issuer.issuerFor(live.merchantId, 'live', 'individual'), 'maplerad');
+    const status = await api('GET', '/admin/monerails/status', { token: owner.token });
+    assert.equal(status.data.live.configured, true);
+    assert.equal(status.data.live.enabled, false);
+  } finally {
+    await issuer.saveSettings({ pilot_merchants: [], new_cards: 'maplerad', live_enabled: false });
+    await require('../src/services/agent/secrets').save({ monerails_test_key: '', monerails_webhook_secret: '', monerails_live_key: '', monerails_live_webhook_secret: '' }).catch(() => {});
+    Object.assign(config.monerails, saved);
+    await new Promise((r) => server.close(r));
+  }
 });
