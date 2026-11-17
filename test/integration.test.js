@@ -9637,7 +9637,7 @@ test('Monerails for merchants (sandbox pilot): holder enrolled there too, new in
     const tx = mockTables.card_transactions.find((t) => t.card_id === row.id && t.provider_reference === 'tx_1');
     assert.equal(tx.type, 'AUTHORIZATION');
     assert.equal(Number(tx.amount_usd), 3);
-    assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 11);
+    assert.equal(Number(mockTables.cards.find((x) => x.id === row.id).balance), 10.97); // 14 - 3 $ purchase - 0.03 $ commission (1 %, Startup column of the program grid, taken from the card)
     await signedPost({ id: 'evt_dec1', object: 'event', type: 'card.authorization_declined', livemode: false, created_at: new Date().toISOString(), data: { object: { object: 'authorization', card: { id: row.provider_card_id }, amount: 5000, currency: 'USD', merchant: 'Shop', reason: 'Insufficient funds' } } });
     assert.ok(mockTables.card_transactions.find((t) => t.card_id === row.id && t.type === 'DECLINE'));
 
@@ -9781,7 +9781,7 @@ test('Monerails Live: off by default; separate live key and webhook secret; real
   }
 });
 
-test('new card program: plans (Startup / Pro / Premium), joining (20 $ + first month in Live, free in Sandbox), 200 $ minimum top-up, plan prices on program cards only, renewals', async () => {
+test('new card program: 20 $ entry only, the merchant keeps their Issuing plan whose column of the official grid applies to program cards, card-side fees, 200 $ minimum top-up', async () => {
   const config = require('../src/config');
   const secrets = require('../src/services/agent/secrets');
   const issuer = require('../src/services/cardIssuer');
@@ -9792,85 +9792,73 @@ test('new card program: plans (Startup / Pro / Premium), joining (20 $ + first m
   await secrets.save({ monerails_test_key: 'mr_test_sandboxkey123', monerails_webhook_secret: 'whsec_prog', monerails_live_key: '', monerails_live_webhook_secret: '' });
   const owner = await adminLogin('owner');
   try {
-    // the official price list is the default; the owner can adjust a plan
     const ps = await api('GET', '/admin/card-program', { token: owner.token });
-    assert.deepEqual([ps.data.settings.plans.startup.card_creation_usd, ps.data.settings.plans.pro.monthly_usd, ps.data.settings.plans.premium.free_cards_per_month], [3, 150, 50]);
-    assert.equal(ps.data.settings.join_fee_usd, 20);
-    assert.equal(ps.data.settings.min_topup_usd, 200);
+    assert.deepEqual([ps.data.settings.plans.startup.card_creation_usd, ps.data.settings.plans.pro.card_recharge_usd, ps.data.settings.plans.premium.free_cards_per_month], [3, 0.5, 50]);
 
     const live = await liveMerchantWithActivity('program1');
+    const mrow = mockTables.merchants.find((m) => m.id === live.merchantId);
+    mrow.live_issuing_plan = 'pro'; // the merchant is already on the Pro Issuing plan
     const st0 = await api('GET', '/dashboard/card-program', { token: live.token });
-    assert.equal(st0.data.member.live, false);
+    assert.equal(st0.data.plan, 'pro');
     assert.equal(st0.data.open.live, false);
-    assert.equal(st0.data.plans.pro.monthly_usd, 150);
-    assert.equal((await api('POST', '/dashboard/card-program/join', { token: live.token, body: { plan: 'pro' } })).data.error.code, 'PROGRAM_NOT_OPEN');
+    assert.equal((await api('POST', '/dashboard/card-program/join', { token: live.token })).data.error.code, 'PROGRAM_NOT_OPEN');
 
-    // open Live; join the Pro plan: 20 $ entry + 150 $ first month, once
+    // open Live; joining costs the 20 $ entry only (no extra subscription: the Pro plan is billed as before), once
     await secrets.save({ monerails_live_key: 'mr_live_livekey123', monerails_live_webhook_secret: 'whsec_live_prog' });
     await issuer.saveSettings({ live_enabled: true });
     const before = await ledger.getBalance(live.merchantId, 'master_wallet', 'USD', 'live');
-    const j = await api('POST', '/dashboard/card-program/join', { token: live.token, body: { plan: 'pro' } });
+    const j = await api('POST', '/dashboard/card-program/join', { token: live.token });
     assert.equal(j.status, 201);
     assert.equal(j.data.plan, 'pro');
-    assert.ok(j.data.paid_until);
     const after = await ledger.getBalance(live.merchantId, 'master_wallet', 'USD', 'live');
-    assert.equal(Math.round((before - after) * 100) / 100, 170);
-    assert.equal((await api('POST', '/dashboard/card-program/join', { token: live.token, body: { plan: 'pro' } })).data.already, true);
+    assert.equal(Math.round((before - after) * 100) / 100, 20);
+    assert.equal((await api('POST', '/dashboard/card-program/join', { token: live.token })).data.already, true);
     assert.equal(await ledger.getBalance(live.merchantId, 'master_wallet', 'USD', 'live'), after, 'charged once');
-    assert.ok(mockTables.fee_revenue.find((f) => f.merchant_id === live.merchantId && f.kind === 'card_program_join'));
     assert.equal(await issuer.issuerFor(live.merchantId, 'live', 'individual'), 'monerails');
 
-    // members: 200 $ minimum top-up, at the plan's deposit rate (Pro 2.7 %)
-    assert.equal((await api('POST', '/dashboard/wallet/topups', { token: live.token, body: { method: 'zelle', reference: 'PROG-ZELLE-1', amount_usd: 150 } })).data.error.code, 'BELOW_PROGRAM_MINIMUM');
+    // the Pro column applies to program cards; the old card keeps its old price
     assert.equal(await program.depositPctFor(live.merchantId, 'live'), 0.027);
-    assert.equal(await program.depositPctFor('mch_not_member', 'live'), null);
-
-    // the old card keeps the old prices; program fees apply to program cards only
-    const fundOld = await api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount: 10 } });
-    assert.equal(fundOld.status, 200);
-    assert.notEqual(Number(fundOld.data.fee), 0.5);
+    assert.equal((await api('POST', '/dashboard/wallet/topups', { token: live.token, body: { method: 'zelle', reference: 'PROG-ZELLE-1', amount_usd: 150 } })).data.error.code, 'BELOW_PROGRAM_MINIMUM');
     const ov = await program.pricingOverrideFor(live.merchantId, { provider: 'monerails', mode: 'live' });
     assert.deepEqual([ov.card_creation_usd, ov.card_recharge_usd, ov.card_decline_usd], [2, 0.5, 0]);
     assert.equal(await program.withdrawalFeeFor(live.merchantId, 'live', 100), 2);
     assert.equal(await program.purchaseFeeFor(live.merchantId, 'live', 100), 0);
+    const fundOld = await api('POST', `/dashboard/cards/${live.card.id}/fund`, { token: live.token, body: { amount: 10 } });
+    assert.notEqual(Number(fundOld.data.fee), 0.5);
+    // Premium: 50 free cards a month, then 2.50 $
+    mrow.live_issuing_plan = 'premium';
+    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 0);
+    const mem = mockTables.card_program_members.find((m) => m.merchant_id === live.merchantId && m.mode === 'live');
+    mem.free_cards_month = new Date().toISOString().slice(0, 7); mem.free_cards_used = 50;
+    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 2.5);
+    // the "Offert" plan stays free of Freda Pay fees
+    mrow.live_issuing_plan = 'free';
+    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 0);
+    assert.equal(await program.depositPctFor(live.merchantId, 'live'), 0);
 
-    // plan change (Premium: 500 $ now) and monthly renewal
-    await api('POST', `/admin/merchants/${live.merchantId}/credit`, { token: live.adminToken, body: { wallet: 'master_wallet', amount: 1200, mode: 'live' } });
-    const up = await api('POST', '/dashboard/card-program/plan', { token: live.token, body: { plan: 'premium' } });
-    assert.equal(up.status, 200);
-    assert.equal(up.data.plan, 'premium');
-    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 0, 'Premium: free cards this month');
-    const row = mockTables.card_program_members.find((m) => m.merchant_id === live.merchantId && m.mode === 'live');
-    row.free_cards_month = new Date().toISOString().slice(0, 7); row.free_cards_used = 50;
-    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 2.5, 'after the 50 free cards');
-    row.paid_until = new Date(Date.now() - 1000).toISOString();
-    const b2 = await ledger.getBalance(live.merchantId, 'master_wallet', 'USD', 'live');
-    const ren = await program.renewDue();
-    assert.ok(ren.renewed >= 1);
-    assert.equal(Math.round((b2 - await ledger.getBalance(live.merchantId, 'master_wallet', 'USD', 'live')) * 100) / 100, 500);
-    assert.ok(new Date(row.paid_until) > new Date());
-
-    // Sandbox: free, Startup by default; a program card costs the Startup creation price; 1 % commission on purchases
+    // Sandbox (Startup by default): free entry; program card at 3 $; 3 % withdrawal; 1 % purchase commission taken FROM THE CARD
     const sb = await registerAndVerify({ business_name: 'Prog Sandbox Co', email: 'prog-sb@example.com', password: 'password123' });
-    const js = await api('POST', '/dashboard/card-program/join', { token: sb.data.session_token, body: {} });
+    const js = await api('POST', '/dashboard/card-program/join', { token: sb.data.session_token });
     assert.equal(js.status, 201);
     assert.equal(js.data.fee_usd, 0);
-    assert.equal(js.data.plan, 'startup');
     const h = await api('POST', '/dashboard/cards/holders', { token: sb.data.session_token, body: { firstName: 'Pro', lastName: 'Gram', email: 'pro.gram@example.com', country: 'HT', dob: '1991-02-02', identificationNumber: 'ID-PG', identity: TEST_IDENTITY, phoneNumber: '37033333', phoneShortCode: '+509', address: { street: 'Rue 3', city: 'PAP', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } } });
     assert.equal(h.status, 201);
-    const c = await api('POST', '/dashboard/cards', { token: sb.data.session_token, body: { reference: 'PROG-SB-1', kind: 'individual', holder_id: h.data.holder.id, amount: 20 } });
+    const c = await api('POST', '/dashboard/cards', { token: sb.data.session_token, body: { reference: 'PROG-SB-1', kind: 'individual', holder_id: h.data.holder.id, amount: 30 } });
     assert.equal(c.status, 202);
     const card = mockTables.cards.find((x) => x.id === c.data.id);
     assert.equal(card.provider, 'monerails');
     assert.equal(Number(card.creation_fee), 3);
-    assert.equal(await program.purchaseFeeFor(sb.data.merchant.id, 'sandbox', 50), 0.5);
-    // withdrawal from a program card: 3 % on Startup
     const w = await api('POST', `/dashboard/cards/${card.id}/withdraw`, { token: sb.data.session_token, body: { amount: 10 } });
-    assert.equal(w.status, 200);
     assert.equal(Number(w.data.fee), 0.3);
-
-    const adm = await api('GET', '/admin/card-program', { token: owner.token });
-    assert.ok(adm.data.members.find((m) => m.merchant_id === live.merchantId && m.mode === 'live' && m.plan === 'premium'));
+    const walletBefore = await ledger.getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox');
+    const orch = require('../src/services/cardOrchestrator');
+    const mc = st.cards.find((x) => x.id === card.provider_card_id);
+    const balBefore = mc.balance;
+    const r = await orch.recordCardTransaction({ event: 'issuing.transaction', type: 'AUTHORIZATION', mode: 'DEBIT', status: 'SUCCESS', amount: 500, currency: 'USD', card_id: card.provider_card_id, reference: 'prog-buy-1', merchant: { name: 'Shop' } }, 'sandbox');
+    assert.ok(r);
+    assert.equal(balBefore - mc.balance, 5, 'the 1 % commission (0.05 $) was taken from the card at the issuer');
+    assert.ok(mockTables.fee_revenue.find((f) => f.kind === 'card_purchase_commission' && f.related_id === r.id && Number(f.amount) === 0.05));
+    assert.equal(await ledger.getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox'), walletBefore, 'not on the Master Wallet');
   } finally {
     await issuer.saveSettings({ live_enabled: false, pilot_merchants: [], new_cards: 'maplerad' });
     await secrets.save({ monerails_test_key: '', monerails_webhook_secret: '', monerails_live_key: '', monerails_live_webhook_secret: '' });

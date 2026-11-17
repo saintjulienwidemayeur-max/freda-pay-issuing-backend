@@ -1714,6 +1714,21 @@ async function chargeCardSpendFee(card, row) {
     ? await require('./cardProgram').purchaseFeeFor(card.merchant_id, mode, Number(row.amount_usd || 0)) // program: a % of the purchase (Startup 1 %)
     : pricing.cardSpendFee(planKeyFor(merchant, 'issuing', mode));
   if (!(fee > 0)) return { charged: 0, reason: 'no-fee-on-plan' };
+  if (card.provider === 'monerails') {
+    // Program card (official grid): the purchase commission is taken from the CARD, not from the Master Wallet. It is moved off the card
+    // to the platform's card balance at the issuer (a withdrawal), never below the 1 $ the issuer keeps on a card. Once per transaction.
+    if (await supabase.selectOne('fee_revenue', { kind: 'card_purchase_commission', related_id: row.id }).catch(() => null)) return { charged: 0, reason: 'already-charged' };
+    const fresh = (await supabase.selectOne('cards', { id: card.id })) || card;
+    const charge = pricing.round2(Math.min(fee, Math.max(0, Number(fresh.balance || 0) - CARD_MIN_REMAINING_USD)));
+    if (!(charge > 0)) return { charged: 0, reason: 'card-balance-too-low' };
+    try { await require('./cardIssuer').call(fresh, (o) => o.withdraw(toCents(charge))); } catch (err) {
+      console.error(`Purchase commission not taken from card ${card.id}: ${err.message}`); // eslint-disable-line no-console
+      return { charged: 0, reason: 'issuer-refused' };
+    }
+    await adjustCardBalance(card.id, -charge).catch(() => {});
+    await revenue.log(card.merchant_id, 'card_purchase_commission', charge, 'USD', row.id, mode, 0);
+    return { charged: charge, reason: 'charged-on-card' };
+  }
   const ref = `card-spend-fee:${row.provider_reference}`;
   if (await supabase.selectOne('ledger_entries', { merchant_id: card.merchant_id, reference: ref })) return { charged: 0, reason: 'already-charged' };
   const available = await ledger.getBalance(card.merchant_id, 'master_wallet', 'USD', mode);
