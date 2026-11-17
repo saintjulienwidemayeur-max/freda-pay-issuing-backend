@@ -26,6 +26,7 @@ const PAGES = [
   { path: '/docs/creer-une-carte', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
   { path: '/docs/gerer-une-carte', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
   { path: '/docs/restrictions-cartes', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
+  { path: '/docs/nouveau-programme-cartes', changefreq: 'monthly', priority: '0.8', updated: '2026-11-17' },
   { path: '/docs/liens-et-bouton-de-paiement', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
   { path: '/docs/plugins-et-sdks', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
   { path: '/docs/limites-pagination-versions', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },

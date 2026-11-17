@@ -189,6 +189,27 @@ router.put('/dashboard/bank-account', session.requireSession, bankAccountHandler
 router.del('/dashboard/bank-account', session.requireSession, bankAccountHandlers.remove);
 router.get('/dashboard/wallet/summary', session.requireSession, walletSummaryHandlers.summary);
 router.get('/dashboard/activity', session.requireSession, walletSummaryHandlers.activity);
+// The new card program (tokenized cards, Apple Pay / Google Pay): status for the dashboard banner, and joining (20 $ in Live, free in Sandbox).
+router.get('/dashboard/card-program', session.requireSession, async (ctx) => ({ status: 200, body: await require('./services/cardProgram').status(ctx.merchantId, await require('./utils/mode').resolveMode(ctx)) }));
+router.post('/dashboard/card-program/join', session.requireSession, async (ctx) => {
+  if (ctx.role && !['owner', 'admin'].includes(ctx.role)) throw Object.assign(new Error("Seul le propriétaire ou un administrateur du compte peut rejoindre le programme."), { httpStatus: 403, code: 'FORBIDDEN' });
+  const mode = await require('./utils/mode').resolveMode(ctx);
+  const r = await require('./services/cardProgram').join(ctx.merchantId, mode);
+  return { status: r.already ? 200 : 201, body: { joined: true, already: r.already, mode, fee_usd: Number(r.member.fee_usd || 0), joined_at: r.member.joined_at } };
+});
+router.get('/admin/card-program', adminSession.requireAdminSession, async (ctx) => {
+  adminSession.requireComplianceRole(ctx);
+  const supabase = require('./lib/supabase');
+  const members = await supabase.select('card_program_members', {}, { order: 'joined_at.desc', limit: 1000 }).catch(() => []);
+  const merchants = members.length ? await supabase.select('merchants', { id: supabase.inList([...new Set(members.map((m) => m.merchant_id))]) }, { limit: 1000 }) : [];
+  const names = new Map(merchants.map((m) => [m.id, m]));
+  return { status: 200, body: { settings: await require('./services/cardProgram').settings(), members: members.map((m) => ({ ...m, business_name: names.get(m.merchant_id) ? names.get(m.merchant_id).business_name : null, email: names.get(m.merchant_id) ? names.get(m.merchant_id).email : null })) } };
+});
+router.put('/admin/card-program', adminSession.requireAdminSession, async (ctx) => {
+  adminSession.requireComplianceRole(ctx);
+  if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut changer les prix du programme.'), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' });
+  return { status: 200, body: { settings: await require('./services/cardProgram').saveSettings(ctx.body || {}, (ctx.admin && ctx.admin.email) || null) } };
+});
 router.get('/dashboard/notice', session.requireSession, async () => { const n = await require('./services/notice').get(); return { status: 200, body: { notice: n.enabled ? { message: n.message, tone: n.tone } : null } }; });
 router.get('/admin/notice', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: { notice: await require('./services/notice').get() } }; });
 router.put('/admin/notice', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: { notice: await require('./services/notice').save(ctx.body || {}, (ctx.admin && ctx.admin.email) || null) } }; });
