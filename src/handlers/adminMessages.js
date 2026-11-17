@@ -62,18 +62,20 @@ function buildMessage(merchant, subject, message) {
   });
 }
 
-function sendOne(merchant, subject, message) {
+async function sendOne(merchant, subject, message) {
   const built = buildMessage(merchant, subject, message);
-  return brevo.sendEmail({
+  const sender = await brevo.resolveSender(config.brevo.adminSenderEmail);
+  const out = await brevo.sendEmail({
     to: merchant.email,
     toName: merchant.business_name,
     subject: built.subject,
     html: built.html,
     text: built.text,
-    senderEmail: config.brevo.adminSenderEmail,
+    senderEmail: sender.email,
     senderName: config.brevo.adminSenderName,
     replyTo: config.brevo.inboundReplyAddress || config.brevo.adminSenderEmail,
   });
+  return Object.assign({}, out, { _from: sender.email, _fallback: !!sender.fallback });
 }
 
 /** POST /admin/messages/preview { subject, message } : the email as the merchants will see it (HTML), nothing is sent. */
@@ -100,7 +102,7 @@ async function send(ctx) {
     const res = await sendOne({ email: to, business_name: 'Test' }, subj, msg);
     // "Sent" only means Brevo accepted it: ask Brevo what became of it (up to ~8 s).
     const delivery = await brevo.deliveryStatus(res && res.messageId, { waitMs: 8000 });
-    return { status: 200, body: { test: true, sent: 1, to, from: config.brevo.adminSenderEmail, delivery } };
+    return { status: 200, body: { test: true, sent: 1, to, from: (res && res._from) || config.brevo.adminSenderEmail, fallback: !!(res && res._fallback), delivery } };
   }
 
   const recipients = await resolveRecipients(a, merchantId);
