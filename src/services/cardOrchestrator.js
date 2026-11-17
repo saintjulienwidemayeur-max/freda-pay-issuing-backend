@@ -490,7 +490,7 @@ async function enrollAtMonerails(holder, profile) {
     const address = { line1: String(addr.street || addr.line1 || '').slice(0, 120), city: String(addr.city || '').slice(0, 60), state: String(addr.state || '').slice(0, 60), postal_code: String(addr.postalCode || addr.postal_code || '').slice(0, 20) || undefined };
     const phone = `${String(profile.phoneShortCode || '').replace(/[^+\d]/g, '')}${String(profile.phoneNumber || '').replace(/\D/g, '')}`;
     const created = await monerails.createCardholder({
-      first_name: profile.firstName, last_name: profile.lastName, email: profile.email, country: String(profile.country || '').toUpperCase(),
+      first_name: String(profile.firstName || '').slice(0, 50), last_name: String(profile.lastName || '').slice(0, 50), email: String(profile.email || '').slice(0, 200), country: String(profile.country || '').toUpperCase(),
       phone: phone.startsWith('+') ? phone : `+${phone}`, birth_date: profile.dob, type: 'customer', id_document: MONERAILS_ID_DOCS[type] || 'national_id',
       id_number: String(id.number || profile.identificationNumber || ''), city: address.city, address, documents: back ? { front, back } : { front },
     });
@@ -528,9 +528,20 @@ async function createMonerailsCard({ merchantId, id, ownReference, brand, profil
   if (rules && rules.single_use) body.single_use = true;
   else if (rules && rules.limit_amount) body.spending_limit = { amount: toCents(rules.limit_amount), interval: rules.limit_interval };
   let res;
+  const key = `fa-create-${id}`; // the same key on a repeat: the issuer replays the first answer, never a second card
   try {
-    res = await monerails.createCard(body);
+    for (let i = 0; ; i += 1) {
+      try { res = await monerails.createCard(body, key); break; } catch (e) {
+        if (!e.unknownOutcome || i >= 2) throw e;
+        await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+      }
+    }
   } catch (err) {
+    if (err.unknownOutcome) {
+      // Unknown outcome: the card is left PENDING (no refund); reconcileMonerailsPending() finds it at Monerails by its label or fails it later.
+      require('./adminAlerts').alert({ key: `card-create-unknown-${id}`, throttleMs: 30 * 60 * 1000, subject: 'Création de carte Monerails à vérifier', eyebrow: 'Cartes', heading: 'Création de carte sans réponse', tone: 'warning', paragraphs: [`Carte ${id} (${ownReference}) : Monerails n'a pas confirmé la création (délai ou erreur serveur).`, 'La carte reste en attente ; le système la retrouve chez Monerails ou la fait échouer et rembourse dans les 30 minutes.'] }).catch(() => {});
+      throw Object.assign(new Error("La création de la carte n'a pas pu être confirmée. Elle sera vérifiée automatiquement : consultez la liste de vos cartes dans quelques minutes, et ne la recréez pas."), { code: 'CARD_RESULT_UNKNOWN', httpStatus: 502 });
+    }
     const reason = require('./cardIssuer').translateError(err).message;
     if (await markCardFailed(id, reason)) await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
     throw require('./cardIssuer').translateError(err);
@@ -545,6 +556,37 @@ async function createMonerailsCard({ merchantId, id, ownReference, brand, profil
     webhookDispatcher.dispatch(merchantId, 'card.created', { id, reference: ownReference, kind: 'individual', brand: row.brand, masked_pan: fields.masked_pan, balance: fields.balance });
   }
   return updated || row;
+}
+
+/**
+ * Monerails cards still pending with no issuer id (the creation answer was lost): find the card at Monerails by its label (our reference);
+ * if it is there, attach it (the card.issued webhook or the status finishes it); if it is not there after 30 minutes, fail it and refund.
+ */
+async function reconcileMonerailsPending() {
+  const rows = (await supabase.select('cards', { status: 'pending', provider: 'monerails' }, { limit: 50 }).catch(() => []))
+    .filter((c) => !c.provider_card_id && !c.deleted_at && Date.now() - new Date(c.created_at).getTime() > 10 * 60 * 1000);
+  let attached = 0; let failed = 0;
+  for (const c of rows) {
+    try {
+      const list = (await require('./monerails').forMode(c.mode).listCards({ limit: 100 })).data.data || [];
+      const found = list.find((x) => x.label === String(c.own_reference).slice(0, 60));
+      if (found) {
+        await supabase.update('cards', { id: c.id }, { provider_card_id: found.id, updated_at: new Date().toISOString() });
+        if (found.status === 'active') await applyMonerailsCardResult(found, true, null, c.mode);
+        else if (found.status === 'failed') await applyMonerailsCardResult(found, false, null, c.mode);
+        attached += 1;
+      } else if (Date.now() - new Date(c.created_at).getTime() > 30 * 60 * 1000) {
+        const reason = "La création de la carte n'a pas abouti. Les montants débités ont été remboursés : vous pouvez réessayer.";
+        if (await markCardFailed(c.id, reason)) {
+          const refund = fromCents(c.initial_amount || 0) + Number(c.creation_fee || 0);
+          if (refund > 0) await refundMasterWalletForFailedCard(c.merchant_id, refund, c.own_reference, c.id, c.mode);
+          webhookDispatcher.dispatch(c.merchant_id, 'card.failed', { id: c.id, reference: c.own_reference, kind: c.kind, brand: c.brand, failure_reason: reason });
+          failed += 1;
+        }
+      }
+    } catch (e) { console.error(`Monerails pending reconcile ${c.id}: ${e.message}`); } // eslint-disable-line no-console
+  }
+  return { attached, failed };
 }
 
 /** Monerails told us how a pending card ended (card.issued / card.issue_failed). Runs once per card. */
@@ -1052,9 +1094,9 @@ async function fundCardNow(merchantId, card, amountUsd, key) {
 
   await debitMasterWalletForCard(merchantId, totalDebit, ref, card.id, card.mode);
   try {
-    await require('./cardIssuer').call(card, (o) => o.fund(toCents(amountUsd)));
+    await require('./cardIssuer').call(card, (o) => o.fund(toCents(amountUsd), `fa-${ref}`), { retries: 2 });
   } catch (err) {
-    await refundMasterWalletForFailedCard(merchantId, totalDebit, ref, card.id, card.mode);
+    if (err.code !== 'CARD_RESULT_UNKNOWN') await refundMasterWalletForFailedCard(merchantId, totalDebit, ref, card.id, card.mode); // unknown: never refund blindly
     throw err;
   }
   // Outside the try: the partner already funded the card, so a bookkeeping failure must never refund the wallet.
@@ -1112,7 +1154,7 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
     throw err;
   }
 
-  await require('./cardIssuer').call(card, (o) => o.withdraw(toCents(amountUsd)));
+  await require('./cardIssuer').call(card, (o) => o.withdraw(toCents(amountUsd), `fw-${ref}`), { retries: 2 });
   // The partner has already taken the money off the card: from here nothing may fail silently. The wallet credit is retried (the ledger
   // reference is checked first, so a retry never credits twice), and a failure is logged with the reference the team needs.
   let credited = false;
@@ -1735,6 +1777,7 @@ function transactionWebhookData(card, t) {
 }
 
 module.exports = {
+  reconcileMonerailsPending,
   applyMonerailsCardResult,
   enrollAtMonerails,
   alignCardWithPartner,

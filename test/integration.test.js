@@ -9827,8 +9827,10 @@ test('new card program: 20 $ entry only, the merchant keeps their Issuing plan w
     assert.notEqual(Number(fundOld.data.fee), 0.5);
     // Premium: 50 free cards a month, then 2.50 $
     mrow.live_issuing_plan = 'premium';
-    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 0);
     const mem = mockTables.card_program_members.find((m) => m.merchant_id === live.merchantId && m.mode === 'live');
+    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 2.5, 'no counter column (migration not run): the plan price, not unlimited free cards');
+    mem.free_cards_used = 0; // (the database default)
+    assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 0);
     mem.free_cards_month = new Date().toISOString().slice(0, 7); mem.free_cards_used = 50;
     assert.equal((await program.creationFeeFor(live.merchantId, 'live')).fee, 2.5);
     // the "Offert" plan stays free of Freda Pay fees
@@ -9865,4 +9867,107 @@ test('new card program: 20 $ entry only, the merchant keeps their Issuing plan w
     await secrets.save({ monerails_test_key: '', monerails_webhook_secret: '', monerails_live_key: '', monerails_live_webhook_secret: '' });
     await new Promise((r) => server.close(r));
   }
+});
+
+test('security hardening: Reply-To forgery is not linked to an account, unknown outcome at the issuer is retried with the same key and never refunded blindly, pending cards are reconciled, free cards are claimed once', async () => {
+  const fm = require('../src/services/fredaMail');
+  const config = require('../src/config');
+  const secrets = require('../src/services/agent/secrets');
+  const issuer = require('../src/services/cardIssuer');
+  const orch = require('../src/services/cardOrchestrator');
+  const program = require('../src/services/cardProgram');
+  // 1) a message whose Reply-To differs from its From is not linked to the merchant account (known merchant, forged sender)
+  const reg = await registerAndVerify({ business_name: 'Replyto Co', email: 'replyto-victim@example.com', password: 'password123' });
+  const base = { id: 'RT-1', subject: 'Mon solde ?', text: 'Quel est mon solde ?', from: { address: 'replyto-victim@example.com', name: 'Victim' }, to: [{ address: 'issuing@fredapay.com' }] };
+  const forged = await fm.storeMessage({ ...base, id: 'RT-1', reply_to: { address: 'attacker@evil.example' } }, 'issuing@fredapay.com');
+  assert.ok(forged);
+  assert.equal(forged.merchant_id, null);
+  const honest = await fm.storeMessage({ ...base, id: 'RT-2' }, 'issuing@fredapay.com');
+  assert.equal(honest.merchant_id, reg.data.merchant.id);
+
+  // 2) issuer unknown outcome: same idempotency key on every try, then CARD_RESULT_UNKNOWN, wallet NOT refunded
+  const { server, st } = await monerailsMock(4559);
+  config.monerails.baseUrl = 'http://localhost:4559/v1';
+  await secrets.save({ monerails_test_key: 'mr_test_sandboxkey123', monerails_webhook_secret: 'whsec_sec', monerails_live_key: '', monerails_live_webhook_secret: '' });
+  try {
+    const sb = await registerAndVerify({ business_name: 'Unknown Outcome Co', email: 'unknown-outcome@example.com', password: 'password123' });
+    await issuer.saveSettings({ pilot_merchants: [sb.data.merchant.id] });
+    const h = await api('POST', '/dashboard/cards/holders', { token: sb.data.session_token, body: { firstName: 'Un', lastName: 'Known', email: 'un.known@example.com', country: 'HT', dob: '1990-01-01', identificationNumber: 'ID-UK', identity: TEST_IDENTITY, phoneNumber: '37044444', phoneShortCode: '+509', address: { street: 'Rue 4', city: 'PAP', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } } });
+    assert.equal(h.status, 201);
+    const c = await api('POST', '/dashboard/cards', { token: sb.data.session_token, body: { reference: 'UO-1', kind: 'individual', holder_id: h.data.holder.id, amount: 20 } });
+    assert.equal(c.status, 202);
+    const row = mockTables.cards.find((x) => x.id === c.data.id);
+    assert.equal(row.provider, 'monerails');
+    const created = st.calls.filter((x) => x.url === '/v1/cards' && x.method === 'POST').pop();
+    assert.equal(created.idem, `fa-create-${row.id}`);
+    // the issuer answers 500 on fund, every time: three tries with the same key, error 502, no refund
+    st.failFund = true;
+    const origFetch = global.fetch; let fundCalls = []; 
+    global.fetch = async (url, opts) => {
+      if (String(url).startsWith('http://localhost:4559') && String(url).includes('/fund')) { fundCalls.push(opts.headers['Idempotency-Key']); return { ok: false, status: 500, headers: { get: () => null }, json: async () => ({ error: { code: 'internal', message: 'boom' } }) }; }
+      return origFetch(url, opts);
+    };
+    const walletBefore = await require('../src/services/ledger').getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox');
+    let fund;
+    try { fund = await api('POST', `/dashboard/cards/${row.id}/fund`, { token: sb.data.session_token, body: { amount: 5 } }); } finally { global.fetch = origFetch; }
+    assert.equal(fund.status, 502, JSON.stringify(fund.data));
+    assert.equal(fund.data.error.code, 'CARD_RESULT_UNKNOWN');
+    assert.equal(fundCalls.length, 3);
+    assert.equal(new Set(fundCalls).size, 1, 'the same idempotency key on every try');
+    const walletAfter = await require('../src/services/ledger').getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox');
+    assert.ok(walletAfter < walletBefore, 'the debit stays until the team checks (no blind refund)');
+
+    // 3) a pending card whose creation answer was lost is found at Monerails by its label
+    const lost = await api('POST', '/dashboard/cards', { token: sb.data.session_token, body: { reference: 'UO-PENDING', kind: 'individual', holder_id: h.data.holder.id, amount: 10 } });
+    assert.equal(lost.status, 202);
+    const lrow = mockTables.cards.find((x) => x.id === lost.data.id);
+    const mrCard = st.cards.find((x) => x.id === lrow.provider_card_id);
+    Object.assign(lrow, { provider_card_id: null, status: 'pending', created_at: new Date(Date.now() - 20 * 60 * 1000).toISOString() });
+    mrCard.label = 'UO-PENDING'; mrCard.status = 'active'; mrCard.balance = 900;
+    const rec = await orch.reconcileMonerailsPending();
+    assert.ok(rec.attached >= 1);
+    assert.equal(lrow.provider_card_id, mrCard.id);
+    assert.equal(lrow.status, 'active');
+    // ...and one that is nowhere at Monerails after 30 minutes is failed and refunded
+    const gone = await api('POST', '/dashboard/cards', { token: sb.data.session_token, body: { reference: 'UO-GONE', kind: 'individual', holder_id: h.data.holder.id, amount: 10 } });
+    const grow = mockTables.cards.find((x) => x.id === gone.data.id);
+    st.cards.splice(st.cards.findIndex((x) => x.id === grow.provider_card_id), 1);
+    Object.assign(grow, { provider_card_id: null, status: 'pending', created_at: new Date(Date.now() - 40 * 60 * 1000).toISOString() });
+    const w2 = await require('../src/services/ledger').getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox');
+    const rec2 = await orch.reconcileMonerailsPending();
+    assert.ok(rec2.failed >= 1);
+    assert.equal(grow.status, 'failed');
+    assert.ok(await require('../src/services/ledger').getBalance(sb.data.merchant.id, 'master_wallet', 'USD', 'sandbox') > w2, 'refunded');
+
+    // 4) the free-card counter is claimed with compare-and-set
+    await program.join(sb.data.merchant.id, 'sandbox');
+    mockTables.merchants.find((m) => m.id === sb.data.merchant.id).issuing_plan = 'premium';
+    mockTables.card_program_members.find((m) => m.merchant_id === sb.data.merchant.id && m.mode === 'sandbox').free_cards_used = 0; // (the database default)
+    await Promise.all([program.countFreeCard(sb.data.merchant.id, 'sandbox'), program.countFreeCard(sb.data.merchant.id, 'sandbox')]);
+    assert.equal(mockTables.card_program_members.find((m) => m.merchant_id === sb.data.merchant.id && m.mode === 'sandbox').free_cards_used, 2);
+  } finally {
+    await issuer.saveSettings({ pilot_merchants: [], new_cards: 'maplerad' });
+    await secrets.save({ monerails_test_key: '', monerails_webhook_secret: '' });
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('admin email composer: pasted text with headings, lists, tab tables and links is rendered properly; Objet and Bonjour lines are dropped; preview endpoint', async () => {
+  const owner = await adminLogin('owner');
+  const pasted = "Objet : Test\n\nBonjour,\n\nNous lançons un programme.\n\nCE QUI CHANGE\n\nPremier point : un.\nDeuxième point : deux.\nCE QUI NE CHANGE PAS\n\nRien.\nPas de changement.\nLA GRILLE (extrait)\n\n\tStartup\tPro\nAbonnement\t0,00 $\t150,00 $\nCOMMENT\n\nDétails : https://issuing.fredapay.com/tarifs\nUne question ? Écrivez-nous.\n\nCordialement,";
+  const r = await api('POST', '/admin/messages/preview', { token: owner.token, body: { subject: 'Test', message: pasted } });
+  assert.equal(r.status, 200);
+  assert.match(r.data.html, /<table[^>]*>.*<th[^>]*>Startup<\/th>/s);
+  assert.match(r.data.html, /<td[^>]*>150,00 \$<\/td>/);
+  assert.equal((r.data.html.match(/<ul /g) || []).length, 3);
+  assert.match(r.data.html, /<a href="https:\/\/issuing\.fredapay\.com\/tarifs"/);
+  assert.ok(!/Objet\s*:/.test(r.data.html), 'the Objet line is not in the body');
+  assert.equal((r.data.html.match(/Bonjour/g) || []).length, 1, 'one greeting only');
+  assert.match(r.data.html, /max-width:640px/, 'wider layout for a table');
+  assert.match(r.data.text, /Startup \| Pro/);
+  assert.ok(!/<script/i.test(r.data.html));
+  const xss = await api('POST', '/admin/messages/preview', { token: owner.token, body: { subject: '<b>x</b>', message: 'Salut <script>alert(1)</script> **gras**' } });
+  assert.ok(!/<script>alert/.test(xss.data.html));
+  assert.match(xss.data.html, /<strong>gras<\/strong>/);
+  assert.equal((await api('POST', '/admin/messages/preview', { token: owner.token, body: { message: '' } })).status, 400);
 });

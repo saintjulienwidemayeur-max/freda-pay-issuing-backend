@@ -42,6 +42,9 @@ function detectMailbox(row) {
 
 async function knownMerchant(row) {
   if (row.merchant_id) return supabase.selectOne('merchants', { id: row.merchant_id });
+  // A Freda Mail message is linked to an account when it is stored (and deliberately NOT when its Reply-To differs from its From):
+  // never look the sender up again here.
+  if (row.source === 'freda_mail') return null;
   const m = await supabase.selectOne('merchants', { email: String(row.from_email || '').toLowerCase() });
   if (m) return m;
   const member = await supabase.selectOne('team_members', { email: String(row.from_email || '').toLowerCase(), status: 'active' }).catch(() => null);

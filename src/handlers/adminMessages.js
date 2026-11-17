@@ -3,6 +3,7 @@ const supabase = require('../lib/supabase');
 const brevo = require('../services/brevo');
 const config = require('../config');
 const { buildEmail } = require('../templates/notificationEmail');
+const rich = require('../utils/richMessage');
 const { randomHex } = require('../utils/ids');
 
 const AUDIENCES = ['one', 'all', 'live', 'sandbox', 'unverified'];
@@ -48,12 +49,15 @@ async function audience(ctx) {
 function buildMessage(merchant, subject, message) {
   const name = merchant.business_name || '';
   const personalise = (t) => t.replace(/\{\{\s*name\s*\}\}/gi, name);
-  const paragraphs = personalise(message).split(/\n\s*\n/).map((p) => p.trim().replace(/\n/g, ' ')).filter(Boolean);
+  const blocks = rich.parse(personalise(message)); // headings, lists, tables and links as pasted; "Objet :" and "Bonjour," lines dropped
   return buildEmail({
     subject,
     eyebrow: 'Message de Freda Pay Issuing',
     heading: subject,
-    paragraphs: [`Bonjour ${name || ''},`.replace(/\s+,/, ','), ...paragraphs],
+    paragraphs: [`Bonjour ${name || ''},`.replace(/\s+,/, ',')],
+    richHtml: rich.renderHtml(blocks),
+    richText: rich.renderText(blocks),
+    wide: rich.hasTable(blocks),
     tone: 'info',
   });
 }
@@ -70,6 +74,15 @@ function sendOne(merchant, subject, message) {
     senderName: config.brevo.adminSenderName,
     replyTo: config.brevo.inboundReplyAddress || config.brevo.adminSenderEmail,
   });
+}
+
+/** POST /admin/messages/preview { subject, message } : the email as the merchants will see it (HTML), nothing is sent. */
+async function preview(ctx) {
+  const { subject, message, name } = ctx.body || {};
+  const msg = String(message || '').trim();
+  if (!msg) throw httpError(400, 'MISSING_FIELDS', 'Le message est vide.');
+  const built = buildMessage({ business_name: String(name || 'Votre entreprise').slice(0, 80) }, String(subject || 'Aperçu').slice(0, 150), msg.slice(0, 8000));
+  return { status: 200, body: { html: built.html, text: built.text } };
 }
 
 async function send(ctx) {
@@ -130,4 +143,4 @@ async function history(ctx) {
   return { status: 200, body: { messages: rows } };
 }
 
-module.exports = { audience, send, history };
+module.exports = { preview, audience, send, history };
