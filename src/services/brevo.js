@@ -77,4 +77,26 @@ async function deliveryStatus(messageId, { waitMs = 0 } = {}) {
   }
 }
 
-module.exports = { sendEmail, deliveryStatus };
+let sendersCache = null; let sendersAt = 0;
+/** Validated (active) senders of the Brevo account; null when Brevo cannot be asked. Cached 10 minutes. */
+async function activeSenders() {
+  if (!config.brevo.apiKey) return null;
+  if (sendersCache && Date.now() - sendersAt < 10 * 60 * 1000) return sendersCache;
+  try {
+    const res = await fetch(`${config.brevo.baseUrl}/v3/senders`, { headers: { 'api-key': config.brevo.apiKey, Accept: 'application/json' } });
+    if (!res.ok) return null;
+    sendersCache = ((await res.json()).senders || []).filter((x) => x.active !== false).map((x) => String(x.email || '').toLowerCase());
+    sendersAt = Date.now();
+    return sendersCache;
+  } catch (e) { return null; }
+}
+/** The sender to use: the preferred one if Brevo knows it as validated, else the OTP sender that is known to deliver. */
+async function resolveSender(preferred) {
+  const list = await activeSenders();
+  if (!list || !preferred || list.includes(String(preferred).toLowerCase())) return { email: preferred, fallback: false };
+  const alt = config.brevo.senderEmail;
+  console.error(`Brevo: sender ${preferred} is not a validated sender, using ${alt} instead.`); // eslint-disable-line no-console
+  return { email: list.includes(String(alt).toLowerCase()) ? alt : preferred, fallback: list.includes(String(alt).toLowerCase()), requested: preferred };
+}
+
+module.exports = { sendEmail, deliveryStatus, activeSenders, resolveSender };
