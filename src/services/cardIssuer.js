@@ -1,0 +1,129 @@
+'use strict';
+const supabase = require('../lib/supabase');
+const maplerad = require('./maplerad');
+const monerails = require('./monerails');
+
+/**
+ * Which issuer a card lives at, and one way to talk to it.
+ *   - Every existing card is at the current issuer (provider "maplerad", the column's default).
+ *   - New INDIVIDUAL cards of SANDBOX pilot merchants (or of everyone once the admin switches "new cards" to Monerails) go to Monerails,
+ *     when their holder is verified there. Monerails is wired with a TEST key only: Live cards always stay at the current issuer.
+ * Settings (platform_settings "card_issuer"): { new_cards: 'maplerad' | 'monerails', pilot_merchants: [merchant ids], low_balance_usd }.
+ */
+const KEY = 'card_issuer';
+const DEFAULTS = { new_cards: 'maplerad', pilot_merchants: [], low_balance_usd: 200 };
+let cache = null; let at = 0;
+
+async function settings() {
+  if (cache && Date.now() - at < 15000) return cache;
+  let saved = {};
+  try { const row = await supabase.selectOne('platform_settings', { key: KEY }); if (row) saved = JSON.parse(row.value) || {}; } catch (e) { /* defaults */ }
+  cache = Object.assign({}, DEFAULTS, saved); at = Date.now();
+  return cache;
+}
+async function saveSettings(patch, adminEmail) {
+  const next = Object.assign({}, await settings());
+  if (patch.new_cards !== undefined) next.new_cards = patch.new_cards === 'monerails' ? 'monerails' : 'maplerad';
+  if (patch.pilot_merchants !== undefined) {
+    const list = Array.isArray(patch.pilot_merchants) ? patch.pilot_merchants : String(patch.pilot_merchants || '').split(/[\s,;]+/);
+    next.pilot_merchants = [...new Set(list.map((x) => String(x).trim()).filter((x) => /^mch_[A-Za-z0-9_]+$/.test(x)))].slice(0, 50);
+  }
+  if (patch.low_balance_usd !== undefined) { const n = Number(patch.low_balance_usd); if (Number.isFinite(n) && n >= 0 && n <= 1000000) next.low_balance_usd = n; }
+  const row = { value: JSON.stringify(next), updated_by: adminEmail || null, updated_at: new Date().toISOString() };
+  if (await supabase.selectOne('platform_settings', { key: KEY })) await supabase.update('platform_settings', { key: KEY }, row);
+  else await supabase.insert('platform_settings', Object.assign({ key: KEY }, row));
+  cache = next; at = Date.now();
+  return next;
+}
+
+/** The issuer for a NEW card or holder of this merchant. */
+async function issuerFor(merchantId, mode, kind) {
+  if ((mode || 'sandbox') !== 'sandbox' || (kind && kind !== 'individual') || !monerails.configured()) return 'maplerad';
+  const s = await settings();
+  return s.new_cards === 'monerails' || (s.pilot_merchants || []).includes(merchantId) ? 'monerails' : 'maplerad';
+}
+
+const isMonerails = (card) => !!card && card.provider === 'monerails';
+/** The card's id at its issuer. */
+const providerCardId = (card) => (isMonerails(card) ? card.provider_card_id : card && card.maplerad_card_id);
+
+/** A card from an issuer event (Maplerad card id or Monerails card id). */
+async function findByProviderId(id) {
+  if (!id) return null;
+  return (await supabase.selectOne('cards', { maplerad_card_id: id })) || (await supabase.selectOne('cards', { provider_card_id: id }).catch(() => null));
+}
+
+/** The same operations, whichever issuer holds the card. Amounts in US cents. */
+function ops(card) {
+  if (isMonerails(card)) {
+    if ((card.mode || 'sandbox') !== 'sandbox') { const e = new Error('Carte indisponible en Live pour le moment.'); e.code = 'CARD_SERVICE_ERROR'; e.httpStatus = 503; throw e; }
+    const id = card.provider_card_id;
+    return {
+      fund: (cents) => monerails.fund(id, cents),
+      withdraw: (cents) => monerails.withdraw(id, cents),
+      freeze: () => monerails.freeze(id),
+      unfreeze: () => monerails.unfreeze(id),
+      terminate: () => monerails.terminate(id),
+      /** Raw details in the field names the reveal code understands. */
+      details: async () => { const d = (await monerails.details(id)).data || {}; return { card_number: d.number, cvv: d.cvc, expiry_month: d.exp_month, expiry_year: d.exp_year }; },
+      balanceCents: async () => { const c = (await monerails.getCard(id)).data || {}; return c.balance == null ? null : Number(c.balance); },
+    };
+  }
+  const p = maplerad.forMode(card.mode);
+  const id = card.maplerad_card_id;
+  return {
+    fund: (cents) => p.fundCard(id, cents),
+    withdraw: (cents) => p.withdrawFromCard(id, cents),
+    freeze: () => p.freezeCard(id),
+    unfreeze: () => p.unfreezeCard(id),
+    terminate: () => p.terminateCard(id),
+    details: async () => { const res = await p.getCard(id); return (res && (res.data || res)) || {}; },
+    balanceCents: async () => { const res = await p.getCard(id); const d = (res && (res.data || res)) || {}; return d.balance == null ? null : Number(d.balance); },
+  };
+}
+
+/** Monerails answers with { error: { code } } turned into MONERAILS_<CODE>: the merchant gets our own codes and a short French message. */
+function translateError(err) {
+  const code = String((err && err.code) || '');
+  const map = {
+    MONERAILS_CARD_MINIMUM_BALANCE: [400, 'CARD_MINIMUM_BALANCE', 'Au moins 1 $ doit rester sur la carte.'],
+    MONERAILS_CARD_OPERATION_IN_PROGRESS: [409, 'CARD_OPERATION_IN_PROGRESS', 'Une autre opération est en cours sur cette carte. Réessayez dans un instant.'],
+    MONERAILS_CARD_SINGLE_USE: [400, 'CARD_SINGLE_USE', 'Carte à usage unique : elle ne peut être ni rechargée ni vidée.'],
+    MONERAILS_CARD_ALREADY_FROZEN: [409, 'CARD_FROZEN', 'Cette carte est déjà gelée.'],
+    MONERAILS_CARD_NOT_FROZEN: [409, 'CARD_NOT_FROZEN', "Cette carte n'est pas gelée."],
+    MONERAILS_CARD_TERMINATED: [409, 'CARD_TERMINATED', 'Cette carte est fermée.'],
+    MONERAILS_CARD_NOT_READY: [409, 'CARD_NOT_READY', "Cette carte n'est pas encore active (création en cours)."],
+    MONERAILS_RATE_LIMITED: [429, 'CARD_REVEAL_LIMIT', 'Trop de demandes pour cette carte. Réessayez plus tard.'],
+    MONERAILS_BALANCE_INSUFFICIENT: [503, 'CARD_SERVICE_ERROR', 'Le service de cartes est momentanément indisponible. Réessayez plus tard.'],
+  };
+  if (/Cards Created Today Cannot be Terminated/i.test(String(err && err.message))) return Object.assign(new Error('Une carte ne peut pas être fermée le jour de sa création. Gelez-la maintenant, puis fermez-la demain.'), { code: 'CARD_TERMINATE_SAME_DAY', httpStatus: 400 });
+  const m = map[code];
+  if (m) return Object.assign(new Error(m[2]), { code: m[1], httpStatus: m[0] });
+  if (/^MONERAILS_/.test(code)) return Object.assign(new Error('Le service de cartes a refusé la demande. Réessayez ou contactez le support.'), { code: 'CARD_SERVICE_ERROR', httpStatus: 502, providerInfo: { provider: 'monerails', code, message: String(err.message).slice(0, 300) } });
+  return err;
+}
+/** Runs an issuer call and returns our own error on failure. */
+async function call(card, fn) {
+  try { return await fn(ops(card)); } catch (err) { throw isMonerails(card) ? translateError(err) : err; }
+}
+
+/**
+ * Monerails' card balance can only be topped up in crypto from its dashboard: when it falls under the threshold, the team is warned
+ * (at most every 6 hours) before card creations and recharges start failing. Only checked while Monerails issues merchant cards.
+ */
+async function checkMonerailsBalance() {
+  const s = await settings();
+  if (!monerails.configured() || (s.new_cards !== 'monerails' && !(s.pilot_merchants || []).length)) return { checked: false };
+  const b = (await monerails.balance()).data || {};
+  const usd = b.cards && b.cards.amount != null ? Number(b.cards.amount) / 100 : null;
+  const low = usd != null && usd < Number(s.low_balance_usd || 0);
+  if (low) {
+    await require('./adminAlerts').alert({
+      key: 'monerails-low-balance', throttleMs: 6 * 3600 * 1000, subject: `Solde cartes Monerails bas : ${usd.toFixed(2)} $`, eyebrow: 'Cartes', heading: 'Rechargez le solde cartes Monerails', tone: 'warning',
+      paragraphs: [`Le solde cartes Monerails est de ${usd.toFixed(2)} $, sous le seuil de ${Number(s.low_balance_usd).toFixed(2)} $.`, 'Sans solde, les créations et recharges des cartes émises chez Monerails échouent.', 'Rechargez-le en crypto (USDT / USDC) depuis le dashboard Monerails, puis vérifiez le solde dans Admin > Monerails.'],
+    }).catch(() => {});
+  }
+  return { checked: true, balance_usd: usd, low };
+}
+
+module.exports = { checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };

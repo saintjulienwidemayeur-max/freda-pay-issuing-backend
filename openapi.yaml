@@ -538,6 +538,26 @@ paths:
         "400": { description: "INSUFFICIENT_CARD_BALANCE, AMOUNT_BELOW_FEE, CARD_MINIMUM_BALANCE (au moins 1 $ doit rester sur la carte), CARD_SINGLE_USE" }
         "409": { description: "CARD_FROZEN si la carte est gelée, CARD_OPERATION_IN_PROGRESS si une autre opération est en cours" }
 
+  /cards/{id}/spending-limit:
+    post:
+      tags: [Cartes]
+      summary: Changer ou retirer le plafond de dépense d'une carte
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spending_limit]
+              properties:
+                spending_limit: { type: object, nullable: true, description: "{ amount, interval: daily | per_transaction }, ou null pour retirer le plafond", properties: { amount: { type: number, example: 50 }, interval: { type: string, enum: [daily, per_transaction] } } }
+      responses:
+        "200": { description: "La carte, avec son nouveau spending_limit" }
+        "400": { description: "INVALID_SPENDING_LIMIT, CARD_SINGLE_USE (une carte à usage unique n'a pas de plafond)" }
+        "409": { description: "CARD_LIMIT_NOT_EDITABLE : pour certaines cartes, le plafond est appliqué par l'émetteur et fixé à la création ; CARD_TERMINATED" }
+
   /cards/{id}/freeze:
     post:
       tags: [Cartes]

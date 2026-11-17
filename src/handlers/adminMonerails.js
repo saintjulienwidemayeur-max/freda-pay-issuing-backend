@@ -21,6 +21,9 @@ async function status() {
     try { body.balance = (await mr.balance()).data; } catch (e) { body.balance_error = e.message; }
     try { const w = (await mr.listWebhookEndpoints()).data; body.webhook_endpoints = (w.data || []).map((x) => ({ id: x.id, url: x.url, status: x.status, events: x.events })); } catch (e) { body.webhook_error = e.message; }
   }
+  body.issuer = await require('../services/cardIssuer').settings();
+  if (body.balance && body.balance.cards && body.balance.cards.amount != null) body.low_balance = Number(body.balance.cards.amount) / 100 < Number(body.issuer.low_balance_usd || 0);
+  try { body.merchant_cards = (await supabase.select('cards', { provider: 'monerails' }, { select: 'id,status', limit: 1000 })).length; } catch (e) { body.merchant_cards = null; body.provider_column = false; }
   try { await supabase.select('monerails_events', {}, { limit: 1 }); body.events_table = true; } catch (e) { body.events_table = !twoFactor.isMissingTable(e); }
   return { status: 200, body };
 }
@@ -209,6 +212,12 @@ async function receive(ctx) {
     }
   } catch (err) {
     if (!twoFactor.isMissingTable(err)) throw err; // without the table the event is acknowledged (Monerails keeps it: GET /events)
+  }
+  // Events about merchants' cards and holders (pilot) are applied like the current issuer's. A failure answers 500 so Monerails retries
+  // (each step is safe to run twice: transactions are stored once by their id, card results only apply to a pending card).
+  try { await require('../services/monerailsBridge').handle(event); } catch (err) {
+    console.error(`Monerails event ${event.id} (${event.type}) not applied: ${err.message}`); // eslint-disable-line no-console
+    throw httpError(500, 'EVENT_NOT_APPLIED', 'Événement non appliqué, réessayez.');
   }
   return { status: 200, body: { received: true } };
 }

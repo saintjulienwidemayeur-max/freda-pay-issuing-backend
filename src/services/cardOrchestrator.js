@@ -448,6 +448,12 @@ async function createHolder(merchantId, profile, mode, options) {
       { id: record.id },
       { status: 'enrolled', maplerad_customer_id: mapleradCustomerId, updated_at: new Date().toISOString() }
     );
+    // Pilot merchants (sandbox): the holder is also enrolled at Monerails, so its next cards can be issued there. Best effort: if it
+    // fails, the holder stays usable at the current issuer and its cards simply go there.
+    if (await require('./cardIssuer').issuerFor(merchantId, providerMode, 'individual') === 'monerails') {
+      const done = await enrollAtMonerails(updated, profile);
+      if (done) Object.assign(updated, done);
+    }
     return updated;
   } catch (err) {
     await supabase.update(
@@ -457,6 +463,108 @@ async function createHolder(merchantId, profile, mode, options) {
     );
     throw err;
   }
+}
+
+const MONERAILS_ID_DOCS = { PASSPORT: 'passport', NIN: 'national_id', DRIVERS_LICENSE: 'driver_license', VOTERS_CARD: 'voters_card' };
+
+/**
+ * Creates the holder at Monerails and sends its identity check (front + back of the ID, address). With the TEST key the check is
+ * approved right away through Monerails' test helper, so the pilot can issue cards immediately; the real answer would come by the
+ * cardholder.kyc_updated webhook. Never throws: the outcome is saved on the holder (monerails_status, monerails_reason).
+ */
+async function enrollAtMonerails(holder, profile) {
+  const monerails = require('./monerails');
+  const identityImage = require('./identityImage');
+  const save = async (fields) => {
+    const [row] = await supabase.update('maplerad_customers', { id: holder.id }, Object.assign({ updated_at: new Date().toISOString() }, fields)).catch((e) => { console.error(`Monerails holder state not saved for ${holder.id}: ${e.message}`); return []; }); // eslint-disable-line no-console
+    return row || fields;
+  };
+  try {
+    const id = profile.identity || {};
+    const type = String(id.type || '').toUpperCase();
+    const front = await identityImage.toBase64Uri(id.imageUrl || id.image);
+    const backRaw = id.imageBackUrl || id.image_back;
+    const back = backRaw ? await identityImage.toBase64Uri(backRaw) : null;
+    const addr = profile.address || {};
+    const address = { line1: String(addr.street || addr.line1 || '').slice(0, 120), city: String(addr.city || '').slice(0, 60), state: String(addr.state || '').slice(0, 60), postal_code: String(addr.postalCode || addr.postal_code || '').slice(0, 20) || undefined };
+    const phone = `${String(profile.phoneShortCode || '').replace(/[^+\d]/g, '')}${String(profile.phoneNumber || '').replace(/\D/g, '')}`;
+    const created = await monerails.createCardholder({
+      first_name: profile.firstName, last_name: profile.lastName, email: profile.email, country: String(profile.country || '').toUpperCase(),
+      phone: phone.startsWith('+') ? phone : `+${phone}`, birth_date: profile.dob, type: 'customer', id_document: MONERAILS_ID_DOCS[type] || 'national_id',
+      id_number: String(id.number || profile.identificationNumber || ''), city: address.city, address, documents: back ? { front, back } : { front },
+    });
+    const chId = created.data.id;
+    await save({ monerails_cardholder_id: chId, monerails_status: 'pending', monerails_reason: null });
+    const sent = await monerails.submitVerification(chId, { id_number: String(id.number || profile.identificationNumber || ''), address, birth_date: profile.dob });
+    let status = (sent.data && sent.data.verification && sent.data.verification.status) || 'in_review';
+    if (status !== 'verified') {
+      const approved = await monerails.testVerification(chId, 'approved'); // TEST key only (the integration is sandbox): instant approval
+      status = (approved.data && approved.data.verification && approved.data.verification.status) || status;
+    }
+    return save({ monerails_status: status, monerails_reason: null });
+  } catch (err) {
+    console.error(`Monerails enrollment failed for holder ${holder.id}: ${err.message}`); // eslint-disable-line no-console
+    return save({ monerails_status: 'failed', monerails_reason: String(err.message || err).slice(0, 300) });
+  }
+}
+
+/**
+ * A new individual card at Monerails (pilot). Same bookkeeping as the current issuer: the Master Wallet is debited first (preload +
+ * our creation fee), the card row is saved, then Monerails is asked. 201 = active now; 202 = pending, the card.issued / card.issue_failed
+ * webhook finishes it. A refusal marks the card failed and refunds the wallet. The spending rules are passed to Monerails itself.
+ */
+async function createMonerailsCard({ merchantId, id, ownReference, brand, profile, mode, totalDebit, preload, creationFee, rules }) {
+  const monerails = require('./monerails');
+  await debitMasterWalletForCard(merchantId, totalDebit, ownReference, id, mode);
+  const row = await insertCardOrRefund(merchantId, totalDebit, ownReference, id, mode, {
+    id, merchant_id: merchantId, own_reference: ownReference, kind: 'individual', brand: brand || 'VISA', currency: 'USD', status: 'pending',
+    initial_amount: toCents(preload), creation_fee: creationFee, holder_id: profile.id,
+    holder_name: [profile.first_name, profile.last_name].filter(Boolean).join(' ') || null, mode: mode || 'sandbox', provider: 'monerails',
+  });
+  const body = { amount: toCents(preload), cardholder: profile.monerails_cardholder_id, type: 'customer', network: String(brand || 'VISA').toUpperCase() === 'MASTERCARD' ? 'mastercard' : 'visa', label: String(ownReference).slice(0, 60) };
+  if (rules && rules.single_use) body.single_use = true;
+  else if (rules && rules.limit_amount) body.spending_limit = { amount: toCents(rules.limit_amount), interval: rules.limit_interval };
+  let res;
+  try {
+    res = await monerails.createCard(body);
+  } catch (err) {
+    const reason = require('./cardIssuer').translateError(err).message;
+    if (await markCardFailed(id, reason)) await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
+    throw require('./cardIssuer').translateError(err);
+  }
+  const c = res.data || {};
+  const fields = { provider_card_id: c.id || null, updated_at: new Date().toISOString() };
+  if (res.status !== 202 && c.status === 'active') Object.assign(fields, { status: 'active', masked_pan: c.last4 ? `•••• •••• •••• ${c.last4}` : null, balance: c.balance == null ? Number(preload) : Number(c.balance) / 100 });
+  const [updated] = await supabase.update('cards', { id }, fields);
+  if (fields.status === 'active') {
+    // Monerails takes its issuance fee from the preload: what is missing on the card is what the partner charged.
+    await revenue.log(merchantId, 'card_creation', creationFee, 'USD', id, mode, Math.max(0, pricing.round2(Number(preload) - fields.balance))).catch(() => {});
+    webhookDispatcher.dispatch(merchantId, 'card.created', { id, reference: ownReference, kind: 'individual', brand: row.brand, masked_pan: fields.masked_pan, balance: fields.balance });
+  }
+  return updated || row;
+}
+
+/** Monerails told us how a pending card ended (card.issued / card.issue_failed). Runs once per card. */
+async function applyMonerailsCardResult(cardObj, ok, reason) {
+  const card = cardObj && cardObj.id ? await supabase.selectOne('cards', { provider_card_id: cardObj.id }) : null;
+  if (!card || card.status !== 'pending') return card;
+  if (ok) {
+    const masked = cardObj.last4 ? `•••• •••• •••• ${cardObj.last4}` : null;
+    const [done] = await supabase.update('cards', { id: card.id, status: 'pending' }, { status: 'active', masked_pan: masked, balance: cardObj.balance == null ? fromCents(card.initial_amount || 0) : Number(cardObj.balance) / 100, updated_at: new Date().toISOString() });
+    if (done) {
+      await revenue.log(card.merchant_id, 'card_creation', Number(card.creation_fee || 0), 'USD', card.id, card.mode, Math.max(0, pricing.round2(fromCents(card.initial_amount || 0) - Number(done.balance)))).catch(() => {});
+      webhookDispatcher.dispatch(card.merchant_id, 'card.created', { id: card.id, reference: card.own_reference, kind: card.kind, brand: card.brand, masked_pan: masked, balance: done.balance });
+    }
+    return done || card;
+  }
+  const why = reason || "Le service de cartes n'a pas pu créer la carte. Les montants débités ont été remboursés.";
+  if (await markCardFailed(card.id, why)) {
+    const refund = fromCents(card.initial_amount || 0) + Number(card.creation_fee || 0);
+    if (refund > 0) await refundMasterWalletForFailedCard(card.merchant_id, refund, card.own_reference, card.id, card.mode);
+    webhookDispatcher.dispatch(card.merchant_id, 'card.failed', { id: card.id, reference: card.own_reference, kind: card.kind, brand: card.brand, failure_reason: why });
+    notifyCardCreationFailed(card, why, refund);
+  }
+  return supabase.selectOne('cards', { id: card.id });
 }
 
 /* ===================== Cards ===================== */
@@ -487,7 +595,7 @@ async function assertUnderCardLimit(merchantId, issuingPlanKey, mode) {
   }
 }
 
-async function createIndividualCard({ merchantId, id, ownReference, brand, amountUsd, holderId, mode }) {
+async function createIndividualCard({ merchantId, id, ownReference, brand, amountUsd, holderId, mode, rules }) {
   const effMode = mode || 'sandbox';
   let profile;
   if (holderId) {
@@ -526,6 +634,27 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
     err.code = 'HOLDER_NOT_ENROLLED';
     err.httpStatus = 409;
     throw err;
+  }
+  // Pilot (sandbox): a holder verified at Monerails gets its new card there; otherwise the current issuer, as always.
+  if (profile.monerails_cardholder_id && profile.monerails_status === 'verified' && await require('./cardIssuer').issuerFor(merchantId, effMode, 'individual') === 'monerails') {
+    const merchantM = await getMerchant(merchantId);
+    const planM = planKeyFor(merchantM, 'issuing', mode);
+    await assertUnderCardLimit(merchantId, planM, mode);
+    const feeM = pricing.cardCreationFee(planM, await getMerchantPricingOverride(merchantId));
+    if (amountUsd != null && (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 0)) {
+      const err = new Error('amount doit être un nombre positif.');
+      err.code = 'INVALID_AMOUNT';
+      err.httpStatus = 400;
+      throw err;
+    }
+    const preloadM = amountUsd || 0;
+    if (preloadM < 2) {
+      const err = new Error("Le montant préchargé doit être d'au moins 2 $ (frais de l'émetteur + 1 $ minimum sur la carte).");
+      err.code = 'AMOUNT_TOO_SMALL';
+      err.httpStatus = 400;
+      throw err;
+    }
+    return createMonerailsCard({ merchantId, id, ownReference, brand, profile, mode: effMode, totalDebit: pricing.round2(preloadM + feeM), preload: preloadM, creationFee: feeM, rules });
   }
   if (!profile.maplerad_customer_id) {
     // Older holders were saved as "verified" without an id. Recover it by
@@ -819,33 +948,69 @@ function mismatch() {
 /**
  * One operation at a time on a card (fund, withdraw, freeze, unfreeze, terminate): a second one while the first runs is refused
  * with 409 CARD_OPERATION_IN_PROGRESS. (Two identical requests with the same idempotency key still share one run, see once().)
+ * The lock lives in the database (card_locks), so it holds across server instances; it expires by itself after 2 minutes if a server
+ * dies mid-operation. Without the table (migration not run yet), an in-memory lock is used.
  */
 const cardLocks = new Set();
-async function withCardLock(cardId, run) {
-  if (cardLocks.has(cardId)) {
-    const err = new Error('Une autre opération est en cours sur cette carte. Réessayez dans un instant.');
-    err.code = 'CARD_OPERATION_IN_PROGRESS';
-    err.httpStatus = 409;
-    throw err;
+const LOCK_MS = 2 * 60 * 1000;
+const missingTable = (err) => { const d = (err && err.details) || {}; return d.code === 'PGRST205' || d.code === '42P01' || /Could not find the table|does not exist/i.test(String((err && err.message) || '')); };
+function busy() {
+  const err = new Error('Une autre opération est en cours sur cette carte. Réessayez dans un instant.');
+  err.code = 'CARD_OPERATION_IN_PROGRESS';
+  err.httpStatus = 409;
+  return err;
+}
+async function acquireDbLock(cardId) {
+  const until = new Date(Date.now() + LOCK_MS).toISOString();
+  try {
+    await supabase.insert('card_locks', { card_id: cardId, locked_until: until });
+    return true;
+  } catch (err) {
+    if (missingTable(err)) return null;
+    // Already there: taken over only if it expired.
+    const taken = await supabase.update('card_locks', { card_id: cardId, locked_until: supabase.lt(new Date().toISOString()) }, { locked_until: until }).catch((e) => (missingTable(e) ? null : []));
+    if (taken === null) return null;
+    return !!(taken && taken.length);
   }
+}
+async function withCardLock(cardId, run) {
+  if (cardLocks.has(cardId)) throw busy();
   cardLocks.add(cardId);
-  try { return await run(); } finally { cardLocks.delete(cardId); }
+  let db = null;
+  try {
+    db = await acquireDbLock(cardId);
+    if (db === false) throw busy();
+    return await run();
+  } finally {
+    cardLocks.delete(cardId);
+    if (db === true) await supabase.delete('card_locks', { card_id: cardId }).catch(() => {});
+  }
 }
 
-/** The full number / CVV can be read 30 times per hour per card (429 CARD_REVEAL_LIMIT). */
+/** The full number / CVV can be read 30 times per hour per card (429 CARD_REVEAL_LIMIT), counted in card_reveals (in memory without it). */
 const REVEAL_LIMIT = 30;
 const revealLog = new Map();
-function countReveal(cardId) {
-  const now = Date.now();
-  const recent = (revealLog.get(cardId) || []).filter((t) => now - t < 3600 * 1000);
-  if (recent.length >= REVEAL_LIMIT) {
-    const err = new Error(`Le numéro complet de cette carte a déjà été affiché ${REVEAL_LIMIT} fois dans l'heure. Réessayez plus tard.`);
-    err.code = 'CARD_REVEAL_LIMIT';
-    err.httpStatus = 429;
-    throw err;
+function revealLimitError() {
+  const err = new Error(`Le numéro complet de cette carte a déjà été affiché ${REVEAL_LIMIT} fois dans l'heure. Réessayez plus tard.`);
+  err.code = 'CARD_REVEAL_LIMIT';
+  err.httpStatus = 429;
+  return err;
+}
+async function countReveal(cardId) {
+  const since = new Date(Date.now() - 3600 * 1000).toISOString();
+  try {
+    const recent = await supabase.select('card_reveals', { card_id: cardId, created_at: supabase.gt(since) }, { limit: REVEAL_LIMIT + 1 });
+    if (recent.length >= REVEAL_LIMIT) throw revealLimitError();
+    await supabase.insert('card_reveals', { id: `rvl_${randomHex(8)}`, card_id: cardId, created_at: new Date().toISOString() });
+    return;
+  } catch (err) {
+    if (err.code === 'CARD_REVEAL_LIMIT' || !missingTable(err)) throw err;
   }
-  recent.push(now);
-  revealLog.set(cardId, recent);
+  const now = Date.now();
+  const mem = (revealLog.get(cardId) || []).filter((t) => now - t < 3600 * 1000);
+  if (mem.length >= REVEAL_LIMIT) throw revealLimitError();
+  mem.push(now);
+  revealLog.set(cardId, mem);
 }
 
 /** At least this much must stay on a card after a withdrawal (400 CARD_MINIMUM_BALANCE). */
@@ -880,7 +1045,7 @@ async function fundCardNow(merchantId, card, amountUsd, key) {
 
   await debitMasterWalletForCard(merchantId, totalDebit, ref, card.id, card.mode);
   try {
-    await maplerad.forMode(card.mode).fundCard(card.maplerad_card_id, toCents(amountUsd));
+    await require('./cardIssuer').call(card, (o) => o.fund(toCents(amountUsd)));
   } catch (err) {
     await refundMasterWalletForFailedCard(merchantId, totalDebit, ref, card.id, card.mode);
     throw err;
@@ -938,7 +1103,7 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
     throw err;
   }
 
-  await maplerad.forMode(card.mode).withdrawFromCard(card.maplerad_card_id, toCents(amountUsd));
+  await require('./cardIssuer').call(card, (o) => o.withdraw(toCents(amountUsd)));
   // The partner has already taken the money off the card: from here nothing may fail silently. The wallet credit is retried (the ledger
   // reference is checked first, so a retry never credits twice), and a failure is logged with the reference the team needs.
   let credited = false;
@@ -974,7 +1139,7 @@ async function freezeCard(merchantId, cardId) {
   return withCardLock(card.id, () => freezeNow(merchantId, card));
 }
 async function freezeNow(merchantId, card) {
-  await maplerad.forMode(card.mode).freezeCard(card.maplerad_card_id);
+  await require('./cardIssuer').call(card, (o) => o.freeze());
   const [updated] = await supabase.update('cards', { id: card.id }, { status: 'disabled', updated_at: new Date().toISOString() });
   webhookDispatcher.dispatch(merchantId, 'card.frozen', { id: updated.id, reference: updated.own_reference });
   return updated;
@@ -986,7 +1151,7 @@ async function unfreezeCard(merchantId, cardId) {
 }
 async function unfreezeNow(merchantId, card) {
   await require('./cardRules').beforeUnfreeze(card.id); // a used single-use card stays frozen; a manual unfreeze lifts a limit freeze
-  await maplerad.forMode(card.mode).unfreezeCard(card.maplerad_card_id);
+  await require('./cardIssuer').call(card, (o) => o.unfreeze());
   const [updated] = await supabase.update('cards', { id: card.id }, { status: 'active', updated_at: new Date().toISOString() });
   webhookDispatcher.dispatch(merchantId, 'card.unfrozen', { id: updated.id, reference: updated.own_reference });
   return updated;
@@ -1020,7 +1185,7 @@ async function terminateNow(merchantId, card, options) {
     err.httpStatus = 409;
     throw err;
   }
-  if (card.status === 'failed' || card.status === 'terminated' || !card.maplerad_card_id) {
+  if (card.status === 'failed' || card.status === 'terminated' || !require('./cardIssuer').providerCardId(card)) {
     const [removed] = await supabase.update('cards', { id: card.id }, { deleted_at: now, updated_at: now });
     return removed;
   }
@@ -1033,7 +1198,7 @@ async function terminateNow(merchantId, card, options) {
     err.httpStatus = 400;
     throw err;
   }
-  await maplerad.forMode(card.mode).terminateCard(card.maplerad_card_id); // must succeed: the card is really closed
+  await require('./cardIssuer').call(card, (o) => o.terminate()); // must succeed: the card is really closed
   // The balance follows purchases and refunds (applyCardSpendToBalance), so what is left on the card is what goes back to the Master Wallet.
   const remaining = Math.max(0, pricing.round2(Number(card.balance || 0)));
   const closureFee = Math.min(remaining, Math.max(0, pricing.round2(config.cardClosureFeeUsd || 0)));
@@ -1063,9 +1228,8 @@ async function revealCardDetails(merchantId, cardId, { fromDashboard = false } =
     err.httpStatus = 403;
     throw err;
   }
-  countReveal(card.id);
-  const res = await maplerad.forMode(card.mode).getCard(card.maplerad_card_id);
-  const data = (res && (res.data || res)) || {};
+  await countReveal(card.id);
+  const data = await require('./cardIssuer').call(card, (o) => o.details());
 
   // Maplerad's exact field names for this aren't confirmed in their public
   // docs, so check the common candidates other issuers use rather than
@@ -1113,7 +1277,7 @@ async function getCardOwned(merchantId, cardId) {
     err.httpStatus = 404;
     throw err;
   }
-  if (!card.maplerad_card_id) {
+  if (!require('./cardIssuer').providerCardId(card)) {
     const err = new Error("Cette carte n'est pas encore active (création en cours).");
     err.code = 'CARD_NOT_READY';
     err.httpStatus = 409;
@@ -1153,7 +1317,7 @@ const LOW_BALANCE = /insufficient|not enough|low balance|solde|fonds|funds/i;
 
 async function applyCardDeclineWebhook(event, webhookMode) {
   if (!event || String(event.type || '').toUpperCase() !== 'DECLINE') return { charged: 0, reason: 'not-a-decline' };
-  const card = event.card_id ? await supabase.selectOne('cards', { maplerad_card_id: event.card_id }) : null;
+  const card = event.card_id ? await require('./cardIssuer').findByProviderId(event.card_id) : null;
   if (!card) return { charged: 0, reason: 'unknown-card' };
   if (webhookMode && (card.mode || 'sandbox') !== webhookMode) {
     // eslint-disable-next-line no-console
@@ -1196,7 +1360,7 @@ async function applyCardDeclineWebhook(event, webhookMode) {
  * event delivered twice (or re-sent later) is stored once. An event of the other environment never touches this card.
  */
 async function recordCardTransaction(event, webhookMode) {
-  const card = event && event.card_id ? await supabase.selectOne('cards', { maplerad_card_id: event.card_id }) : null;
+  const card = event && event.card_id ? await require('./cardIssuer').findByProviderId(event.card_id) : null;
   if (!card) return null;
   if (webhookMode && (card.mode || 'sandbox') !== webhookMode) return null;
   const type = String(event.type || '').toUpperCase();
@@ -1244,7 +1408,7 @@ async function recordCardTransaction(event, webhookMode) {
  * credited back (the partner's event does not say where it went); the team is told so it can look at the card.
  */
 async function applyCardTerminationWebhook(event, webhookMode) {
-  const card = event && event.card_id ? await supabase.selectOne('cards', { maplerad_card_id: event.card_id }) : null;
+  const card = event && event.card_id ? await require('./cardIssuer').findByProviderId(event.card_id) : null;
   if (!card) return null;
   if (webhookMode && (card.mode || 'sandbox') !== webhookMode) return null;
   if (card.status === 'terminated' || card.status === 'failed') return card;
@@ -1279,7 +1443,7 @@ const UNSENT_AFTER_MS = 3 * 60 * 1000;
 async function failUnsentPendingCards() {
   const now = Date.now();
   const rows = (await supabase.select('cards', { status: 'pending', maplerad_reference: supabase.isNull(), created_at: supabase.gt(new Date(now - 14 * 24 * 3600 * 1000).toISOString()) }, { order: 'created_at.asc', limit: 100 }))
-    .filter((c) => !c.deleted_at && now - new Date(c.created_at).getTime() > UNSENT_AFTER_MS);
+    .filter((c) => !c.deleted_at && c.provider !== 'monerails' && now - new Date(c.created_at).getTime() > UNSENT_AFTER_MS);
   let failed = 0;
   for (const c of rows) {
     const reason = "La demande de création n'a pas pu être envoyée au fournisseur de cartes. Les montants débités ont été remboursés : vous pouvez réessayer.";
@@ -1388,10 +1552,9 @@ async function backfillCardBalances() {
  * never rewrite the balance by a large amount. A bigger gap is only reported in the server log.
  */
 async function syncCardBalanceFromPartner(card) {
-  if (!card || !card.maplerad_card_id) return;
-  const res = await maplerad.forMode(card.mode).getCard(card.maplerad_card_id);
-  const data = (res && (res.data || res)) || {};
-  const cents = Number(data.balance);
+  if (!card || !require('./cardIssuer').providerCardId(card)) return;
+  const fetched = await require('./cardIssuer').ops(card).balanceCents();
+  const cents = fetched == null ? NaN : Number(fetched);
   if (!Number.isFinite(cents) || cents < 0) return;
   const partner = pricing.round2(cents / 100);
   const fresh = await supabase.selectOne('cards', { id: card.id });
@@ -1414,7 +1577,7 @@ async function syncCardBalanceFromPartner(card) {
  * `sinceMs` limits how far back it looks (the partner lists the newest first).
  */
 async function syncCardTransactionsFromPartner(card, opts) {
-  if (!card || !card.maplerad_card_id) return { imported: 0 };
+  if (!card || !card.maplerad_card_id || require('./cardIssuer').isMonerails(card)) return { imported: 0 }; // Monerails pushes every transaction by webhook
   const since = opts && opts.sinceMs ? Date.now() - opts.sinceMs : 0;
   const res = await maplerad.forMode(card.mode).getCardTransactions(card.maplerad_card_id, { page: 1, page_size: 100 });
   const raw = (res && (res.data || res.transactions || res.result)) || [];
@@ -1451,7 +1614,7 @@ async function syncCardTransactionsFromPartner(card, opts) {
 async function alignCardWithPartner(card, opts) {
   const settleMs = opts && opts.settleMs !== undefined ? opts.settleMs : 90 * 1000;
   const result = { id: card && card.id, changed: false };
-  if (!card || !card.maplerad_card_id || !['active', 'disabled'].includes(card.status) || card.deleted_at) return Object.assign(result, { skipped: 'not-applicable' });
+  if (!card || !card.maplerad_card_id || require('./cardIssuer').isMonerails(card) || !['active', 'disabled'].includes(card.status) || card.deleted_at) return Object.assign(result, { skipped: 'not-applicable' });
   const read = async () => {
     const res = await maplerad.forMode(card.mode).getCard(card.maplerad_card_id);
     const cents = Number(((res && (res.data || res)) || {}).balance);
@@ -1561,6 +1724,8 @@ function transactionWebhookData(card, t) {
 }
 
 module.exports = {
+  applyMonerailsCardResult,
+  enrollAtMonerails,
   alignCardWithPartner,
   alignCardIfStale,
   alignAllCards,
