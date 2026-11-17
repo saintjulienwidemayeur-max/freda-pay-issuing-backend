@@ -9437,3 +9437,76 @@ test('merchant activity: one list of deposits, card operations and card purchase
   assert.equal((await api('GET', '/dashboard/notice', { token: live.token })).data.notice, null);
   await api('PUT', '/admin/notice', { token: live.adminToken, body: { enabled: true, message: '' } }); // back to the default text for other tests
 });
+
+test('card rules: spending_limit (daily, per purchase) set by the merchant and single-use cards, applied on each purchase', async () => {
+  const live = await liveMerchantWithActivity('cardrules');
+  const send = (ev) => sendProviderEvent(ev, MOCK_LIVE_WHSEC);
+  const newCard = async (ref, extra) => {
+    const c = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: ref, kind: 'business', business_name: 'Rules Co', brand: 'VISA', amount: 30, ...extra } });
+    if (c.status !== 202) return c;
+    await pollUntil(() => api('GET', `/dashboard/cards/${c.data.id}`, { token: live.token }), (r) => r.data.status === 'active', 40, 20);
+    return { ...c, row: mockTables.cards.find((x) => x.id === c.data.id) };
+  };
+  const statusOf = async (id) => (await api('GET', `/dashboard/cards/${id}`, { token: live.token })).data;
+
+  // validation happens before anything is charged
+  const walletBefore = mockTables.ledger_entries.length;
+  for (const bad of [{ spending_limit: { amount: -5, interval: 'daily' } }, { spending_limit: { amount: 10, interval: 'weekly' } }, { spending_limit: 10 }, { single_use: true, spending_limit: { amount: 10, interval: 'daily' } }]) {
+    const r = await api('POST', '/dashboard/cards', { token: live.token, body: { reference: `BAD-${Math.random()}`, kind: 'business', business_name: 'X', amount: 30, ...bad } });
+    assert.equal(r.status, 400);
+    assert.equal(r.data.error.code, 'INVALID_SPENDING_LIMIT');
+  }
+  assert.equal(mockTables.ledger_entries.length, walletBefore, 'nothing debited for a refused request');
+
+  // daily limit: 20 $ ; 15 $ goes through, the next 6 $ reaches the limit -> frozen until the next UTC day
+  const daily = await newCard('RULE-DAILY', { spending_limit: { amount: 20, interval: 'daily' } });
+  assert.deepEqual(daily.data.spending_limit, { amount: 20, interval: 'daily' });
+  assert.equal(daily.data.single_use, false);
+  const id = daily.row.maplerad_card_id;
+  await send(purchase(id, { amount: 1500 }));
+  assert.equal((await statusOf(daily.data.id)).status, 'active');
+  await send(purchase(id, { amount: 600 }));
+  let d = await pollUntil(() => statusOf(daily.data.id), (x) => x.status === 'disabled', 40, 20);
+  assert.ok(d.limit_reached_until, 'the card says until when it is blocked');
+  const listed = (await api('GET', '/dashboard/cards', { token: live.token })).data.cards.find((c) => c.id === daily.data.id);
+  assert.deepEqual(listed.spending_limit, { amount: 20, interval: 'daily' });
+  // a manual unfreeze lifts it; the reset job also unfreezes once the day has changed
+  assert.equal((await api('POST', `/dashboard/cards/${daily.data.id}/unfreeze`, { token: live.token })).data.status, 'active');
+  assert.equal(mockTables.card_rules.find((r) => r.card_id === daily.data.id).limit_frozen_until, null);
+  await send(purchase(id, { amount: 100 }));
+  await pollUntil(() => statusOf(daily.data.id), (x) => x.status === 'disabled', 40, 20);
+  mockTables.card_rules.find((r) => r.card_id === daily.data.id).limit_frozen_until = new Date(Date.now() - 1000).toISOString();
+  const hk = await require('../src/services/cardRules').housekeeping();
+  assert.ok(hk.unfrozen >= 1);
+  assert.equal((await statusOf(daily.data.id)).status, 'active');
+
+  // per-purchase limit: a purchase at or above it freezes the card
+  const per = await newCard('RULE-PER', { spending_limit: { amount: 10, interval: 'per_transaction' } });
+  await send(purchase(per.row.maplerad_card_id, { amount: 900 }));
+  assert.equal((await statusOf(per.data.id)).status, 'active');
+  await send(purchase(per.row.maplerad_card_id, { amount: 1200 }));
+  await pollUntil(() => statusOf(per.data.id), (x) => x.status === 'disabled', 40, 20);
+
+  // single use: no funding or withdrawal, frozen for good after its purchase
+  const one = await newCard('RULE-ONE', { single_use: true });
+  assert.equal(one.data.single_use, true);
+  assert.equal(one.data.spending_limit, null);
+  const f = await api('POST', `/dashboard/cards/${one.data.id}/fund`, { token: live.token, body: { amount: 5 } });
+  assert.equal(f.status, 400);
+  assert.equal(f.data.error.code, 'CARD_SINGLE_USE');
+  assert.equal((await api('POST', `/dashboard/cards/${one.data.id}/withdraw`, { token: live.token, body: { amount: 5 } })).data.error.code, 'CARD_SINGLE_USE');
+  await send(purchase(one.row.maplerad_card_id, { amount: 700 }));
+  const used = await pollUntil(() => statusOf(one.data.id), (x) => x.status === 'disabled', 40, 20);
+  assert.ok(used.single_use_consumed_at);
+  const again = await api('POST', `/dashboard/cards/${one.data.id}/unfreeze`, { token: live.token });
+  assert.equal(again.status, 400);
+  assert.equal(again.data.error.code, 'CARD_SINGLE_USE');
+
+  // a declined purchase does not count, and a card without rules is untouched
+  const plain = await newCard('RULE-NONE', {});
+  assert.equal(plain.data.spending_limit, null);
+  assert.equal(plain.data.single_use, false);
+  await send(purchase(plain.row.maplerad_card_id, { amount: 2900 }));
+  assert.equal((await statusOf(plain.data.id)).status, 'active');
+  assert.ok(!mockTables.card_rules.find((r) => r.card_id === plain.data.id));
+});

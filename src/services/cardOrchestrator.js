@@ -797,6 +797,7 @@ async function fundCard(merchantId, cardId, amountUsd, key) {
 
 async function fundCardNow(merchantId, card, amountUsd, key) {
   assertNotFrozen(card);
+  await require('./cardRules').assertCanMoveFunds(card.id);
   const merchant = await getMerchant(merchantId);
   const issuingPlanKey = planKeyFor(merchant, 'issuing', card.mode);
   const rechargeFee = pricing.cardRechargeFee(issuingPlanKey, await getMerchantPricingOverride(merchantId), amountUsd);
@@ -839,6 +840,7 @@ async function withdrawFromCard(merchantId, cardId, amountUsd, key) {
 
 async function withdrawNow(merchantId, card, amountUsd, key) {
   assertNotFrozen(card);
+  await require('./cardRules').assertCanMoveFunds(card.id);
   const merchant = await getMerchant(merchantId);
   const issuingPlanKey = planKeyFor(merchant, 'issuing', card.mode);
   const withdrawalFee = pricing.cardWithdrawalFee(issuingPlanKey, await getMerchantPricingOverride(merchantId));
@@ -908,6 +910,7 @@ async function freezeCard(merchantId, cardId) {
 
 async function unfreezeCard(merchantId, cardId) {
   const card = await getCardOwned(merchantId, cardId);
+  await require('./cardRules').beforeUnfreeze(card.id); // a used single-use card stays frozen; a manual unfreeze lifts a limit freeze
   await maplerad.forMode(card.mode).unfreezeCard(card.maplerad_card_id);
   const [updated] = await supabase.update('cards', { id: card.id }, { status: 'active', updated_at: new Date().toISOString() });
   webhookDispatcher.dispatch(merchantId, 'card.unfrozen', { id: updated.id, reference: updated.own_reference });
@@ -1137,6 +1140,7 @@ async function recordCardTransaction(event, webhookMode) {
   const updated = await applyCardSpendToBalance(card, row).catch((err) => { console.error(`Card balance update failed for ${card.id}: ${err.message}`); return card; }); // eslint-disable-line no-console
   syncCardBalanceFromPartner(updated).catch(() => {});
   webhookDispatcher.dispatch(card.merchant_id, 'card.transaction', transactionWebhookData(updated, row)); // the merchant's server learns of every card movement
+  await require('./cardRules').afterTransaction(updated, row); // spending_limit / single_use set by the merchant
   await chargeCardSpendFee(card, row).catch((err) => console.error(`Card spend fee failed for ${card.id}: ${err.message}`)); // eslint-disable-line no-console
   return row;
 }
@@ -1342,6 +1346,7 @@ async function syncCardTransactionsFromPartner(card, opts) {
     }).catch(() => null);
     if (!row) continue; // inserted meanwhile by the webhook
     current = await applyCardSpendToBalance(current, row).catch(() => current);
+    await require('./cardRules').afterTransaction(current, row);
     imported += 1;
   }
   if (imported) await syncCardBalanceFromPartner(current).catch(() => {});
