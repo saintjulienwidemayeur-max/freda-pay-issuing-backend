@@ -143,4 +143,5 @@ async function history(ctx) {
   return { status: 200, body: { messages: rows } };
 }
 
-module.exports = { preview, audience, send, history };
+const recipientsFor = (a, id) => resolveRecipients(a, id);
+module.exports = { preview, audience, send, history, sendOne, recipientsFor };

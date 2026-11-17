@@ -28,7 +28,10 @@ const DEFAULT_PLANS = {
   premium: { label: 'Premium', monthly_usd: 500, card_creation_usd: 2.5, free_cards_per_month: 50, card_recharge_usd: 1.1, deposit_pct: 2.5, withdrawal_pct: 1.5, purchase_pct: 0, maintenance_usd: 0, decline_usd: 0.5, international_pct: 2.3, international_fixed_usd: 0.5 },
 };
 const PRICE_FIELDS = PLAN_FIELDS;
-const DEFAULTS = { join_fee_usd: 20, min_topup_usd: 200, plans: DEFAULT_PLANS };
+// What the card partner charges US (internal price list, never shown to merchants). Used only to compute profit in the admin.
+// Maintenance (0.50 $/card/month), international fees and refused authorizations are charged on the card itself: pass-through, no cost for us.
+const DEFAULT_PROVIDER_COSTS = { card_creation_usd: 1, card_recharge_usd: 0, deposit_pct: 2.5, withdrawal_pct: 1.5, purchase_usd: 0 };
+const DEFAULTS = { join_fee_usd: 20, min_topup_usd: 200, plans: DEFAULT_PLANS, provider_costs: DEFAULT_PROVIDER_COSTS };
 let cache = null; let at = 0;
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -46,7 +49,7 @@ async function settings() {
   try { const row = await supabase.selectOne('platform_settings', { key: KEY }); if (row) saved = JSON.parse(row.value) || {}; } catch (e) { /* defaults */ }
   const plans = {};
   for (const k of PLAN_KEYS) plans[k] = Object.assign({}, DEFAULT_PLANS[k], (saved.plans || {})[k] || {});
-  cache = Object.assign({}, DEFAULTS, saved, { plans });
+  cache = Object.assign({}, DEFAULTS, saved, { plans, provider_costs: Object.assign({}, DEFAULT_PROVIDER_COSTS, saved.provider_costs || {}) });
   delete cache.prices;
   at = Date.now();
   return cache;
@@ -56,6 +59,10 @@ async function saveSettings(patch, adminEmail) {
   const num = (v, max) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= max ? round2(n) : undefined; };
   if (patch.join_fee_usd !== undefined && num(patch.join_fee_usd, 10000) !== undefined) next.join_fee_usd = num(patch.join_fee_usd, 10000);
   if (patch.min_topup_usd !== undefined && num(patch.min_topup_usd, 100000) !== undefined) next.min_topup_usd = num(patch.min_topup_usd, 100000);
+  if (patch.provider_costs && typeof patch.provider_costs === 'object') {
+    next.provider_costs = Object.assign({}, DEFAULT_PROVIDER_COSTS, next.provider_costs || {});
+    for (const f of Object.keys(DEFAULT_PROVIDER_COSTS)) { const v = num(patch.provider_costs[f], 1000); if (patch.provider_costs[f] !== undefined && v !== undefined) next.provider_costs[f] = v; }
+  }
   if (patch.plans && typeof patch.plans === 'object') {
     for (const k of PLAN_KEYS) {
       const pp = patch.plans[k];
@@ -222,6 +229,20 @@ async function depositPctFor(merchantId, mode) {
   return Math.round(Number(plan.deposit_pct || 0) * 1000) / 100000; // e.g. 2.7 (%) -> 0.027
 }
 
+/** What the card partner charges us on one operation (USD), for the admin profit. kind: creation | recharge | withdrawal | deposit | purchase. */
+async function providerCostFor(kind, amountUsd) {
+  const c = (await settings()).provider_costs || DEFAULT_PROVIDER_COSTS;
+  const amt = Number(amountUsd || 0);
+  const v = kind === 'creation' ? c.card_creation_usd : kind === 'recharge' ? c.card_recharge_usd : kind === 'withdrawal' ? amt * c.withdrawal_pct / 100
+    : kind === 'deposit' ? amt * c.deposit_pct / 100 : kind === 'purchase' ? c.purchase_usd : 0;
+  return round2(v);
+}
+/** Partner cost of a Master Wallet deposit: the program's rate for members, the usual rate for the others. */
+async function depositCostFor(merchantId, mode, amountUsd) {
+  if (await planFor(merchantId, mode).catch(() => null)) return providerCostFor('deposit', amountUsd);
+  return round2(require('../config').issuingProviderCostsUSD.walletFundingPct * Number(amountUsd || 0));
+}
+
 /** What the dashboard shows. */
 async function status(merchantId, mode) {
   const s = await settings();
@@ -237,4 +258,4 @@ async function status(merchantId, mode) {
 /** The settings last read (or the defaults), without waiting: for text that is built synchronously (the AI agent's knowledge). */
 const cachedSettings = () => cache || Object.assign({}, DEFAULTS);
 
-module.exports = { cachedSettings, PLAN_KEYS, planFor, creationFeeFor, countFreeCard, withdrawalFeeFor, purchaseFeeFor, depositPctFor, currentPlanKey, settings, saveSettings, membership, isMember, join, assertTopupAllowed, pricingOverrideFor, status, openFor, PRICE_FIELDS };
+module.exports = { providerCostFor, depositCostFor, DEFAULT_PROVIDER_COSTS, cachedSettings, PLAN_KEYS, planFor, creationFeeFor, countFreeCard, withdrawalFeeFor, purchaseFeeFor, depositPctFor, currentPlanKey, settings, saveSettings, membership, isMember, join, assertTopupAllowed, pricingOverrideFor, status, openFor, PRICE_FIELDS };

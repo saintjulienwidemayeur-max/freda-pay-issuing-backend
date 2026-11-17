@@ -198,6 +198,18 @@ router.post('/dashboard/card-program/join', session.requireSession, async (ctx) 
   const r = await program.join(ctx.merchantId, mode);
   return { status: r.already ? 200 : 201, body: { joined: true, already: r.already, mode, plan: await program.currentPlanKey(ctx.merchantId, mode), fee_usd: Number(r.member.fee_usd || 0), joined_at: r.member.joined_at } };
 });
+router.get('/admin/announcement', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: await require('./services/announcement').status() }; });
+router.post('/admin/announcement/test', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: await require('./services/announcement').sendTest(ctx.admin && ctx.admin.email) }; });
+router.post('/admin/announcement/arm', adminSession.requireAdminSession, async (ctx) => {
+  adminSession.requireComplianceRole(ctx);
+  if (ctx.adminRole !== 'owner') throw Object.assign(new Error("Seul le propriétaire peut programmer l'envoi à tous les marchands."), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' });
+  return { status: 200, body: await require('./services/announcement').arm(ctx.admin && ctx.admin.email, (ctx.body || {}).expected_count) };
+});
+router.post('/admin/announcement/disarm', adminSession.requireAdminSession, async (ctx) => {
+  adminSession.requireComplianceRole(ctx);
+  if (ctx.adminRole !== 'owner') throw Object.assign(new Error("Seul le propriétaire peut arrêter l'envoi."), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' });
+  return { status: 200, body: await require('./services/announcement').disarm() };
+});
 router.get('/admin/card-program', adminSession.requireAdminSession, async (ctx) => {
   adminSession.requireComplianceRole(ctx);
   const supabase = require('./lib/supabase');
@@ -568,6 +580,7 @@ if (require.main === module) {
     require('./services/selfPing').start();
     require('./services/settings').startRefresh();
     if (process.env.NODE_ENV !== 'test') require('./services/planRenewals').start();
+    if (process.env.NODE_ENV !== 'test') require('./services/announcement').start();
     if (process.env.NODE_ENV !== 'test') {
       // Card payments: webhooks are the main path; this re-reads the old pending ones (expired payments send no webhook).
       setInterval(() => {
