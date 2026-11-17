@@ -68,6 +68,7 @@ const tables = {
   card_reveals: [],
   card_program_members: [],
   announcement_deliveries: [],
+  card_program_views: [],
 };
 let ledgerAutoId = 1;
 const mockBuckets = new Set();
