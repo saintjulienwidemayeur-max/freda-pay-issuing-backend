@@ -123,7 +123,16 @@ async function storeMessage(msg, mailbox) {
   const to = Array.isArray(msg.to) && msg.to[0] ? addr(msg.to[0]) : '';
   const box = String(mailbox || to || '').toLowerCase();
   const { detectMailbox } = require('./agent/emailAgent');
-  const merchant = await supabase.selectOne('merchants', { email: from.email });
+  // A message whose Reply-To points to ANOTHER address than its From could be a forged sender: a reply would go to the Reply-To. Such a
+  // message is never linked to a merchant account, so the agent only answers it from public knowledge (no account data).
+  const rt = msg.reply_to || msg.replyTo || msg['reply-to'];
+  const rtAddr = rt ? addr(Array.isArray(rt) ? rt[0] : rt) : '';
+  const replyToDiffers = !!rtAddr && rtAddr !== from.email;
+  let merchant = replyToDiffers ? null : await supabase.selectOne('merchants', { email: from.email });
+  if (!merchant && !replyToDiffers) {
+    const member = await supabase.selectOne('team_members', { email: from.email, status: 'active' }).catch(() => null);
+    if (member) merchant = await supabase.selectOne('merchants', { id: member.merchant_id });
+  }
   const text = String(msg.text || '').trim() || stripHtml(msg.html);
   try {
     return await supabase.insert('admin_inbox', {

@@ -400,6 +400,7 @@ router.post('/admin/inbox/:id/read', adminSession.requireAdminSession, (ctx) => 
 router.post('/admin/inbox/:id/reply', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminInboxHandlers.reply(ctx); });
 router.get('/admin/messages', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.history(ctx); });
 router.get('/admin/messages/audience', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.audience(ctx); });
+router.post('/admin/messages/preview', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.preview(ctx); });
 router.post('/admin/messages', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMessageHandlers.send(ctx); });
 // ---- Internal e-signature: contracts ----
 const contractsAdmin = (fn) => (ctx) => { adminSession.requireComplianceRole(ctx); return fn(ctx); };
@@ -579,6 +580,7 @@ if (require.main === module) {
       setInterval(() => {
         if (cardBusy) return;
         cardBusy = true;
+        require('./services/cardOrchestrator').reconcileMonerailsPending().catch((e) => console.error('Monerails pending cards:', e.message)); // eslint-disable-line no-console
         require('./services/cardOrchestrator').reconcilePendingCardCreations(10)
           .catch((e) => console.error('Card creation reconciliation:', e.message))
           .finally(() => { cardBusy = false; });

@@ -45,23 +45,26 @@ async function callRaw(method, path, body, { idempotencyKey, mode } = {}) {
   try {
     res = await fetch(`${config.monerails.baseUrl}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: ctl.signal });
   } catch (e) {
-    throw httpError(424, 'MONERAILS_UNREACHABLE', e.name === 'AbortError' ? "Monerails n'a pas répondu à temps." : `Monerails est injoignable : ${e.message}`);
+    // The request may or may not have reached Monerails: the outcome is UNKNOWN (callers must not assume it failed).
+    throw Object.assign(httpError(424, 'MONERAILS_UNREACHABLE', e.name === 'AbortError' ? "Monerails n'a pas répondu à temps." : `Monerails est injoignable : ${e.message}`), { unknownOutcome: true });
   } finally { clearTimeout(timer); }
   let data = null;
   try { data = await res.json(); } catch (e) { /* empty body */ }
   if (!res.ok) {
     const e = (data && data.error) || {};
     // HTTP 424: Render replaces 502/503/504 with its own page (no CORS); the admin must see Monerails' real code and message.
-    throw httpError(res.status >= 500 ? 424 : res.status === 401 || res.status === 403 ? 424 : res.status, `MONERAILS_${String(e.code || res.status).toUpperCase()}`,
+    const failure = httpError(res.status >= 500 ? 424 : res.status === 401 || res.status === 403 ? 424 : res.status, `MONERAILS_${String(e.code || res.status).toUpperCase()}`,
       `Monerails (HTTP ${res.status}${e.code ? `, ${e.code}` : ''}) : ${String(e.message || 'erreur').slice(0, 300)}${e.param ? ` [champ : ${e.param}]` : ''}`,
       { request_id: e.request_id || res.headers.get('request-id') || null });
+    if (res.status >= 500) failure.unknownOutcome = true; // a server error can come after the operation was done
+    throw failure;
   }
   return { status: res.status, data: data || {} };
 }
 
 const cents = (usd) => {
   const n = Math.round(Number(usd) * 100);
-  if (!Number.isFinite(n) || n <= 0) throw httpError(400, 'INVALID_AMOUNT', 'Montant invalide (en dollars, ex. 10 ou 12.50).');
+  if (!Number.isFinite(n) || n <= 0 || n > 10000000) throw httpError(400, 'INVALID_AMOUNT', 'Montant invalide (en dollars, ex. 10 ou 12.50 ; maximum 100 000 $).');
   return n;
 };
 const qs = (o) => { const p = Object.entries(o || {}).filter(([, v]) => v != null && v !== ''); return p.length ? `?${p.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}` : ''; };
@@ -77,9 +80,9 @@ function api(mode) {
   testVerification: (id, result, reason) => call('POST', `/test/cardholders/${encodeURIComponent(id)}/verification`, { result, ...(reason ? { reason } : {}) }),
   listCards: (q) => call('GET', `/cards${qs({ limit: 100, ...q })}`),
   getCard: (id) => call('GET', `/cards/${encodeURIComponent(id)}`),
-  createCard: (body) => call('POST', '/cards', body),
-  fund: (id, amountCents) => call('POST', `/cards/${encodeURIComponent(id)}/fund`, { amount: amountCents }),
-  withdraw: (id, amountCents) => call('POST', `/cards/${encodeURIComponent(id)}/withdraw`, { amount: amountCents }),
+  createCard: (body, key) => call('POST', '/cards', body, { idempotencyKey: key }),
+  fund: (id, amountCents, key) => call('POST', `/cards/${encodeURIComponent(id)}/fund`, { amount: amountCents }, { idempotencyKey: key }),
+  withdraw: (id, amountCents, key) => call('POST', `/cards/${encodeURIComponent(id)}/withdraw`, { amount: amountCents }, { idempotencyKey: key }),
   freeze: (id) => call('POST', `/cards/${encodeURIComponent(id)}/freeze`),
   unfreeze: (id) => call('POST', `/cards/${encodeURIComponent(id)}/unfreeze`),
   terminate: (id) => call('POST', `/cards/${encodeURIComponent(id)}/terminate`),

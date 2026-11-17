@@ -95,24 +95,29 @@ async function join(merchantId, mode) {
   const s = await settings();
   const fee = env === 'live' ? round2(s.join_fee_usd) : 0;
   const ref = `card-program-join:${merchantId}:${env}`;
-  if (fee > 0) {
-    const available = await ledger.getBalance(merchantId, 'master_wallet', 'USD', env);
-    if (available < fee) throw httpError(400, 'INSUFFICIENT_BALANCE', `Il faut ${fee.toFixed(2)} $ sur votre Master Wallet pour rejoindre le programme (disponible : ${round2(available).toFixed(2)} $).`);
-    if (!(await supabase.selectOne('ledger_entries', { merchant_id: merchantId, reference: ref }))) {
-      await ledger.debitMasterWallet(merchantId, fee, 'USD', ref, null, env);
-      await revenue.log(merchantId, 'card_program_join', fee, 'USD', null, env, 0).catch(() => {});
-    }
-  }
+  // Claim the membership FIRST: the (merchant, environment) primary key lets only one of two simultaneous requests through, so the entry
+  // fee can never be charged twice. If the charge then fails, the claim is released.
   let member;
   try {
     member = await supabase.insert('card_program_members', { merchant_id: merchantId, mode: env, joined_at: new Date().toISOString(), fee_usd: fee, ledger_reference: fee > 0 ? ref : null });
   } catch (err) {
-    if (missingTable(err)) {
-      if (fee > 0) await ledger.creditMasterWallet(merchantId, fee, 'USD', `refund:${ref}`, null, env).catch(() => {});
-      throw httpError(503, 'FEATURE_NOT_READY', "Le programme n'est pas encore activé sur le serveur. Rien n'a été débité.");
+    if (missingTable(err)) throw httpError(503, 'FEATURE_NOT_READY', "Le programme n'est pas encore activé sur le serveur. Rien n'a été débité.");
+    const raced = await membership(merchantId, env);
+    if (raced) return { member: raced, already: true };
+    throw err;
+  }
+  if (fee > 0) {
+    try {
+      const available = await ledger.getBalance(merchantId, 'master_wallet', 'USD', env);
+      if (available < fee) throw httpError(400, 'INSUFFICIENT_BALANCE', `Il faut ${fee.toFixed(2)} $ sur votre Master Wallet pour rejoindre le programme (disponible : ${round2(available).toFixed(2)} $).`);
+      if (!(await supabase.selectOne('ledger_entries', { merchant_id: merchantId, reference: ref }))) {
+        await ledger.debitMasterWallet(merchantId, fee, 'USD', ref, null, env);
+        await revenue.log(merchantId, 'card_program_join', fee, 'USD', null, env, 0).catch(() => {});
+      }
+    } catch (err) {
+      await supabase.delete('card_program_members', { merchant_id: merchantId, mode: env }).catch(() => {});
+      throw err;
     }
-    member = await membership(merchantId, env);
-    if (!member) throw err;
   }
   webhookDispatcher.dispatch(merchantId, 'card_program.joined', { mode: env, fee_usd: fee });
   return { member, already: false };
@@ -175,16 +180,23 @@ async function creationFeeFor(merchantId, mode) {
   if (override && override.card_creation_usd != null) return { fee: Number(override.card_creation_usd), free: false };
   if (plan && Number(p.free_cards_per_month) > 0) {
     const m = await membership(merchantId, mode);
-    const used = m.free_cards_month === monthKey() ? Number(m.free_cards_used || 0) : 0;
-    if (used < Number(p.free_cards_per_month)) return { fee: 0, free: true, used };
+    // Without the counter column (migration not run) the free cards cannot be counted: the plan price applies rather than unlimited free cards.
+    if (m && 'free_cards_used' in m) {
+      const used = m.free_cards_month === monthKey() ? Number(m.free_cards_used || 0) : 0;
+      if (used < Number(p.free_cards_per_month)) return { fee: 0, free: true, used };
+    }
   }
   return { fee: round2(p.card_creation_usd), free: false };
 }
 async function countFreeCard(merchantId, mode) {
-  const m = await membership(merchantId, mode);
-  if (!m) return;
-  const used = m.free_cards_month === monthKey() ? Number(m.free_cards_used || 0) : 0;
-  await supabase.update('card_program_members', { merchant_id: merchantId, mode: mode === 'live' ? 'live' : 'sandbox' }, { free_cards_month: monthKey(), free_cards_used: used + 1 }).catch(() => {});
+  // Compare-and-set on the counter: two cards created at once cannot both take the same free slot.
+  for (let i = 0; i < 5; i += 1) {
+    const m = await membership(merchantId, mode);
+    if (!m) return;
+    const used = m.free_cards_month === monthKey() ? Number(m.free_cards_used || 0) : 0;
+    const done = await supabase.update('card_program_members', { merchant_id: merchantId, mode: mode === 'live' ? 'live' : 'sandbox', free_cards_used: Number(m.free_cards_used || 0) }, { free_cards_month: monthKey(), free_cards_used: used + 1 }).catch(() => []);
+    if (done && done.length) return;
+  }
 }
 
 /** Card withdrawal fee of a program card: a percentage of the amount (custom fixed price of the merchant wins). */

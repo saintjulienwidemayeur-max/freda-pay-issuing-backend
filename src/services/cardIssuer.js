@@ -72,8 +72,8 @@ function ops(card) {
     const m = monerails.forMode(card.mode); // a Live card uses the live key, a Sandbox card the test key: never crossed
     const id = card.provider_card_id;
     return {
-      fund: (cents) => m.fund(id, cents),
-      withdraw: (cents) => m.withdraw(id, cents),
+      fund: (cents, key) => m.fund(id, cents, key),
+      withdraw: (cents, key) => m.withdraw(id, cents, key),
       freeze: () => m.freeze(id),
       unfreeze: () => m.unfreeze(id),
       terminate: () => m.terminate(id),
@@ -115,9 +115,28 @@ function translateError(err) {
   if (/^MONERAILS_/.test(code)) return Object.assign(new Error('Le service de cartes a refusé la demande. Réessayez ou contactez le support.'), { code: 'CARD_SERVICE_ERROR', httpStatus: 502, providerInfo: { provider: 'monerails', code, message: String(err.message).slice(0, 300) } });
   return err;
 }
-/** Runs an issuer call and returns our own error on failure. */
-async function call(card, fn) {
-  try { return await fn(ops(card)); } catch (err) { throw isMonerails(card) ? translateError(err) : err; }
+/**
+ * Runs an issuer call and returns our own error on failure. For the new issuer, a call whose outcome is unknown (timeout, network, server
+ * error) is repeated with the SAME idempotency key (the issuer replays the first answer instead of doing it twice); if it is still unknown,
+ * the error is CARD_RESULT_UNKNOWN (502) and the callers keep the money where it is for the team to check, never refunding blindly.
+ */
+async function call(card, fn, { retries } = {}) {
+  if (!isMonerails(card)) return fn(ops(card));
+  const attempts = 1 + (retries == null ? 0 : retries);
+  let last;
+  for (let i = 0; i < attempts; i += 1) {
+    try { return await fn(ops(card)); } catch (err) {
+      last = err;
+      if (!err.unknownOutcome || i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+    }
+  }
+  if (last && last.unknownOutcome && attempts > 1) {
+    const e = Object.assign(new Error("Le résultat de l'opération n'a pas pu être confirmé par le service de cartes. Ne la répétez pas : l'équipe vérifie et corrige si besoin."), { code: 'CARD_RESULT_UNKNOWN', httpStatus: 502, unknownOutcome: true });
+    require('./adminAlerts').alert({ key: `card-unknown-${card.id}`, throttleMs: 30 * 60 * 1000, subject: 'Résultat inconnu chez Monerails : à vérifier', eyebrow: 'Cartes', heading: 'Opération de carte à vérifier', tone: 'warning', paragraphs: [`Carte ${card.id} (${card.own_reference}) : le service de cartes n'a pas confirmé une opération (délai ou erreur serveur).`, "L'argent n'a pas été remboursé automatiquement pour éviter un double paiement. Comparez le solde de la carte chez Monerails et chez nous, puis corrigez."] }).catch(() => {});
+    throw e;
+  }
+  throw translateError(last);
 }
 
 /**
