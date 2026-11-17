@@ -503,7 +503,7 @@ async function convert(merchant, mode, { coin, amount, reference }) {
   }
   const [updated] = await supabase.update('crypto_transactions', { id: row.id, status: 'pending' }, { status: 'completed' });
   await revenue.log(merchant.id, 'crypto_conversion', calc.conversionFee, 'USD', row.id, mode, calc.providerCost).catch((e) => console.error(`Revenue log failed for crypto conversion ${row.id}:`, e.message)); // eslint-disable-line no-console
-  await revenue.log(merchant.id, 'wallet_funding', calc.fundingFee, 'USD', row.id, mode, round2(config.issuingProviderCostsUSD.walletFundingPct * calc.credited)).catch((e) => console.error(`Revenue log failed for crypto funding ${row.id}:`, e.message)); // eslint-disable-line no-console
+  await revenue.log(merchant.id, 'wallet_funding', calc.fundingFee, 'USD', row.id, mode, await require('./cardProgram').depositCostFor(merchant.id, mode, calc.credited)).catch((e) => console.error(`Revenue log failed for crypto funding ${row.id}:`, e.message)); // eslint-disable-line no-console
   try {
     const newBalance = await ledger.getBalance(merchant.id, 'master_wallet', 'USD', mode);
     await notify.walletCredited(merchant, { amount: calc.credited, currency: 'USD', walletLabel: 'Master Wallet', newBalance, note: `conversion de ${value} ${coin}`, mode });

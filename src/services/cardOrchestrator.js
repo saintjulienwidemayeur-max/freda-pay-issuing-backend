@@ -552,7 +552,7 @@ async function createMonerailsCard({ merchantId, id, ownReference, brand, profil
   const [updated] = await supabase.update('cards', { id }, fields);
   if (fields.status === 'active') {
     // Monerails takes its issuance fee from the preload: what is missing on the card is what the partner charged.
-    await revenue.log(merchantId, 'card_creation', creationFee, 'USD', id, mode, Math.max(0, pricing.round2(Number(preload) - fields.balance))).catch(() => {});
+    await revenue.log(merchantId, 'card_creation', creationFee, 'USD', id, mode, Math.max(await require('./cardProgram').providerCostFor('creation'), pricing.round2(Number(preload) - fields.balance))).catch(() => {});
     webhookDispatcher.dispatch(merchantId, 'card.created', { id, reference: ownReference, kind: 'individual', brand: row.brand, masked_pan: fields.masked_pan, balance: fields.balance });
   }
   return updated || row;
@@ -598,7 +598,7 @@ async function applyMonerailsCardResult(cardObj, ok, reason, env) {
     const masked = cardObj.last4 ? `•••• •••• •••• ${cardObj.last4}` : null;
     const [done] = await supabase.update('cards', { id: card.id, status: 'pending' }, { status: 'active', masked_pan: masked, balance: cardObj.balance == null ? fromCents(card.initial_amount || 0) : Number(cardObj.balance) / 100, updated_at: new Date().toISOString() });
     if (done) {
-      await revenue.log(card.merchant_id, 'card_creation', Number(card.creation_fee || 0), 'USD', card.id, card.mode, Math.max(0, pricing.round2(fromCents(card.initial_amount || 0) - Number(done.balance)))).catch(() => {});
+      await revenue.log(card.merchant_id, 'card_creation', Number(card.creation_fee || 0), 'USD', card.id, card.mode, Math.max(await require('./cardProgram').providerCostFor('creation'), pricing.round2(fromCents(card.initial_amount || 0) - Number(done.balance)))).catch(() => {});
       webhookDispatcher.dispatch(card.merchant_id, 'card.created', { id: card.id, reference: card.own_reference, kind: card.kind, brand: card.brand, masked_pan: masked, balance: done.balance });
     }
     return done || card;
@@ -1100,7 +1100,7 @@ async function fundCardNow(merchantId, card, amountUsd, key) {
     throw err;
   }
   // Outside the try: the partner already funded the card, so a bookkeeping failure must never refund the wallet.
-  await revenue.log(merchantId, 'card_recharge', rechargeFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardRecharge).catch(() => {});
+  await revenue.log(merchantId, 'card_recharge', rechargeFee, 'USD', card.id, card.mode, card.provider === 'monerails' ? await require('./cardProgram').providerCostFor('recharge') : config.issuingProviderCostsUSD.cardRecharge).catch(() => {});
   const updated = await adjustCardBalance(card.id, Number(amountUsd));
   webhookDispatcher.dispatch(merchantId, 'card.funded', {
     id: updated.id, reference: updated.own_reference, amount: Number(amountUsd), fee: rechargeFee, total_debited: totalDebit,
@@ -1170,7 +1170,7 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
     console.error(`CARD WITHDRAWAL NOT CREDITED: card ${card.id}, ${netCredited} $ withdrawn at the partner, wallet credit "${ref}" failed: ${lastErr && lastErr.message}`); // eslint-disable-line no-console
     throw lastErr;
   }
-  await revenue.log(merchantId, 'card_withdrawal', withdrawalFee, 'USD', card.id, card.mode, config.issuingProviderCostsUSD.cardWithdrawal).catch(() => {});
+  await revenue.log(merchantId, 'card_withdrawal', withdrawalFee, 'USD', card.id, card.mode, card.provider === 'monerails' ? await require('./cardProgram').providerCostFor('withdrawal', amountUsd) : config.issuingProviderCostsUSD.cardWithdrawal).catch(() => {});
   let updated;
   try { updated = await adjustCardBalance(card.id, -Number(amountUsd)); } catch (err) {
     // The money is moved: the card balance is aligned with the partner's figure instead of failing the request.

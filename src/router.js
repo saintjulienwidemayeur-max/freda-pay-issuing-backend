@@ -202,7 +202,9 @@ function createHandler(router, options) {
         sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: 'Une erreur interne est survenue. Réessayez dans un instant.' } });
         return;
       }
-      const errorBody = { code: err.code || 'ERROR', message: err.message || 'Erreur interne.' };
+      // A card partner's name never reaches a merchant: outside the admin panel, its name in any message is replaced.
+      const clean = (m) => (pathname.startsWith('/admin') ? m : String(m).replace(/monerails?|maplerad/gi, 'le service de cartes'));
+      const errorBody = { code: err.code || 'ERROR', message: clean(err.message || 'Erreur interne.') };
       // Handlers can attach err.details = {...} for small, non-sensitive extra
       // context the client needs to react to a specific error (e.g. the
       // merchant_id to route an "email not verified" login error to the OTP

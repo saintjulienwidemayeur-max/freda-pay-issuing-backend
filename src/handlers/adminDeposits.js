@@ -82,7 +82,7 @@ async function approve(ctx) {
   }
 
   // The fee withheld is our income; the partner's own funding fee on the money that backs the wallet is the cost.
-  await revenue.log(t.merchant_id, 'wallet_deposit', fee, 'USD', t.id, mode, Math.round(config.issuingProviderCostsUSD.walletFundingPct * amount * 100) / 100);
+  await revenue.log(t.merchant_id, 'wallet_deposit', fee, 'USD', t.id, mode, await require('../services/cardProgram').depositCostFor(t.merchant_id, mode, amount));
   const merchant = payer;
   const newBalance = await ledger.getBalance(t.merchant_id, 'master_wallet', 'USD', mode);
   await notify.walletCredited(merchant, {

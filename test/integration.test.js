@@ -9971,3 +9971,41 @@ test('admin email composer: pasted text with headings, lists, tab tables and lin
   assert.match(xss.data.html, /<strong>gras<\/strong>/);
   assert.equal((await api('POST', '/admin/messages/preview', { token: owner.token, body: { message: '' } })).status, 400);
 });
+
+test('announcement: nothing is sent until armed; then every merchant gets the email and a chat message once, even after a restart; costs of the partner feed the profit', async () => {
+  const owner = await adminLogin('owner');
+  const announcement = require('../src/services/announcement'); const supabase = require('../src/lib/supabase');
+  const mk = async (email, name) => { const v = await registerAndVerify({ email, business_name: name, password: 'Passw0rd!x' }); return { email, id: v.data.merchant.id }; };
+  const a = await mk('ann-a@example.com', 'Ann A'); const b = await mk('ann-b@example.com', 'Ann B');
+  const before = sentEmails.length;
+  // not armed: a pass sends nothing
+  assert.equal((await announcement.run()).skipped, 'not-armed');
+  assert.equal(sentEmails.length, before);
+  const st = await api('GET', '/admin/announcement', { token: owner.token });
+  assert.equal(st.status, 200); assert.equal(st.data.armed, false); assert.ok(st.data.recipients >= 2);
+  // a wrong expected count refuses
+  assert.equal((await api('POST', '/admin/announcement/arm', { token: owner.token, body: { expected_count: 9999 } })).status, 409);
+  const armed = await api('POST', '/admin/announcement/arm', { token: owner.token, body: { expected_count: st.data.recipients } });
+  assert.equal(armed.status, 200); assert.equal(armed.data.armed, true);
+  await announcement.run();
+  for (const m of [a, b]) {
+    const mails = sentEmails.filter((e) => e.to === m.email && /Nouveau programme de cartes/.test(e.subject || ''));
+    assert.equal(mails.length, 1, 'one email per merchant');
+    assert.ok(!/monerails/i.test(mails[0].html + mails[0].text), 'the partner is never named');
+    assert.match(mails[0].html, /<table/);
+    const chat = (await supabase.select('chat_messages', { merchant_id: m.id })).filter((x) => /Nouveau programme/.test(x.body));
+    assert.equal(chat.length, 1, 'one chat message');
+    assert.ok(!/monerails/i.test(chat[0].body));
+    assert.ok(chat[0].body.length <= 2000);
+  }
+  // a "restart": running again sends nothing more
+  const count = sentEmails.length;
+  await announcement.run();
+  assert.equal(sentEmails.length, count);
+  assert.equal((await api('GET', '/admin/announcement', { token: owner.token })).data.failed, 0);
+  // viewers cannot arm
+  // partner costs: member deposit costs 2.5 %, a withdrawal 1.5 %
+  const program = require('../src/services/cardProgram');
+  assert.equal(await program.providerCostFor('withdrawal', 100), 1.5);
+  assert.equal(await program.providerCostFor('creation'), 1);
+});
