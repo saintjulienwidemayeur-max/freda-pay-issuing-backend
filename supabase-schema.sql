@@ -1110,3 +1110,12 @@ create table if not exists card_rules (
 alter table card_rules enable row level security;
 create index if not exists idx_card_rules_frozen on card_rules(limit_frozen_until) where limit_frozen_until is not null;
 create index if not exists idx_card_rules_single on card_rules(single_use, single_use_consumed_at) where single_use;
+
+-- Each new identity check sent for a cardholder (restart_verification): at most 5 per 24 h (HOLDER_VERIFICATION_LIMIT).
+create table if not exists holder_verification_attempts (
+  id text primary key,
+  holder_id text not null,
+  created_at timestamptz not null default now()
+);
+alter table holder_verification_attempts enable row level security;
+create index if not exists idx_holder_attempts on holder_verification_attempts(holder_id, created_at desc);

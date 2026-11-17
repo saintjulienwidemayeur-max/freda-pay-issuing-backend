@@ -38,6 +38,18 @@ async function getHolder(ctx) {
 
 const VALID_IDENTITY_TYPES = ['NIN', 'PASSPORT', 'VOTERS_CARD', 'DRIVERS_LICENSE'];
 const HOLDER_REQUIRED_FIELDS = ['firstName', 'lastName', 'email', 'country', 'dob', 'identificationNumber', 'phoneNumber', 'phoneShortCode', 'address'];
+const HOLDER_BLOCKED_COUNTRIES = ['CU', 'IR', 'KP', 'SY', 'RU', 'BY'];
+/** Full years between a YYYY-MM-DD birth date and today (UTC); null if the date is not valid. */
+function ageFrom(dob) {
+  const m = String(dob || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (Number.isNaN(d.getTime()) || d.getUTCMonth() !== +m[2] - 1) return null;
+  const now = new Date();
+  let age = now.getUTCFullYear() - d.getUTCFullYear();
+  if (now.getUTCMonth() < d.getUTCMonth() || (now.getUTCMonth() === d.getUTCMonth() && now.getUTCDate() < d.getUTCDate())) age -= 1;
+  return age;
+}
 const HOLDER_ADDRESS_REQUIRED_FIELDS = ['street', 'city', 'state', 'country'];
 
 /** @deprecated old single-profile endpoint - now just creates a new holder, same as createHolder. */
@@ -69,6 +81,15 @@ async function createHolder(ctx) {
   if (idBack && !/^https:\/\//.test(String(idBack)) && !identityImage.isDataUri(String(idBack))) {
     throw httpError(400, 'MISSING_FIELDS', "identity.imageBackUrl doit être le verso de la pièce en Base64 (data:image/jpeg;base64,...) ou un lien https vers l'image.");
   }
+  // The issuer's rules for a cardholder, checked here so the merchant gets a clear answer before anything is sent.
+  if (String(idn.type || '').toUpperCase() !== 'PASSPORT' && !idBack) {
+    throw httpError(400, 'HOLDER_DOCUMENT_BACK_REQUIRED', "Le verso de la pièce d'identité est requis (identity.imageBackUrl), sauf pour un passeport.");
+  }
+  const blocked = HOLDER_BLOCKED_COUNTRIES.find((c) => c === String(b.country || '').toUpperCase() || c === String(idn.country || '').toUpperCase());
+  if (blocked) throw httpError(400, 'HOLDER_COUNTRY_UNSUPPORTED', `Les titulaires de ce pays (${blocked}) ne sont pas acceptés.`);
+  const age = ageFrom(b.dob);
+  if (age === null) throw httpError(400, 'MISSING_FIELDS', 'dob doit être une date valide au format AAAA-MM-JJ.');
+  if (age < 18) throw httpError(400, 'HOLDER_UNDERAGE', 'Le titulaire doit avoir 18 ans ou plus.');
   if (idn.country && !/^[A-Za-z]{2}$/.test(idn.country)) {
     throw httpError(400, 'MISSING_FIELDS', 'identity.country doit être un code pays à 2 lettres.');
   }

@@ -316,14 +316,41 @@ async function restartHolderVerification(provider, existing, profile) {
   return updated;
 }
 
+/** A refused identity check can be sent again at most 5 times per 24 h per holder (429 HOLDER_VERIFICATION_LIMIT). */
+async function countVerificationAttempt(holderId) {
+  const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  let recent;
+  try { recent = await supabase.select('holder_verification_attempts', { holder_id: holderId, created_at: supabase.gt(since) }, { limit: 10 }); } catch (e) { return; } // table not created yet: no limit
+  if (recent.length >= 5) {
+    const err = new Error("La vérification de ce titulaire a déjà été relancée 5 fois en 24 h. Réessayez demain avec des photos nettes de la pièce.");
+    err.code = 'HOLDER_VERIFICATION_LIMIT';
+    err.httpStatus = 429;
+    throw err;
+  }
+  await supabase.insert('holder_verification_attempts', { id: `hva_${randomHex(8)}`, holder_id: holderId, created_at: new Date().toISOString() }).catch(() => {});
+}
+
 async function createHolder(merchantId, profile, mode, options) {
   const providerMode = mode === 'live' ? 'live' : 'sandbox';
   const provider = maplerad.forMode(providerMode);
   // Same person (same email) already enrolled for this merchant in this mode: reuse it instead of creating a duplicate.
   const emailLc = String(profile.email || '').trim().toLowerCase();
+  const sameEmail = (await listHolders(merchantId, providerMode)).filter((h) => String(h.email || '').trim().toLowerCase() === emailLc);
   if (options && options.restartVerification) {
-    const known = (await listHolders(merchantId, providerMode)).find((h) => String(h.email || '').trim().toLowerCase() === emailLc);
-    if (known) return restartHolderVerification(provider, known, profile);
+    const known = sameEmail[0];
+    if (known) {
+      await countVerificationAttempt(known.id);
+      return restartHolderVerification(provider, known, profile);
+    }
+  }
+  // One email = one person: the same email with another name is refused (the same person again is simply found, below).
+  const norm = (v) => String(v || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const other = sameEmail.find((h) => norm(h.first_name) !== norm(profile.firstName) || norm(h.last_name) !== norm(profile.lastName));
+  if (other) {
+    const err = new Error('Cet email est déjà utilisé par un autre titulaire de votre compte. Utilisez un email propre à chaque titulaire.');
+    err.code = 'HOLDER_EMAIL_EXISTS';
+    err.httpStatus = 409;
+    throw err;
   }
   const existing = (await listHolders(merchantId, providerMode)).find(
     (h) => h.status === 'enrolled' && String(h.email || '').trim().toLowerCase() === emailLc
@@ -789,9 +816,45 @@ function mismatch() {
   return err;
 }
 
+/**
+ * One operation at a time on a card (fund, withdraw, freeze, unfreeze, terminate): a second one while the first runs is refused
+ * with 409 CARD_OPERATION_IN_PROGRESS. (Two identical requests with the same idempotency key still share one run, see once().)
+ */
+const cardLocks = new Set();
+async function withCardLock(cardId, run) {
+  if (cardLocks.has(cardId)) {
+    const err = new Error('Une autre opération est en cours sur cette carte. Réessayez dans un instant.');
+    err.code = 'CARD_OPERATION_IN_PROGRESS';
+    err.httpStatus = 409;
+    throw err;
+  }
+  cardLocks.add(cardId);
+  try { return await run(); } finally { cardLocks.delete(cardId); }
+}
+
+/** The full number / CVV can be read 30 times per hour per card (429 CARD_REVEAL_LIMIT). */
+const REVEAL_LIMIT = 30;
+const revealLog = new Map();
+function countReveal(cardId) {
+  const now = Date.now();
+  const recent = (revealLog.get(cardId) || []).filter((t) => now - t < 3600 * 1000);
+  if (recent.length >= REVEAL_LIMIT) {
+    const err = new Error(`Le numéro complet de cette carte a déjà été affiché ${REVEAL_LIMIT} fois dans l'heure. Réessayez plus tard.`);
+    err.code = 'CARD_REVEAL_LIMIT';
+    err.httpStatus = 429;
+    throw err;
+  }
+  recent.push(now);
+  revealLog.set(cardId, recent);
+}
+
+/** At least this much must stay on a card after a withdrawal (400 CARD_MINIMUM_BALANCE). */
+const CARD_MIN_REMAINING_USD = 1;
+const sameUtcDay = (a, b) => new Date(a).toISOString().slice(0, 10) === new Date(b).toISOString().slice(0, 10);
+
 async function fundCard(merchantId, cardId, amountUsd, key) {
   const card = await getCardOwned(merchantId, cardId);
-  const res = await once(merchantId, 'fund', card.id, key, () => fundCardNow(merchantId, card, amountUsd, key));
+  const res = await once(merchantId, 'fund', card.id, key, () => withCardLock(card.id, () => fundCardNow(merchantId, card, amountUsd, key)));
   return Object.assign(res.card, { _op: { type: 'fund', amount: amountUsd, fee: res.fee, total_debited: res.total, replayed: !!res.replayed } });
 }
 
@@ -834,7 +897,7 @@ async function fundCardNow(merchantId, card, amountUsd, key) {
 
 async function withdrawFromCard(merchantId, cardId, amountUsd, key) {
   const card = await getCardOwned(merchantId, cardId);
-  const res = await once(merchantId, 'withdraw', card.id, key, () => withdrawNow(merchantId, card, amountUsd, key));
+  const res = await once(merchantId, 'withdraw', card.id, key, () => withCardLock(card.id, () => withdrawNow(merchantId, card, amountUsd, key)));
   return Object.assign(res.card, { _op: { type: 'withdraw', amount: amountUsd, fee: res.fee, net_credited: res.net, replayed: !!res.replayed } });
 }
 
@@ -859,6 +922,12 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
   if (Number(card.balance) < amountUsd) {
     const err = new Error(`Solde de la carte insuffisant (disponible : ${card.balance} $).`);
     err.code = 'INSUFFICIENT_CARD_BALANCE';
+    err.httpStatus = 400;
+    throw err;
+  }
+  if (pricing.round2(Number(card.balance) - amountUsd) < CARD_MIN_REMAINING_USD) {
+    const err = new Error(`Au moins ${CARD_MIN_REMAINING_USD} $ doit rester sur la carte : vous pouvez retirer jusqu'à ${Math.max(0, pricing.round2(Number(card.balance) - CARD_MIN_REMAINING_USD))} $. Pour récupérer tout le solde, fermez la carte.`);
+    err.code = 'CARD_MINIMUM_BALANCE';
     err.httpStatus = 400;
     throw err;
   }
@@ -902,6 +971,9 @@ async function withdrawNow(merchantId, card, amountUsd, key) {
 
 async function freezeCard(merchantId, cardId) {
   const card = await getCardOwned(merchantId, cardId);
+  return withCardLock(card.id, () => freezeNow(merchantId, card));
+}
+async function freezeNow(merchantId, card) {
   await maplerad.forMode(card.mode).freezeCard(card.maplerad_card_id);
   const [updated] = await supabase.update('cards', { id: card.id }, { status: 'disabled', updated_at: new Date().toISOString() });
   webhookDispatcher.dispatch(merchantId, 'card.frozen', { id: updated.id, reference: updated.own_reference });
@@ -910,6 +982,9 @@ async function freezeCard(merchantId, cardId) {
 
 async function unfreezeCard(merchantId, cardId) {
   const card = await getCardOwned(merchantId, cardId);
+  return withCardLock(card.id, () => unfreezeNow(merchantId, card));
+}
+async function unfreezeNow(merchantId, card) {
   await require('./cardRules').beforeUnfreeze(card.id); // a used single-use card stays frozen; a manual unfreeze lifts a limit freeze
   await maplerad.forMode(card.mode).unfreezeCard(card.maplerad_card_id);
   const [updated] = await supabase.update('cards', { id: card.id }, { status: 'active', updated_at: new Date().toISOString() });
@@ -925,8 +1000,12 @@ async function unfreezeCard(merchantId, cardId) {
  *     balance goes back to the Master Wallet, then it disappears from the merchant's lists.
  * The row is kept (deleted_at) so the ledger, the fees and the audit trail stay consistent.
  */
-async function terminateCard(merchantId, cardId) {
-  const card = await getById(merchantId, cardId);
+async function terminateCard(merchantId, cardId, options) {
+  const found = await getById(merchantId, cardId);
+  if (!found) return terminateNow(merchantId, found, options);
+  return withCardLock(found.id, () => terminateNow(merchantId, found, options));
+}
+async function terminateNow(merchantId, card, options) {
   if (!card) {
     const err = new Error('Carte introuvable.');
     err.code = 'NOT_FOUND';
@@ -946,6 +1025,14 @@ async function terminateCard(merchantId, cardId) {
     return removed;
   }
 
+  // A card cannot be closed on the day it was created (UTC): freeze it, close it the next day. The team (admin) and the automatic
+  // closure of unused single-use cards are not bound by this.
+  if (!(options && options.force) && card.created_at && sameUtcDay(card.created_at, Date.now())) {
+    const err = new Error("Une carte ne peut pas être fermée le jour de sa création. Gelez-la maintenant (elle ne pourra plus servir), puis fermez-la demain.");
+    err.code = 'CARD_TERMINATE_SAME_DAY';
+    err.httpStatus = 400;
+    throw err;
+  }
   await maplerad.forMode(card.mode).terminateCard(card.maplerad_card_id); // must succeed: the card is really closed
   // The balance follows purchases and refunds (applyCardSpendToBalance), so what is left on the card is what goes back to the Master Wallet.
   const remaining = Math.max(0, pricing.round2(Number(card.balance || 0)));
@@ -976,6 +1063,7 @@ async function revealCardDetails(merchantId, cardId, { fromDashboard = false } =
     err.httpStatus = 403;
     throw err;
   }
+  countReveal(card.id);
   const res = await maplerad.forMode(card.mode).getCard(card.maplerad_card_id);
   const data = (res && (res.data || res)) || {};
 
