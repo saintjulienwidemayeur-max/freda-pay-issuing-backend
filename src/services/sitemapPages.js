@@ -10,10 +10,11 @@
  * `updated` is the date the page's content last changed meaningfully (YYYY-MM-DD).
  */
 const PAGES = [
-  { path: '/', changefreq: 'weekly', priority: '1.0', updated: '2026-10-26' },
+  { path: '/', changefreq: 'weekly', priority: '1.0', updated: '2026-11-18', alternates: [{ lang: 'fr', path: '/' }, { lang: 'en', path: '/en/' }, { lang: 'x-default', path: '/' }] },
+  { path: '/en/', changefreq: 'weekly', priority: '0.8', updated: '2026-11-18', alternates: [{ lang: 'fr', path: '/' }, { lang: 'en', path: '/en/' }, { lang: 'x-default', path: '/' }] },
   { path: '/api-moncash-natcash', changefreq: 'monthly', priority: '0.9', updated: '2026-10-26' },
   { path: '/en/card-payments-haiti', changefreq: 'monthly', priority: '0.8', updated: '2026-10-17', alternates: [{ lang: 'fr', path: '/paiement-par-carte-haiti' }, { lang: 'en', path: '/en/card-payments-haiti' }, { lang: 'x-default', path: '/paiement-par-carte-haiti' }] },
-  { path: '/tarifs', changefreq: 'monthly', priority: '0.8', updated: '2026-10-26' },
+  { path: '/tarifs', changefreq: 'monthly', priority: '0.8', updated: '2026-11-18' },
   { path: '/api-moncash-haiti', changefreq: 'monthly', priority: '0.8', updated: '2026-10-26' },
   { path: '/api-natcash-haiti', changefreq: 'monthly', priority: '0.8', updated: '2026-10-26' },
   { path: '/passerelle-de-paiement-haiti', changefreq: 'monthly', priority: '0.7', updated: '2026-10-26' },
