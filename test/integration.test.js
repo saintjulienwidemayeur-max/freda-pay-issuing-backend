@@ -10027,3 +10027,10 @@ test('card program adoption: banner views and window openings are recorded and l
   assert.equal(row.open_count, 1); assert.equal(row.joined_sandbox, false);
   assert.ok(o.data.stats.opened >= 1 && o.data.stats.seen >= 1 && typeof o.data.stats.members_total === 'number');
 });
+
+test('sitemap: the English home page is listed and the French and English homes point to each other (hreflang)', async () => {
+  const xml = await sitemapXml();
+  assert.match(xml, /<loc>[^<]*\/en\/<\/loc>/);
+  const block = xml.split('<url>').find((b) => /<loc>[^<]*\/en\/<\/loc>/.test(b));
+  assert.match(block, /hreflang="fr"/); assert.match(block, /hreflang="en"/); assert.match(block, /hreflang="x-default"/);
+});
