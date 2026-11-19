@@ -56,6 +56,7 @@ function explain(e, wallet) {
   }
   if (/^card-decline-fee:/.test(ref)) return c('card_decline_fee', 'Frais de refus de carte');
   if (/^card-spend-fee:/.test(ref)) return c('card_spend_fee', 'Frais sur un achat par carte');
+  if (/^card-program-join:/.test(ref)) return c('card_program_join', 'Entrée au nouveau programme de cartes');
   if (/^fund:/.test(ref)) return c('card_fund', 'Recharge d\'une carte');
   if (/^(gateway_plan_|issuing_plan_)/.test(ref)) return c('plan_change', 'Abonnement (changement de plan)');
   if (/^plan-renewal:/.test(ref)) return c('plan_renewal', 'Abonnement (renouvellement mensuel)');

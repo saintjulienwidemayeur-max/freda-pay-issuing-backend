@@ -38,6 +38,9 @@ function labelFor(e) {
     case 'wallet_debit':
       if (ref.startsWith('card-decline-fee:')) return 'Frais de refus de carte';
       if (ref.startsWith('fund:')) return 'Recharge de carte';
+      if (ref.startsWith('card-spend-fee:')) return 'Commission sur un achat par carte';
+      if (ref.startsWith('card-program-join:')) return 'Entrée au nouveau programme de cartes';
+      if (ref.startsWith('admin-debit:')) return "Débit par l'équipe Freda Pay Issuing";
       if (/^(gateway_plan_|issuing_plan_)/.test(ref)) return 'Abonnement (changement de plan)';
       if (ref.startsWith('plan-renewal:')) return 'Abonnement (renouvellement mensuel)';
       return 'Création de carte';
@@ -165,4 +168,4 @@ async function activity(ctx) {
   return { status: 200, body: { mode, counts, items: list } };
 }
 
-module.exports = { summary, activity, buildActivity, isDeposit, isReturn };
+module.exports = { labelFor, summary, activity, buildActivity, isDeposit, isReturn };
