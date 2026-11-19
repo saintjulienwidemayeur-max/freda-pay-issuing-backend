@@ -10184,3 +10184,11 @@ test('partner report: profit and partner costs are split between Maplerad and th
   const dl = await api('GET', `/admin/partner-reports/${rep.data.report.id}/pdf`, { token: admin.token });
   assert.ok([200, 409].includes(dl.status));
 });
+
+test('wallet labels: the commission on a card purchase and the program entry are not shown as a card creation', async () => {
+  const { labelFor } = require('../src/handlers/walletSummary');
+  assert.equal(labelFor({ type: 'wallet_debit', reference: 'card-spend-fee:txn_123' }), 'Commission sur un achat par carte');
+  assert.equal(labelFor({ type: 'wallet_debit', reference: 'card-program-join:mch_1:live' }), 'Entrée au nouveau programme de cartes');
+  assert.equal(labelFor({ type: 'wallet_debit', reference: 'card-decline-fee:x' }), 'Frais de refus de carte');
+  assert.equal(labelFor({ type: 'wallet_debit', reference: 'create:CARD-1' }), 'Création de carte');
+});
