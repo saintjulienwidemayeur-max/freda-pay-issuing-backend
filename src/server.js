@@ -215,13 +215,29 @@ router.post('/admin/announcement/disarm', adminSession.requireAdminSession, asyn
   if (ctx.adminRole !== 'owner') throw Object.assign(new Error("Seul le propriétaire peut arrêter l'envoi."), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' });
   return { status: 200, body: await require('./services/announcement').disarm() };
 });
+router.get('/admin/card-issuer/merchants', adminSession.requireAdminSession, async (ctx) => {
+  adminSession.requireComplianceRole(ctx);
+  const supabase = require('./lib/supabase'); const issuer = require('./services/cardIssuer');
+  const s = await issuer.settings();
+  const ids = Object.keys(s.merchant_issuer || {});
+  const rows = ids.length ? await supabase.select('merchants', { id: supabase.inList(ids) }, { limit: 1000 }) : [];
+  const by = new Map(rows.map((m) => [m.id, m]));
+  return { status: 200, body: { global: s.new_cards, overrides: ids.map((id) => ({ merchant_id: id, issuer: s.merchant_issuer[id], business_name: (by.get(id) || {}).business_name || null, email: (by.get(id) || {}).email || null })) } };
+});
+router.put('/admin/card-issuer/merchants/:id', adminSession.requireAdminSession, async (ctx) => {
+  adminSession.requireComplianceRole(ctx);
+  if (ctx.adminRole !== 'owner') throw Object.assign(new Error("Seul le propriétaire peut choisir le partenaire d'un marchand."), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' });
+  const issuer = require('./services/cardIssuer');
+  await issuer.setMerchantIssuer(ctx.params.id, String((ctx.body || {}).issuer || ''), (ctx.admin && ctx.admin.email) || null);
+  return { status: 200, body: { merchant_id: ctx.params.id, choice: await issuer.merchantChoice(ctx.params.id), effective: { sandbox: await issuer.issuerFor(ctx.params.id, 'sandbox', 'individual'), live: await issuer.issuerFor(ctx.params.id, 'live', 'individual') } } };
+});
 router.get('/admin/card-program', adminSession.requireAdminSession, async (ctx) => {
   adminSession.requireComplianceRole(ctx);
   const supabase = require('./lib/supabase');
   const members = await supabase.select('card_program_members', {}, { order: 'joined_at.desc', limit: 1000 }).catch(() => []);
   const merchants = members.length ? await supabase.select('merchants', { id: supabase.inList([...new Set(members.map((m) => m.merchant_id))]) }, { limit: 1000 }) : [];
   const names = new Map(merchants.map((m) => [m.id, m]));
-  return { status: 200, body: { ...(await require('./services/cardProgram').adminOverview()), settings: await require('./services/cardProgram').settings(), members: members.map((m) => ({ ...m, business_name: names.get(m.merchant_id) ? names.get(m.merchant_id).business_name : null, email: names.get(m.merchant_id) ? names.get(m.merchant_id).email : null })) } };
+  return { status: 200, body: { ...(await require('./services/cardProgram').adminOverview()), settings: await require('./services/cardProgram').settings(), members: await Promise.all(members.map(async (m) => ({ ...m, issuer_choice: await require('./services/cardIssuer').merchantChoice(m.merchant_id), issuer_effective: await require('./services/cardIssuer').issuerFor(m.merchant_id, m.mode, 'individual'), business_name: names.get(m.merchant_id) ? names.get(m.merchant_id).business_name : null, email: names.get(m.merchant_id) ? names.get(m.merchant_id).email : null }))) } };
 });
 router.put('/admin/card-program', adminSession.requireAdminSession, async (ctx) => {
   adminSession.requireComplianceRole(ctx);

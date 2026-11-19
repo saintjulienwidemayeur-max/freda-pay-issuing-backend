@@ -11,7 +11,7 @@ const monerails = require('./monerails');
  * Settings (platform_settings "card_issuer"): { new_cards: 'maplerad' | 'monerails', pilot_merchants: [merchant ids], low_balance_usd }.
  */
 const KEY = 'card_issuer';
-const DEFAULTS = { new_cards: 'maplerad', pilot_merchants: [], low_balance_usd: 200, live_enabled: false, live_low_balance_usd: 500 };
+const DEFAULTS = { new_cards: 'maplerad', pilot_merchants: [], merchant_issuer: {}, low_balance_usd: 200, live_enabled: false, live_low_balance_usd: 500 };
 let cache = null; let at = 0;
 
 async function settings() {
@@ -28,6 +28,9 @@ async function saveSettings(patch, adminEmail) {
     // One switch for both environments: Live follows it as soon as its keys are set (and goes back to the current issuer with it).
     const liveReady = monerails.configured('live') && !!require('../config').monerails.liveWebhookSecret;
     if (patch.live_enabled === undefined) next.live_enabled = next.new_cards === 'monerails' && liveReady;
+  }
+  if (patch.merchant_issuer !== undefined && patch.merchant_issuer && typeof patch.merchant_issuer === 'object') {
+    next.merchant_issuer = Object.fromEntries(Object.entries(patch.merchant_issuer).filter(([k, v]) => /^mch_[A-Za-z0-9_]+$/.test(k) && (v === 'maplerad' || v === 'monerails')));
   }
   if (patch.pilot_merchants !== undefined) {
     const list = Array.isArray(patch.pilot_merchants) ? patch.pilot_merchants : String(patch.pilot_merchants || '').split(/[\s,;]+/);
@@ -51,16 +54,32 @@ async function saveSettings(patch, adminEmail) {
 }
 
 /**
- * The issuer for a NEW card or holder of this merchant. The admin switch (new_cards) decides for EVERY merchant: new individual cards are
- * created at the selected partner. Cards that already exist never move: they keep their issuer and their prices.
- * (Business cards stay at the current issuer. Live also needs the Live keys: until they are set, Live keeps the current issuer.)
+ * The issuer for a NEW card or holder of this merchant. Order: (1) the choice made for THIS merchant in the admin (merchant_issuer), then
+ * (2) the global switch (new_cards). Cards that already exist never move: they keep their issuer and their prices.
+ * Business cards stay at the current issuer. Live needs the Live keys (a merchant choice) or the Live switch (the global choice).
  */
 async function issuerFor(merchantId, mode, kind) {
   const live = mode === 'live';
   if ((kind && kind !== 'individual') || !monerails.configured(live ? 'live' : 'sandbox')) return 'maplerad';
   const s = await settings();
-  if (live && !s.live_enabled) return 'maplerad';
+  const own = (s.merchant_issuer || {})[merchantId] || null;
+  if (own === 'maplerad') return 'maplerad';
+  if (own === 'monerails') return live && !require('../config').monerails.liveWebhookSecret ? 'maplerad' : 'monerails';
+  if (live && !s.live_enabled) return 'maplerad'; // the Live switch applies to the global choice and to the old "pilot" list
   return s.new_cards === 'monerails' || (s.pilot_merchants || []).includes(merchantId) ? 'monerails' : 'maplerad';
+}
+
+/** The partner chosen for one merchant: 'maplerad' | 'monerails', or null = follows the global switch. */
+async function merchantChoice(merchantId) { return ((await settings()).merchant_issuer || {})[merchantId] || null; }
+
+async function setMerchantIssuer(merchantId, value, adminEmail) {
+  if (!/^mch_[A-Za-z0-9_]+$/.test(String(merchantId || ''))) { const e = new Error('Marchand invalide.'); e.httpStatus = 400; e.code = 'INVALID_MERCHANT'; throw e; }
+  if (!['default', 'maplerad', 'monerails'].includes(value)) { const e = new Error("Choisissez « suivre l'interrupteur », Maplerad ou Monerails."); e.httpStatus = 400; e.code = 'INVALID_ISSUER'; throw e; }
+  if (!(await supabase.selectOne('merchants', { id: merchantId }))) { const e = new Error('Marchand introuvable.'); e.httpStatus = 404; e.code = 'NOT_FOUND'; throw e; }
+  const map = Object.assign({}, (await settings()).merchant_issuer || {});
+  if (value === 'default') delete map[merchantId]; else map[merchantId] = value;
+  if (Object.keys(map).length > 1000) { const e = new Error('Trop de réglages par marchand (1000 maximum).'); e.httpStatus = 400; e.code = 'TOO_MANY'; throw e; }
+  return saveSettings({ merchant_issuer: map }, adminEmail);
 }
 
 const isMonerails = (card) => !!card && card.provider === 'monerails';
@@ -174,4 +193,4 @@ async function checkMonerailsBalance() {
   return out;
 }
 
-module.exports = { checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };
+module.exports = { merchantChoice, setMerchantIssuer, checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };
