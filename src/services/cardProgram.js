@@ -89,7 +89,7 @@ const isMember = async (merchantId, mode) => !!(await membership(merchantId, mod
 /** Whether a merchant can join now in this environment (the new issuer must be ready there). */
 async function openFor(mode) {
   const monerails = require('./monerails');
-  if (mode === 'live') return monerails.configured('live') && !!(await require('./cardIssuer').settings()).live_enabled;
+  if (mode === 'live') { const ci = await require('./cardIssuer').settings(); return monerails.configured('live') && !!ci.live_enabled && ci.new_cards === 'monerails'; }
   return monerails.configured('sandbox');
 }
 
@@ -167,7 +167,10 @@ async function planFor(merchantId, mode) {
 async function pricingOverrideFor(merchantId, card) {
   const merchantOverride = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId }).catch(() => null);
   if (!card || card.provider !== 'monerails') return merchantOverride;
-  const plan = (await planFor(merchantId, card.mode || 'sandbox')) || Object.assign({ key: 'startup' }, (await settings()).plans.startup);
+  const memberPlan = await planFor(merchantId, card.mode || 'sandbox');
+  // Not in the program: the usual prices apply (only the issuer's own refusal charge, taken on the card, is not charged a second time).
+  if (!memberPlan) return Object.assign({}, merchantOverride || {}, { card_decline_usd: 0 });
+  const plan = memberPlan;
   const pick = (f, v) => (merchantOverride && merchantOverride[f] != null ? merchantOverride[f] : v);
   return {
     card_creation_usd: pick('card_creation_usd', plan.card_creation_usd),
@@ -179,8 +182,16 @@ async function pricingOverrideFor(merchantId, card) {
 }
 
 /** Creation price of the next program card: Premium includes free cards every month, then the plan price. Counts the card when used. */
+/** What a merchant that is NOT in the program pays on a card that happens to be at the new issuer: its usual prices, unchanged. */
+async function usualPricing(merchantId, mode) {
+  const merchant = await supabase.selectOne('merchants', { id: merchantId }).catch(() => null);
+  const override = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId }).catch(() => null);
+  return { planKey: require('./plans').planKeyFor(merchant, 'issuing', mode), override, pricing: require('./pricing') };
+}
+
 async function creationFeeFor(merchantId, mode) {
   const plan = await planFor(merchantId, mode);
+  if (!plan) { const u = await usualPricing(merchantId, mode); return { fee: u.pricing.cardCreationFee(u.planKey, u.override), free: false, member: false }; }
   const s = await settings();
   const p = plan || Object.assign({ key: 'startup' }, s.plans.startup);
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId }).catch(() => null);
@@ -210,13 +221,17 @@ async function countFreeCard(merchantId, mode) {
 async function withdrawalFeeFor(merchantId, mode, amountUsd) {
   const override = await supabase.selectOne('merchant_pricing', { merchant_id: merchantId }).catch(() => null);
   if (override && override.card_withdrawal_usd != null) return Number(override.card_withdrawal_usd);
-  const p = (await planFor(merchantId, mode)) || (await settings()).plans.startup;
+  const plan = await planFor(merchantId, mode);
+  if (!plan) { const u = await usualPricing(merchantId, mode); return u.pricing.cardWithdrawalFee(u.planKey, u.override); }
+  const p = plan;
   return round2(Number(amountUsd) * Number(p.withdrawal_pct || 0) / 100);
 }
 
 /** Commission on a successful purchase of a program card (Startup 1 %), taken from the card. */
 async function purchaseFeeFor(merchantId, mode, amountUsd) {
-  const p = (await planFor(merchantId, mode)) || (await settings()).plans.startup;
+  const plan = await planFor(merchantId, mode);
+  if (!plan) { const u = await usualPricing(merchantId, mode); return u.pricing.cardSpendFee(u.planKey); }
+  const p = plan;
   return round2(Number(amountUsd) * Number(p.purchase_pct || 0) / 100);
 }
 

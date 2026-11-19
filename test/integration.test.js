@@ -9805,7 +9805,7 @@ test('new card program: 20 $ entry only, the merchant keeps their Issuing plan w
 
     // open Live; joining costs the 20 $ entry only (no extra subscription: the Pro plan is billed as before), once
     await secrets.save({ monerails_live_key: 'mr_live_livekey123', monerails_live_webhook_secret: 'whsec_live_prog' });
-    await issuer.saveSettings({ live_enabled: true });
+    await issuer.saveSettings({ new_cards: 'monerails' }); // the admin switch: Live follows it once its keys are set
     const before = await ledger.getBalance(live.merchantId, 'master_wallet', 'USD', 'live');
     const j = await api('POST', '/dashboard/card-program/join', { token: live.token });
     assert.equal(j.status, 201);
@@ -10033,4 +10033,36 @@ test('sitemap: the English home page is listed and the French and English homes 
   assert.match(xml, /<loc>[^<]*\/en\/<\/loc>/);
   const block = xml.split('<url>').find((b) => /<loc>[^<]*\/en\/<\/loc>/.test(b));
   assert.match(block, /hreflang="fr"/); assert.match(block, /hreflang="en"/); assert.match(block, /hreflang="x-default"/);
+});
+
+test('issuer switch: new individual cards follow the admin switch for everybody; prices of a non-member stay the usual ones; partner names never reach a merchant', async () => {
+  const config = require('../src/config');
+  const secrets = require('../src/services/agent/secrets');
+  const issuer = require('../src/services/cardIssuer');
+  const program = require('../src/services/cardProgram');
+  const pricing = require('../src/services/pricing');
+  const guardrails = require('../src/services/agent/guardrails');
+  await secrets.save({ monerails_test_key: 'mr_test_switchkey123', monerails_webhook_secret: 'whsec_sw', monerails_live_key: '', monerails_live_webhook_secret: '' });
+  const merchant = await registerAndVerify({ email: 'switch-m@example.com', business_name: 'Switch M', password: 'Passw0rd!x' });
+  const id = merchant.data.merchant.id;
+  try {
+    await issuer.saveSettings({ new_cards: 'maplerad', pilot_merchants: [] });
+    assert.equal(await issuer.issuerFor(id, 'sandbox', 'individual'), 'maplerad');
+    await issuer.saveSettings({ new_cards: 'monerails' });
+    assert.equal(await issuer.issuerFor(id, 'sandbox', 'individual'), 'monerails', 'every merchant, not only members');
+    assert.equal(await issuer.issuerFor(id, 'sandbox', 'business'), 'maplerad', 'business cards stay at the current issuer');
+    assert.equal(await issuer.issuerFor(id, 'live', 'individual'), 'maplerad', 'Live waits for its keys');
+    // a non-member keeps its usual prices on a card at the new issuer
+    const fee = await program.creationFeeFor(id, 'sandbox');
+    assert.equal(fee.fee, pricing.cardCreationFee('startup', null));
+    assert.equal(fee.member, false);
+    // back to the current issuer: nobody goes to the new one, members included
+    await program.join(id, 'sandbox');
+    await issuer.saveSettings({ new_cards: 'maplerad' });
+    assert.equal(await issuer.issuerFor(id, 'sandbox', 'individual'), 'maplerad');
+  } finally { await issuer.saveSettings({ new_cards: 'maplerad' }); }
+  // partner names: hidden for merchants, kept for the team's own assistant
+  const txt = 'Vos cartes sont émises par Monerails (anciennement Maplerad), paiements via Pay\'m PlopPlop et Tranzak.';
+  assert.ok(!/monerails|maplerad|plopplop|tranzak|pay'm/i.test(guardrails.redact(txt).text));
+  assert.match(guardrails.redact(txt, { keepPartners: true }).text, /Monerails/);
 });

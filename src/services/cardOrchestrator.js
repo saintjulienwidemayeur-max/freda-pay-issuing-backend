@@ -360,6 +360,11 @@ async function createHolder(merchantId, profile, mode, options) {
     if (existing.maplerad_customer_id) {
       await upgradeToTier2(provider, existing.maplerad_customer_id, toProviderIdentity(profile), profile.photoIdUrl);
     }
+    // A holder created before the switch to the new issuer joins it when the merchant sends the identity documents again.
+    if (!existing.monerails_cardholder_id && profile.identity && await require('./cardIssuer').issuerFor(merchantId, providerMode, 'individual') === 'monerails') {
+      const done = await enrollAtMonerails(existing, profile);
+      if (done) Object.assign(existing, done);
+    }
     Object.defineProperty(existing, 'alreadyExisted', { value: true, enumerable: false });
     return existing;
   }

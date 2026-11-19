@@ -23,7 +23,12 @@ async function settings() {
 }
 async function saveSettings(patch, adminEmail) {
   const next = Object.assign({}, await settings());
-  if (patch.new_cards !== undefined) next.new_cards = patch.new_cards === 'monerails' ? 'monerails' : 'maplerad';
+  if (patch.new_cards !== undefined) {
+    next.new_cards = patch.new_cards === 'monerails' ? 'monerails' : 'maplerad';
+    // One switch for both environments: Live follows it as soon as its keys are set (and goes back to the current issuer with it).
+    const liveReady = monerails.configured('live') && !!require('../config').monerails.liveWebhookSecret;
+    if (patch.live_enabled === undefined) next.live_enabled = next.new_cards === 'monerails' && liveReady;
+  }
   if (patch.pilot_merchants !== undefined) {
     const list = Array.isArray(patch.pilot_merchants) ? patch.pilot_merchants : String(patch.pilot_merchants || '').split(/[\s,;]+/);
     next.pilot_merchants = [...new Set(list.map((x) => String(x).trim()).filter((x) => /^mch_[A-Za-z0-9_]+$/.test(x)))].slice(0, 50);
@@ -45,15 +50,17 @@ async function saveSettings(patch, adminEmail) {
   return next;
 }
 
-/** The issuer for a NEW card or holder of this merchant. */
+/**
+ * The issuer for a NEW card or holder of this merchant. The admin switch (new_cards) decides for EVERY merchant: new individual cards are
+ * created at the selected partner. Cards that already exist never move: they keep their issuer and their prices.
+ * (Business cards stay at the current issuer. Live also needs the Live keys: until they are set, Live keeps the current issuer.)
+ */
 async function issuerFor(merchantId, mode, kind) {
   const live = mode === 'live';
   if ((kind && kind !== 'individual') || !monerails.configured(live ? 'live' : 'sandbox')) return 'maplerad';
   const s = await settings();
-  if (live && !s.live_enabled) return 'maplerad'; // the Live switch, off until the team turns it on
-  if (s.new_cards === 'monerails' || (s.pilot_merchants || []).includes(merchantId)) return 'monerails';
-  // Members of the new card program (they joined, and paid in Live) get their new cards from the new issuer.
-  return (await require('./cardProgram').isMember(merchantId, live ? 'live' : 'sandbox')) ? 'monerails' : 'maplerad';
+  if (live && !s.live_enabled) return 'maplerad';
+  return s.new_cards === 'monerails' || (s.pilot_merchants || []).includes(merchantId) ? 'monerails' : 'maplerad';
 }
 
 const isMonerails = (card) => !!card && card.provider === 'monerails';
