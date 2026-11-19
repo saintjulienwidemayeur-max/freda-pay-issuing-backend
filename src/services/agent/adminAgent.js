@@ -16,7 +16,7 @@ async function chat(messages, adminEmail) {
   const toolset = tools.build({ kind: 'admin' });
   try {
     const out = await llm.generate({ system: await prompts.adminSystem(), messages: turns, tools: toolset.definitions, runTool: toolset.run, model: cfg.model || undefined, maxTokens: 1200 });
-    const red = guardrails.redact(out.text || '');
+    const red = guardrails.redact(out.text || '', { keepPartners: true }); // the team may talk about its partners
     if (red.findings.length) await alerts.raise({ kind: 'output_blocked', severity: 'high', source: 'admin', detail: `Retiré d'une réponse à ${adminEmail || 'un admin'} : ${red.findings.join(', ')}` });
     await settings.logRun({ kind: 'admin', model: out.model, input_tokens: out.usage.input, output_tokens: out.usage.output, tools_used: out.toolsUsed, outcome: 'replied', duration_ms: Date.now() - started });
     return { reply: red.text || "(Pas de réponse du modèle.)", tools_used: out.toolsUsed };

@@ -29,9 +29,17 @@ const PATTERNS = [
   { kind: 'otp', re: /\b(code de vérification|verification code|code 2fa|2fa code|otp|kòd verifikasyon)\b[^\n\d]{0,20}\b\d{6}\b/gi, replace: (m, label) => `${label} : [masqué]` },
 ];
 
+/**
+ * The names of our partners (card issuer, payment processors) are never written to a merchant: not in an email, not in the chat.
+ * Replaced silently (this is not an incident, so it is not a finding). The admin assistant keeps them (keepPartners).
+ */
+const PARTNER_NAMES = /\bPay['’]m\s+PlopPlop\b|\bPlopPlop\b|\bPay['’]m\b|\bMonerails?\b|\bMaplerad\b|\bTranzak\b/gi;
+const hidePartners = (text) => String(text == null ? '' : text).replace(PARTNER_NAMES, 'notre partenaire').replace(/(notre partenaire)(?:\s*(?:\/|,|et|and|ou)\s*notre partenaire)+/gi, '$1');
+
 /** Returns { text, findings: [kind...] }. Card numbers are recognised by their length AND the Luhn check, so long reference numbers are left alone. */
-function redact(input) {
+function redact(input, opts) {
   let text = String(input == null ? '' : input);
+  if (!(opts && opts.keepPartners)) text = hidePartners(text);
   const findings = [];
   for (const p of PATTERNS) {
     text = text.replace(p.re, (...args) => { findings.push(p.kind); return typeof p.replace === 'function' ? p.replace(...args) : p.replace; });
@@ -97,4 +105,4 @@ function sensitiveIntent(text) {
   return SENSITIVE.filter((s) => s.re.test(t)).map((s) => s.reason);
 }
 
-module.exports = { redact, redactDeep, detectSecretRequest, detectInjection, sensitiveIntent, luhn };
+module.exports = { hidePartners, redact, redactDeep, detectSecretRequest, detectInjection, sensitiveIntent, luhn };
