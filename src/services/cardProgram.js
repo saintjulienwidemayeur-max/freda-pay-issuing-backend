@@ -87,9 +87,15 @@ async function membership(merchantId, mode) {
 const isMember = async (merchantId, mode) => !!(await membership(merchantId, mode));
 
 /** Whether a merchant can join now in this environment (the new issuer must be ready there). */
-async function openFor(mode) {
+async function openFor(mode, merchantId) {
   const monerails = require('./monerails');
-  if (mode === 'live') { const ci = await require('./cardIssuer').settings(); return monerails.configured('live') && !!ci.live_enabled && ci.new_cards === 'monerails'; }
+  const issuer = require('./cardIssuer');
+  if (merchantId) {
+    const own = await issuer.merchantChoice(merchantId);
+    if (own === 'maplerad') return false; // the team keeps this merchant at the current issuer: the program is not offered to it
+    if (own === 'monerails') return mode === 'live' ? monerails.configured('live') && !!require('../config').monerails.liveWebhookSecret : monerails.configured('sandbox');
+  }
+  if (mode === 'live') { const ci = await issuer.settings(); return monerails.configured('live') && !!ci.live_enabled && ci.new_cards === 'monerails'; }
   return monerails.configured('sandbox');
 }
 
@@ -98,7 +104,7 @@ async function join(merchantId, mode) {
   const env = mode === 'live' ? 'live' : 'sandbox';
   const existing = await membership(merchantId, env);
   if (existing) return { member: existing, already: true };
-  if (!(await openFor(env))) throw httpError(409, 'PROGRAM_NOT_OPEN', env === 'live' ? "Le nouveau programme de cartes n'est pas encore ouvert en Live. Vous serez prévenu dès son ouverture ; vous pouvez déjà l'essayer en Sandbox." : "Le nouveau programme de cartes n'est pas encore disponible. Réessayez plus tard.");
+  if (!(await openFor(env, merchantId))) throw httpError(409, 'PROGRAM_NOT_OPEN', env === 'live' ? "Le nouveau programme de cartes n'est pas encore ouvert en Live. Vous serez prévenu dès son ouverture ; vous pouvez déjà l'essayer en Sandbox." : "Le nouveau programme de cartes n'est pas encore disponible. Réessayez plus tard.");
   const s = await settings();
   const fee = env === 'live' ? round2(s.join_fee_usd) : 0;
   const ref = `card-program-join:${merchantId}:${env}`;
@@ -299,7 +305,7 @@ async function status(merchantId, mode) {
   const [live, sandbox] = await Promise.all([membership(merchantId, 'live'), membership(merchantId, 'sandbox')]);
   return {
     member: { live: !!live, sandbox: !!sandbox }, joined_at: { live: live ? live.joined_at : null, sandbox: sandbox ? sandbox.joined_at : null },
-    open: { live: await openFor('live'), sandbox: await openFor('sandbox') },
+    open: { live: await openFor('live', merchantId), sandbox: await openFor('sandbox', merchantId) },
     plan: await currentPlanKey(merchantId, mode),
     join_fee_usd: s.join_fee_usd, min_topup_usd: s.min_topup_usd, plans: s.plans, mode: mode === 'live' ? 'live' : 'sandbox',
   };

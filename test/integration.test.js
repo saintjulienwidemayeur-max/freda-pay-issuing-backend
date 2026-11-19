@@ -10066,3 +10066,38 @@ test('issuer switch: new individual cards follow the admin switch for everybody;
   assert.ok(!/monerails|maplerad|plopplop|tranzak|pay'm/i.test(guardrails.redact(txt).text));
   assert.match(guardrails.redact(txt, { keepPartners: true }).text, /Monerails/);
 });
+
+test('issuer choice per merchant: overrides the global switch both ways, is owner-only, and decides whether the program is offered', async () => {
+  const secrets = require('../src/services/agent/secrets');
+  const issuer = require('../src/services/cardIssuer');
+  await secrets.save({ monerails_test_key: 'mr_test_permerchant1', monerails_webhook_secret: 'whsec_pm', monerails_live_key: '', monerails_live_webhook_secret: '' });
+  const owner = await adminLogin('owner');
+  const mk = async (email, name) => (await registerAndVerify({ email, business_name: name, password: 'Passw0rd!x' }));
+  const a = await mk('pm-a@example.com', 'PM A'); const b = await mk('pm-b@example.com', 'PM B');
+  const ida = a.data.merchant.id; const idb = b.data.merchant.id;
+  try {
+    await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} });
+    const set = await api('PUT', `/admin/card-issuer/merchants/${ida}`, { token: owner.token, body: { issuer: 'monerails' } });
+    assert.equal(set.status, 200); assert.equal(set.data.choice, 'monerails'); assert.equal(set.data.effective.sandbox, 'monerails');
+    assert.equal(await issuer.issuerFor(idb, 'sandbox', 'individual'), 'maplerad', 'the others follow the switch');
+    // the other way round
+    await issuer.saveSettings({ new_cards: 'monerails' });
+    await api('PUT', `/admin/card-issuer/merchants/${idb}`, { token: owner.token, body: { issuer: 'maplerad' } });
+    assert.equal(await issuer.issuerFor(idb, 'sandbox', 'individual'), 'maplerad');
+    assert.equal(await issuer.issuerFor(ida, 'sandbox', 'individual'), 'monerails');
+    // a merchant kept at the current issuer is not offered the program
+    const join = await api('POST', '/dashboard/card-program/join', { token: b.data.session_token });
+    assert.equal(join.data.error.code, 'PROGRAM_NOT_OPEN');
+    const st = await api('GET', '/dashboard/card-program', { token: b.data.session_token });
+    assert.equal(st.data.open.sandbox, false);
+    // list, back to "follow the switch", validation
+    const list = await api('GET', '/admin/card-issuer/merchants', { token: owner.token });
+    assert.deepEqual(list.data.overrides.map((o) => o.merchant_id).sort(), [ida, idb].sort());
+    await api('PUT', `/admin/card-issuer/merchants/${idb}`, { token: owner.token, body: { issuer: 'default' } });
+    assert.equal(await issuer.issuerFor(idb, 'sandbox', 'individual'), 'monerails');
+    assert.equal((await api('PUT', `/admin/card-issuer/merchants/${idb}`, { token: owner.token, body: { issuer: 'bogus' } })).status, 400);
+    assert.equal((await api('PUT', '/admin/card-issuer/merchants/mch_doesnotexist', { token: owner.token, body: { issuer: 'monerails' } })).status, 404);
+    const viewer = await adminLogin('viewer');
+    assert.equal((await api('PUT', `/admin/card-issuer/merchants/${ida}`, { token: viewer.token, body: { issuer: 'maplerad' } })).status, 403);
+  } finally { await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); }
+});
