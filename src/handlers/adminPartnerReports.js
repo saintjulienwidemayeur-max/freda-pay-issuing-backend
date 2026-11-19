@@ -108,7 +108,7 @@ async function get(ctx) {
 
 const usd = (n) => `${Number(n).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`;
 
-function reportEmail(r) {
+function reportEmail(r, breakdown) {
   const lines = [
     `Période : **${r.period_from}** au **${r.period_to}** (${r.mode === 'live' ? 'argent réel' : 'Sandbox'})`,
     `Bénéfice de la période : **${usd(r.profit_usd)}**`,
@@ -119,6 +119,10 @@ function reportEmail(r) {
     exp.forEach((e) => lines.push(`- ${e.label} : ${usd(e.amount_usd)}`));
     lines.push(`Total des dépenses : **${usd(r.expenses_total_usd)}**`);
   } else lines.push('Dépenses : aucune.');
+  if (breakdown && Array.isArray(breakdown.by_issuer)) {
+    lines.push('Cartes, par partenaire :');
+    breakdown.by_issuer.forEach((g) => lines.push(`- ${g.issuer === 'monerails' ? 'Nouveau partenaire de cartes' : 'Maplerad'} : bénéfice **${usd(g.profit_usd)}** (frais ${usd(g.revenue_usd)}, dépenses partenaire ${usd(g.partner_cost_usd)})`));
+  }
   lines.push(`Bénéfice net (bénéfice - dépenses) : **${usd(r.net_usd)}**`);
   lines.push(`Part de ${r.partner_name} (${Number(r.profit_pct)} %) : **${usd(r.partner_share_usd)}**`);
   lines.push(`Part Freda Pay Issuing : **${usd(r.our_share_usd)}**`);
@@ -150,7 +154,7 @@ async function send(ctx) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) throw httpError(400, 'INVALID_EMAIL', 'Adresse email invalide.');
   const r = await getOr404(ctx.params.id);
   const { buf, filename } = await pdfFor(r);
-  const built = reportEmail(r);
+  const built = reportEmail(r, await adminStats.profitBetween(r.mode, r.period_from, r.period_to).catch(() => null));
   await brevo.sendEmail({
     to, toName: to, subject: built.subject, html: built.html, text: built.text,
     senderEmail: config.brevo.adminSenderEmail, senderName: config.brevo.adminSenderName,

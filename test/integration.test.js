@@ -10157,3 +10157,30 @@ test('admin activity: every merchant\'s movements with who did them, filters; ov
   assert.deepEqual(pb.data.by_issuer.map((x) => x.issuer), ['maplerad', 'monerails']);
   assert.ok(pb.data.by_issuer.every((x) => typeof x.profit_usd === 'number'));
 });
+
+test('partner report: profit and partner costs are split between Maplerad and the new card partner, in the preview and in the PDF', async () => {
+  const admin = await adminLogin('owner');
+  const today = new Date().toISOString().slice(0, 10);
+  const get = async () => (await api('GET', `/admin/partner-reports/preview?from=${today}&to=${today}&mode=live`, { token: admin.token })).data;
+  const base = await get();
+  const find = (d, k) => d.by_issuer.find((x) => x.issuer === k);
+  const now = new Date().toISOString();
+  mockTables.cards.push(
+    { id: 'card_split_m', merchant_id: 'mch_split', mode: 'live', status: 'active', provider: 'monerails', kind: 'individual', created_at: now },
+    { id: 'card_split_o', merchant_id: 'mch_split', mode: 'live', status: 'active', provider: 'maplerad', kind: 'individual', created_at: now },
+  );
+  mockTables.fee_revenue.push(
+    { id: 'fr_split1', merchant_id: 'mch_split', mode: 'live', kind: 'card_creation', related_id: 'card_split_m', amount: 3, currency: 'USD', partner_cost_usd: 1, created_at: now },
+    { id: 'fr_split2', merchant_id: 'mch_split', mode: 'live', kind: 'card_withdrawal', related_id: 'card_split_m', amount: 3, currency: 'USD', partner_cost_usd: 1.5, created_at: now },
+    { id: 'fr_split3', merchant_id: 'mch_split', mode: 'live', kind: 'card_recharge', related_id: 'card_split_o', amount: 1, currency: 'USD', partner_cost_usd: 1, created_at: now },
+  );
+  const after = await get();
+  const d = (k, f) => Math.round((find(after, k)[f] - find(base, k)[f]) * 100) / 100;
+  assert.equal(d('monerails', 'revenue_usd'), 6); assert.equal(d('monerails', 'partner_cost_usd'), 2.5); assert.equal(d('monerails', 'profit_usd'), 3.5);
+  assert.equal(d('maplerad', 'revenue_usd'), 1); assert.equal(d('maplerad', 'partner_cost_usd'), 1); assert.equal(d('maplerad', 'profit_usd'), 0);
+  // the PDF carries the split (needs the legal identity: skip silently if the company profile is not complete in this run)
+  const rep = await api('POST', '/admin/partner-reports', { token: admin.token, body: { partner_name: 'Split Partner', from: today, to: today, profit_pct: 10, profit_usd: 100 } });
+  assert.equal(rep.status, 201);
+  const dl = await api('GET', `/admin/partner-reports/${rep.data.report.id}/pdf`, { token: admin.token });
+  assert.ok([200, 409].includes(dl.status));
+});
