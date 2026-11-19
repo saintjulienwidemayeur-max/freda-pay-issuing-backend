@@ -102,35 +102,45 @@ const isReturn = (e) => e.type === 'wallet_topup' && NOT_A_DEPOSIT.test(e.refere
  * payments received (encaissements), withdrawals and their fees (paiements), card operations and card purchases (cartes),
  * deposits and subscriptions (wallet). Settled money comes from the ledger; payments not (yet) succeeded and card purchases are added.
  */
-async function activity(ctx) {
-  const mode = await resolveMode(ctx);
-  const limit = Math.min(500, Math.max(20, parseInt((ctx.query && ctx.query.limit) || '300', 10) || 300));
+/**
+ * The list itself. merchantId given: one account (the dashboard). merchantId absent: the whole platform (the admin panel), each line tagged
+ * with its merchant, and card lines with the card's partner.
+ */
+async function buildActivity({ merchantId, mode, limit }) {
+  const scope = merchantId ? { merchant_id: merchantId } : {};
   const gatewayKey = ledger.walletKey('gateway', mode);
   const walletKey = ledger.walletKey('master_wallet', mode);
   const [walletEntries, gatewayEntries, payments, cards, cardTx] = await Promise.all([
-    supabase.select('ledger_entries', { merchant_id: ctx.merchantId, wallet: walletKey }, { order: 'created_at.desc,id.desc', limit }),
-    supabase.select('ledger_entries', { merchant_id: ctx.merchantId, wallet: gatewayKey }, { order: 'created_at.desc,id.desc', limit }),
-    supabase.select('payments', { merchant_id: ctx.merchantId, mode, status: supabase.neq('succeeded') }, { order: 'created_at.desc', limit: 100 }),
-    supabase.select('cards', { merchant_id: ctx.merchantId, mode }, { limit: 2000 }),
-    supabase.select('card_transactions', { merchant_id: ctx.merchantId, mode }, { order: 'occurred_at.desc', limit }).catch(() => []),
+    supabase.select('ledger_entries', { ...scope, wallet: walletKey }, { order: 'created_at.desc,id.desc', limit }),
+    supabase.select('ledger_entries', { ...scope, wallet: gatewayKey }, { order: 'created_at.desc,id.desc', limit }),
+    supabase.select('payments', { ...scope, mode, status: supabase.neq('succeeded') }, { order: 'created_at.desc', limit: 100 }),
+    supabase.select('cards', { ...scope, mode }, { limit: merchantId ? 2000 : 20000 }),
+    supabase.select('card_transactions', { ...scope, mode }, { order: 'occurred_at.desc', limit }).catch(() => []),
   ]);
+  const provider = new Map(cards.map((c) => [c.id, c.provider === 'monerails' ? 'monerails' : 'maplerad']));
   const last4 = new Map(cards.map((c) => [c.id, String(c.masked_pan || '').replace(/\D/g, '').slice(-4)]));
   const cardTag = (id) => (id && last4.get(id) ? ` •••• ${last4.get(id)}` : '');
   const isCardEntry = (e) => (e.related_id && last4.has(e.related_id)) || /^(fund:|card-|create:|card_)/.test(e.reference || '');
   const items = [];
+  // One line per row in each loop below: tag the lines with their merchant (and, for cards, the card's partner).
+  const tag = (from, rows, cardOf) => rows.forEach((r, k) => { const it = items[from + k]; if (!it) return; it.merchant_id = r.merchant_id; const cid = cardOf ? cardOf(r) : null; if (cid && provider.has(cid)) it.provider = provider.get(cid); });
+  let from = items.length;
   for (const e of gatewayEntries) {
     const cat = e.type === 'payment_credit' ? 'encaissements' : 'paiements';
     items.push({ id: `l${e.id}`, at: e.created_at, category: cat, title: labelFor(e), detail: 'Solde Gateway', amount: Number(e.amount), currency: e.currency, status: 'succeeded' });
   }
+  tag(from, gatewayEntries); from = items.length;
   for (const e of walletEntries) {
     const card = isCardEntry(e);
     const cat = card ? 'cartes' : 'wallet';
     items.push({ id: `l${e.id}`, at: e.created_at, category: cat, title: `${labelFor(e)}${card ? cardTag(e.related_id) : ''}`, detail: 'Master Wallet', amount: Number(e.amount), currency: e.currency, status: 'succeeded' });
   }
+  tag(from, walletEntries, (e) => e.related_id); from = items.length;
   const METHOD = { moncash: 'MonCash', natcash: 'Natcash', card: 'carte', carte: 'carte' };
   for (const p of payments) {
     items.push({ id: `p${p.id}`, at: p.created_at, category: 'encaissements', title: `Paiement ${METHOD[p.method] || p.method || ''}`.trim(), detail: p.own_reference || p.id, amount: Number(p.amount), currency: p.currency, status: p.status === 'pending' ? 'pending' : 'failed' });
   }
+  tag(from, payments); from = items.length;
   for (const t of cardTx) {
     const declined = /DECLINE/i.test(t.type || '') || /declin|fail/i.test(t.status || '');
     const credit = /CREDIT/i.test(t.direction || '') || /REFUND|REVERSAL/i.test(t.type || '');
@@ -141,11 +151,18 @@ async function activity(ctx) {
       detail: 'Sur la carte', amount: declined ? 0 : (credit ? 1 : -1) * Math.abs(Number(t.amount_usd || 0)), currency: 'USD', status: declined ? 'failed' : 'succeeded',
     });
   }
+  tag(from, cardTx, (t) => t.card_id);
   items.sort((a, b) => new Date(b.at) - new Date(a.at));
-  const list = items.slice(0, limit);
+  return items;
+}
+
+async function activity(ctx) {
+  const mode = await resolveMode(ctx);
+  const limit = Math.min(500, Math.max(20, parseInt((ctx.query && ctx.query.limit) || '300', 10) || 300));
+  const list = (await buildActivity({ merchantId: ctx.merchantId, mode, limit })).slice(0, limit);
   const counts = { all: list.length, encaissements: 0, paiements: 0, cartes: 0, wallet: 0 };
   for (const i of list) counts[i.category] += 1;
   return { status: 200, body: { mode, counts, items: list } };
 }
 
-module.exports = { summary, activity, isDeposit, isReturn };
+module.exports = { summary, activity, buildActivity, isDeposit, isReturn };
