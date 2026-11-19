@@ -470,6 +470,8 @@ async function createHolder(merchantId, profile, mode, options) {
   }
 }
 
+// A 1x1 image: the Sandbox identity check is approved by the test helper, whatever the picture.
+const SANDBOX_ID_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 const MONERAILS_ID_DOCS = { PASSPORT: 'passport', NIN: 'national_id', DRIVERS_LICENSE: 'driver_license', VOTERS_CARD: 'voters_card' };
 
 /**
@@ -686,7 +688,23 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
     err.httpStatus = 409;
     throw err;
   }
-  // Pilot (sandbox): a holder verified at Monerails gets its new card there; otherwise the current issuer, as always.
+  // The admin chose the new issuer for this merchant: a holder created earlier is enrolled there now, from what we keep about it.
+  // Sandbox: with a placeholder document (the test key approves at once). Live: a real identity document is required and we do not keep
+  // those, so the holder must be sent again (POST /v1/cards/holders, same email); until then its cards stay at the current issuer.
+  if (!profile.monerails_cardholder_id && await require('./cardIssuer').issuerFor(merchantId, effMode, 'individual') === 'monerails') {
+    if (effMode === 'live') {
+      await supabase.update('maplerad_customers', { id: profile.id }, { monerails_status: 'failed', monerails_reason: "Pièce d'identité à renvoyer pour passer chez le nouveau partenaire" }).catch(() => {});
+      require('./adminAlerts').alert({ key: `holder-not-migrated-${profile.id}`, throttleMs: 24 * 3600 * 1000, subject: 'Carte créée chez l\'ancien partenaire : titulaire à réinscrire', eyebrow: 'Cartes', heading: 'Titulaire non inscrit chez le nouveau partenaire', tone: 'warning', paragraphs: [`Marchand ${merchantId}, titulaire ${profile.id} : le nouveau partenaire est choisi pour ce marchand, mais ce titulaire a été créé avant. Sa carte a été créée chez l'ancien partenaire.`, "Pour la prochaine, le marchand doit renvoyer la pièce d'identité du titulaire (POST /v1/cards/holders avec le même email)."] }).catch(() => {});
+    } else {
+      const done = await enrollAtMonerails(profile, {
+        firstName: profile.first_name, lastName: profile.last_name, email: profile.email, country: profile.country, dob: profile.dob,
+        phoneShortCode: profile.phone_short_code, phoneNumber: profile.phone_number, address: profile.address || {}, identificationNumber: profile.identification_number,
+        identity: { type: 'NIN', number: profile.identification_number, image: SANDBOX_ID_IMAGE },
+      });
+      if (done) Object.assign(profile, done);
+    }
+  }
+  // A holder verified at the new issuer gets its new card there; otherwise the current issuer, as always.
   if (profile.monerails_cardholder_id && profile.monerails_status === 'verified' && await require('./cardIssuer').issuerFor(merchantId, effMode, 'individual') === 'monerails') {
     const merchantM = await getMerchant(merchantId);
     const planM = planKeyFor(merchantM, 'issuing', mode);

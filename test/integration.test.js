@@ -10101,3 +10101,32 @@ test('issuer choice per merchant: overrides the global switch both ways, is owne
     assert.equal((await api('PUT', `/admin/card-issuer/merchants/${ida}`, { token: viewer.token, body: { issuer: 'maplerad' } })).status, 403);
   } finally { await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); }
 });
+
+test('issuer switch: a holder created BEFORE the switch is enrolled at the new issuer at its next card (Sandbox) and the card is created there', async () => {
+  const config = require('../src/config');
+  const issuer = require('../src/services/cardIssuer');
+  const { server, st } = await monerailsMock(4561);
+  const saved = Object.assign({}, config.monerails);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4561/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_lazy' });
+  try {
+    await issuer.saveSettings({ new_cards: 'maplerad', pilot_merchants: [], merchant_issuer: {} });
+    const reg = await registerAndVerify({ business_name: 'Lazy Co', email: 'lazy-mr@example.com', password: 'password123' });
+    const token = reg.data.session_token;
+    const idBack = { ...TEST_IDENTITY, type: 'NIN', imageBackUrl: TEST_IDENTITY.imageUrl };
+    const h = await api('POST', '/dashboard/cards/holders', { token, body: { firstName: 'Old', lastName: 'Holder', email: 'old.holder@example.com', country: 'HT', dob: '1990-01-01', identificationNumber: 'ID-OH', identity: idBack, phoneNumber: '37011111', phoneShortCode: '+509', address: { street: '1 rue A', city: 'Port-au-Prince', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } } });
+    assert.equal(h.status, 201);
+    const hrow = mockTables.maplerad_customers.find((x) => x.id === h.data.holder.id);
+    assert.ok(!hrow.monerails_cardholder_id, 'created while the current issuer was selected');
+    // the admin switches the new cards to the new issuer
+    await issuer.saveSettings({ new_cards: 'monerails' });
+    const wallet = require('../src/services/ledger');
+    await wallet.creditMasterWallet(reg.data.merchant.id, 100, 'USD', 'lazy-topup', null, 'sandbox');
+    const c = await api('POST', '/dashboard/cards', { token, body: { reference: 'LAZY-1', kind: 'individual', holder_id: h.data.holder.id, amount: 10 } });
+    assert.equal(c.status, 202);
+    const row = mockTables.cards.find((x) => x.id === c.data.id);
+    assert.equal(row.provider, 'monerails', 'the new card is at the selected partner');
+    const after = mockTables.maplerad_customers.find((x) => x.id === h.data.holder.id);
+    assert.ok(after.monerails_cardholder_id && after.monerails_status === 'verified');
+    assert.ok(st.holders.length >= 1);
+  } finally { Object.assign(config.monerails, saved); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
+});
