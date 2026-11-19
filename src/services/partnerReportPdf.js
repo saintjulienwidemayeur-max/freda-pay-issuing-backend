@@ -121,6 +121,16 @@ async function build(report, company, breakdown) {
     if (Math.abs(sum - Number(report.profit_usd)) > 0.01) { text(`Le bénéfice retenu (${usd(report.profit_usd)}) a été ajusté à la main : le détail ci-dessus montre les opérations réelles.`, M + 8, 8.5, f.i, MUTED); y -= 16; }
   }
 
+  if (breakdown && Array.isArray(breakdown.by_issuer)) {
+    section('Cartes : bénéfice et dépenses par partenaire');
+    const NAMES = { maplerad: 'Maplerad', monerails: 'Nouveau partenaire de cartes (Monerails)' };
+    for (const g of breakdown.by_issuer) {
+      row(NAMES[g.issuer] || g.issuer, both(g.profit_usd), { bold: true });
+      text(`Frais encaissés ${both(g.revenue_usd)}  -  dépenses chez ce partenaire ${both(g.partner_cost_usd)}  (${g.count} opération${g.count > 1 ? 's' : ''})`, M + 8, 8.5, f.r, MUTED); y -= 18;
+    }
+    text('Une carte compte chez le partenaire qui la détient ; un dépôt sur le Master Wallet compte chez le nouveau partenaire pour un marchand du nouveau programme.', M + 8, 8, f.i, MUTED); y -= 16;
+  }
+
   section('Dépenses');
   const exp = report.expenses || [];
   if (!exp.length) row('Aucune dépense', usd(0));
