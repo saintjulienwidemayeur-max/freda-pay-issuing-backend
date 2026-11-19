@@ -53,6 +53,31 @@ function groupTotals(items) {
   return GROUPS.map((k) => { const b = g[k]; return { group: k, count: b.count, revenue_usd: round2(b.revenue_usd), partner_cost_usd: round2(b.partner_cost_usd), profit_usd: round2(b.revenue_usd - b.partner_cost_usd) }; });
 }
 
+/**
+ * Cards and what funds them, split by the partner that carries them (profit and partner costs of Maplerad on one side, of the new issuer on the other):
+ *  - a card operation (creation, recharge, withdrawal, purchase commission, refusal, closure): the partner of THAT card;
+ *  - a Master Wallet deposit: the new issuer for a merchant in the new card program (its deposit is costed at that partner's rate), else Maplerad;
+ *  - the program entry fee: the new issuer.
+ * Everything else (payments, payouts, crypto, plans) is not part of this split.
+ */
+const CARD_KINDS = new Set(['card_creation', 'card_recharge', 'card_withdrawal', 'card_spend', 'card_decline', 'card_closure']);
+const DEPOSIT_KINDS = new Set(['wallet_funding', 'wallet_deposit']);
+function issuerOf(r, cardsById, memberKeys, mode) {
+  if (CARD_KINDS.has(r.kind)) { const c = cardsById.get(r.related_id); return c ? (c.provider === 'monerails' ? 'monerails' : 'maplerad') : null; }
+  if (DEPOSIT_KINDS.has(r.kind)) return memberKeys.has(`${r.merchant_id}|${mode}`) ? 'monerails' : 'maplerad';
+  if (r.kind === 'card_program_join') return 'monerails';
+  return null;
+}
+function issuerSplit(norm, cardsById, memberKeys, mode) {
+  const out = { maplerad: { issuer: 'maplerad', count: 0, revenue_usd: 0, partner_cost_usd: 0 }, monerails: { issuer: 'monerails', count: 0, revenue_usd: 0, partner_cost_usd: 0 } };
+  for (const r of norm) { const k = issuerOf(r, cardsById, memberKeys, mode); if (!k) continue; out[k].count += 1; out[k].revenue_usd += r.revenue_usd; out[k].partner_cost_usd += r.partner_cost_usd; }
+  return ['maplerad', 'monerails'].map((k) => ({ issuer: k, count: out[k].count, revenue_usd: round2(out[k].revenue_usd), partner_cost_usd: round2(out[k].partner_cost_usd), profit_usd: round2(out[k].revenue_usd - out[k].partner_cost_usd) }));
+}
+async function programMemberKeys() {
+  const rows = await supabase.select('card_program_members', {}, { limit: 20000 }).catch(() => []);
+  return new Set(rows.map((m) => `${m.merchant_id}|${m.mode}`));
+}
+
 function summarizeRevenue(norm) {
   const byKind = {}; const costByKind = {}; const days = {}; const weeks = {};
   let revenue = 0; let cost = 0;
@@ -158,6 +183,7 @@ async function merchantStats(merchantId, mode) {
 
 /** The whole platform in one environment: profit and partner costs per day, card spending, and where Gateway money sits. */
 async function platformStats(mode, days = 14) {
+  const memberKeys = await programMemberKeys();
   const [merchants, { cards, byId }, feeRows, txRows, payments, payouts] = await Promise.all([
     supabase.select('merchants', {}, { limit: 1000 }),
     cardsFor({ mode }),
@@ -195,6 +221,7 @@ async function platformStats(mode, days = 14) {
   const today_groups = groupsFor(new Set([dayKeys[0]]));
   const window_groups = groupsFor(new Set(dayKeys));
   const all_time_groups = groupTotals(norm);
+  const issuersFor = (keys) => issuerSplit(norm.filter((r) => !keys || keys.has(dayOf(r.at))), byId, memberKeys, mode);
 
   // Where the Gateway money sits: one line per business that has any activity or balance.
   const names = new Map(merchants.map((m) => [m.id, m]));
@@ -224,6 +251,7 @@ async function platformStats(mode, days = 14) {
     partner_cost_by_kind_usd: all.partner_cost_by_kind_usd,
     rate_htg_per_usd: config.exchangeRateHtgPerUsd,
     groups: { today: today_groups, window: window_groups, all_time: all_time_groups },
+    issuers: { today: issuersFor(new Set([dayKeys[0]])), window: issuersFor(new Set(dayKeys)), all_time: issuersFor(null) },
     by_day,
     cards: {
       issued: cards.filter((c) => COUNTED_CARD.has(c.status)).length,
@@ -284,9 +312,10 @@ async function profitBreakdown(mode, fromDate, toDate, { kind, limit = 200 } = {
   const byKind = Object.values(kinds).map((k) => ({ ...k, group: groupOf(k.kind), revenue_usd: round2(k.revenue_usd), partner_cost_usd: round2(k.partner_cost_usd), profit_usd: round2(k.revenue_usd - k.partner_cost_usd) })).sort((a, b) => b.profit_usd - a.profit_usd);
   const total = byKind.reduce((t, k) => ({ count: t.count + k.count, revenue_usd: t.revenue_usd + k.revenue_usd, partner_cost_usd: t.partner_cost_usd + k.partner_cost_usd, profit_usd: t.profit_usd + k.profit_usd }), { count: 0, revenue_usd: 0, partner_cost_usd: 0, profit_usd: 0 });
   const byGroup = groupTotals(inPeriod);
+  const byIssuer = issuerSplit(inPeriod, byId, await programMemberKeys(), mode);
   const rows = inPeriod.filter((r) => !kind || r.kind === kind).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, limit)
     .map((r) => ({ id: r.id, at: r.at, kind: r.kind, group: groupOf(r.kind), merchant_id: r.merchant_id, merchant_name: names.get(r.merchant_id) || r.merchant_id, related_id: r.related_id, amount: r.amount, currency: r.currency, revenue_usd: round2(r.revenue_usd), partner_cost_usd: round2(r.partner_cost_usd), profit_usd: round2(r.revenue_usd - r.partner_cost_usd) }));
-  return { rate_htg_per_usd: config.exchangeRateHtgPerUsd, by_group: byGroup, by_kind: byKind, total: { count: total.count, revenue_usd: round2(total.revenue_usd), partner_cost_usd: round2(total.partner_cost_usd), profit_usd: round2(total.profit_usd) }, rows };
+  return { rate_htg_per_usd: config.exchangeRateHtgPerUsd, by_group: byGroup, by_issuer: byIssuer, by_kind: byKind, total: { count: total.count, revenue_usd: round2(total.revenue_usd), partner_cost_usd: round2(total.partner_cost_usd), profit_usd: round2(total.profit_usd) }, rows };
 }
 
 module.exports = { groupOf, profitBreakdown, profitBetween, merchantStats, platformStats, normalizeRevenue, summarizeRevenue, summarizeCardSpend };

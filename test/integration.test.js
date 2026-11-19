@@ -10130,3 +10130,30 @@ test('issuer switch: a holder created BEFORE the switch is enrolled at the new i
     assert.ok(st.holders.length >= 1);
   } finally { Object.assign(config.monerails, saved); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
 });
+
+test('admin activity: every merchant\'s movements with who did them, filters; overview and profit split between the two card partners', async () => {
+  const live = await liveMerchantWithActivity('adminact');
+  const owner = await adminLogin('owner');
+  const all = await api('GET', '/admin/activity?mode=live&limit=500', { token: owner.token });
+  assert.equal(all.status, 200);
+  assert.ok(all.data.items.length > 0);
+  const mine = all.data.items.filter((i) => i.merchant_id === live.merchantId);
+  assert.ok(mine.length > 0, 'the merchant\'s lines are there');
+  assert.ok(mine.every((i) => i.merchant_name), 'each line says who');
+  for (let k = 1; k < all.data.items.length; k += 1) assert.ok(new Date(all.data.items[k - 1].at) >= new Date(all.data.items[k].at), 'newest first');
+  const cards = await api('GET', '/admin/activity?mode=live&category=cartes', { token: owner.token });
+  assert.ok(cards.data.items.every((i) => i.category === 'cartes'));
+  const one = await api('GET', `/admin/activity?mode=live&merchant_id=${live.merchantId}`, { token: owner.token });
+  assert.ok(one.data.items.length && one.data.items.every((i) => i.merchant_id === live.merchantId));
+  const none = await api('GET', '/admin/activity?mode=live&q=zzzz-no-such-thing', { token: owner.token });
+  assert.equal(none.data.items.length, 0);
+  assert.equal((await api('GET', '/admin/activity')).status, 401);
+  // profit split
+  const ov = await api('GET', '/admin/overview', { token: owner.token });
+  assert.equal(ov.status, 200);
+  for (const k of ['today', 'window', 'all_time']) assert.deepEqual(ov.data.platform.issuers[k].map((x) => x.issuer), ['maplerad', 'monerails']);
+  const pb = await api('GET', '/admin/profit?mode=live', { token: owner.token });
+  assert.equal(pb.status, 200);
+  assert.deepEqual(pb.data.by_issuer.map((x) => x.issuer), ['maplerad', 'monerails']);
+  assert.ok(pb.data.by_issuer.every((x) => typeof x.profit_usd === 'number'));
+});

@@ -215,6 +215,7 @@ router.post('/admin/announcement/disarm', adminSession.requireAdminSession, asyn
   if (ctx.adminRole !== 'owner') throw Object.assign(new Error("Seul le propriétaire peut arrêter l'envoi."), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' });
   return { status: 200, body: await require('./services/announcement').disarm() };
 });
+router.get('/admin/activity', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return require('./handlers/adminActivity').list(ctx); });
 router.get('/admin/card-issuer/merchants', adminSession.requireAdminSession, async (ctx) => {
   adminSession.requireComplianceRole(ctx);
   const supabase = require('./lib/supabase'); const issuer = require('./services/cardIssuer');
