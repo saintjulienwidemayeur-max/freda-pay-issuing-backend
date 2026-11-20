@@ -100,6 +100,56 @@ async function zip(ctx) {
   return { status: 200, body: { filename: `${slug(merchant && merchant.business_name)}-${submission.kind}-${submission.id}.zip`, content_type: 'application/zip', base64: buf.toString('base64') } };
 }
 
+const FOLDER = { submitted: 'en-attente', approved: 'approuves', rejected: 'refuses' };
+const csv = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+
+/**
+ * GET /admin/verifications/export-kyc?status=all|approved|submitted|rejected : EVERY KYC file (people only, never KYB) in one ZIP,
+ * streamed so it never sits in memory: one folder per status, one sub-folder per person (selfie, ID card...), and an index.csv.
+ * At most 600 files per download: narrow the status when there are more.
+ */
+async function exportKyc(ctx) {
+  const status = ['submitted', 'approved', 'rejected'].includes(ctx.query && ctx.query.status) ? ctx.query.status : null;
+  const rows = await supabase.select('verification_submissions', { kind: 'kyc', ...(status ? { status } : {}) }, { order: 'created_at.desc', limit: 3000 });
+  const jobs = [];
+  for (const r of rows) for (const d of (r.documents || [])) { if (jobs.length < 600) jobs.push({ sub: r, doc: d }); }
+  if (!jobs.length) throw httpError(404, 'NO_DATA', 'Aucun dossier KYC à télécharger pour ce filtre.');
+  const ids = [...new Set(rows.map((r) => r.merchant_id))];
+  const merchants = await supabase.select('merchants', { id: supabase.inList(ids) }, { limit: 5000 });
+  const by = new Map(merchants.map((m) => [m.id, m]));
+  const zipper = require('../utils/zip').writer();
+  const res = ctx.res;
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="kyc-${status || 'tous'}-${stamp}.zip"`, 'Cache-Control': 'no-store' });
+  console.log(`KYC export (${status || 'all'}, ${jobs.length} files) by ${(ctx.admin && ctx.admin.email) || ctx.adminId}`); // eslint-disable-line no-console
+  const index = [['dossier', 'statut', 'soumis_le', 'marchand', 'email', 'identifiant', 'fichier'].map(csv).join(',')];
+  const counter = new Map();
+  const fetchOne = async (j) => { try { return { j, got: await readDoc(j.sub, j.doc.path) }; } catch (e) { return { j, err: e.message }; } };
+  // Four downloads at a time, written in order.
+  const window = [];
+  let next = 0;
+  const pump = () => { while (window.length < 4 && next < jobs.length) { window.push(fetchOne(jobs[next])); next += 1; } };
+  pump();
+  try {
+    while (window.length) {
+      const { j, got, err } = await window.shift();
+      pump();
+      const m = by.get(j.sub.merchant_id) || {};
+      const folder = `${FOLDER[j.sub.status] || j.sub.status}/${slug(m.business_name)}-${j.sub.merchant_id}`;
+      if (got) {
+        const n = (counter.get(j.sub.id) || 0) + 1; counter.set(j.sub.id, n);
+        const file = `${folder}/${String(n).padStart(2, '0')}-${slug(j.doc.label)}.${got.ext}`;
+        res.write(zipper.add(file, got.buf));
+        index.push([j.sub.id, j.sub.status, j.sub.created_at, m.business_name, m.email, j.sub.merchant_id, file].map(csv).join(','));
+      } else {
+        index.push([j.sub.id, j.sub.status, j.sub.created_at, m.business_name, m.email, j.sub.merchant_id, `INTROUVABLE : ${err}`].map(csv).join(','));
+      }
+    }
+    res.write(zipper.add('index.csv', Buffer.from(`\uFEFF${index.join('\r\n')}\r\n`, 'utf8')));
+  } catch (e) { console.error(`KYC export interrupted: ${e.message}`); } // eslint-disable-line no-console
+  res.end(zipper.finish());
+}
+
 /** The approval itself (used by the admin and, when the team switched it on, by the AI agent). adminId = null for the agent. */
 async function approveSubmission(submission, adminId) {
   const [updated] = await supabase.update('verification_submissions', { id: submission.id, status: 'submitted' }, {
@@ -164,4 +214,4 @@ function httpError(status, code, message) {
   return err;
 }
 
-module.exports = { listAll, download, zip, listPending, viewDocument, approve, reject, approveSubmission };
+module.exports = { exportKyc, listAll, download, zip, listPending, viewDocument, approve, reject, approveSubmission };

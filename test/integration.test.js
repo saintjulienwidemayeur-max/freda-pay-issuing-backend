@@ -10227,3 +10227,24 @@ test('admin KYC archive: every submitted file (any status) can be listed, filter
   assert.equal((await api('GET', '/admin/verifications/all')).status, 401);
   assert.equal((await api('GET', '/admin/verifications/all', { token: reg.data.session_token })).status, 401);
 });
+
+test('admin KYC export: one ZIP with every KYC file (people), never KYB; one folder per person; index.csv; staff only', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  const admin = await adminLogin('owner');
+  const docs = [{ label: "Pièce d'identité", filename: 'id.png', content_type: 'image/png', base64: png.toString('base64') }, { label: 'Selfie', filename: 's.png', content_type: 'image/png', base64: png.toString('base64') }];
+  const p = await registerAndVerify({ business_name: 'Export Personne', email: 'kyc-export-p@example.com', password: 'password123' });
+  assert.equal((await api('POST', '/dashboard/verification/kyc', { token: p.data.session_token, body: { documents: docs } })).status, 201);
+  const b = await registerAndVerify({ business_name: 'Export Entreprise', email: 'kyb-export-b@example.com', password: 'password123', account_type: 'business' });
+  await api('POST', '/dashboard/verification/kyb', { token: b.data.session_token, body: { documents: docs } });
+  const res = await fetch(`${baseUrl}/admin/verifications/export-kyc`, { headers: { Authorization: `Bearer ${admin.token}` } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /application\/zip/);
+  assert.match(res.headers.get('content-disposition'), /attachment; filename="kyc-/);
+  const zb = Buffer.from(await res.arrayBuffer());
+  assert.equal(zb.slice(0, 4).toString('hex'), '504b0304');
+  const text = zb.toString('latin1');
+  assert.ok(text.includes('export-personne-' + p.data.merchant.id), 'the person has a folder');
+  assert.ok(!text.includes('export-entreprise'), 'KYB is not in the export');
+  assert.ok(/index\.csv/.test(text));
+  assert.equal((await fetch(`${baseUrl}/admin/verifications/export-kyc`)).status, 401);
+});

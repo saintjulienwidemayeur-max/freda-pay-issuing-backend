@@ -543,6 +543,7 @@ router.post('/admin/team/:id/resend', adminSession.requireAdminSession, (ctx) =>
 router.del('/admin/team/:id', adminSession.requireAdminSession, (ctx) => { if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut retirer un accès.'), { httpStatus: 403, code: 'OWNER_ONLY' }); return adminTeamHandlers.remove(ctx); });
 
 router.get('/admin/verifications', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.listPending(ctx); });
+router.get('/admin/verifications/export-kyc', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.exportKyc(ctx); });
 router.get('/admin/verifications/all', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.listAll(ctx); });
 router.get('/admin/verifications/:id/download', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.download(ctx); });
 router.get('/admin/verifications/:id/zip', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminVerificationHandlers.zip(ctx); });
