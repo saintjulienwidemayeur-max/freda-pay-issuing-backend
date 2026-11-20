@@ -10192,3 +10192,38 @@ test('wallet labels: the commission on a card purchase and the program entry are
   assert.equal(labelFor({ type: 'wallet_debit', reference: 'card-decline-fee:x' }), 'Frais de refus de carte');
   assert.equal(labelFor({ type: 'wallet_debit', reference: 'create:CARD-1' }), 'Création de carte');
 });
+
+test('admin KYC archive: every submitted file (any status) can be listed, filtered, and its selfie and ID card downloaded one by one or as a ZIP; staff only', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  const admin = await adminLogin('owner');
+  const reg = await registerAndVerify({ business_name: 'Archive KYC Co', email: 'kyc-archive@example.com', password: 'password123' });
+  const sub = await api('POST', '/dashboard/verification/kyc', { token: reg.data.session_token, body: { documents: [
+    { label: "Pièce d'identité", filename: 'id.png', content_type: 'image/png', base64: png.toString('base64') },
+    { label: 'Selfie', filename: 'selfie.png', content_type: 'image/png', base64: png.toString('base64') },
+  ] } });
+  assert.equal(sub.status, 201);
+  const id = sub.data.submission ? sub.data.submission.id : mockTables.verification_submissions[mockTables.verification_submissions.length - 1].id;
+  await api('POST', `/admin/verifications/${id}/approve`, { token: admin.token });
+  // approved files stay in the archive
+  const all = await api('GET', '/admin/verifications/all?q=archive%20kyc', { token: admin.token });
+  assert.equal(all.status, 200);
+  const mine = all.data.submissions.find((s) => s.id === id);
+  assert.ok(mine && mine.status === 'approved' && mine.documents.length === 2 && mine.merchant.email === 'kyc-archive@example.com');
+  assert.equal((await api('GET', '/admin/verifications/all?status=submitted&q=archive%20kyc', { token: admin.token })).data.submissions.length, 0);
+  // one document
+  const d = await api('GET', `/admin/verifications/${id}/download?path=${encodeURIComponent(mine.documents[1].path)}`, { token: admin.token });
+  assert.equal(d.status, 200);
+  assert.match(d.data.filename, /^archive-kyc-co-kyc-selfie\.png$/);
+  assert.ok(Buffer.from(d.data.base64, 'base64').equals(png));
+  assert.equal((await api('GET', `/admin/verifications/${id}/download?path=other/file.png`, { token: admin.token })).status, 404);
+  // the ZIP holds both files
+  const z = await api('GET', `/admin/verifications/${id}/zip`, { token: admin.token });
+  assert.equal(z.status, 200);
+  const zb = Buffer.from(z.data.base64, 'base64');
+  assert.equal(zb.slice(0, 4).toString('hex'), '504b0304');
+  assert.equal(zb.readUInt16LE(zb.length - 22 + 10), 2, 'two entries');
+  assert.ok(zb.includes(png), 'the picture is inside');
+  // not for merchants or anonymous
+  assert.equal((await api('GET', '/admin/verifications/all')).status, 401);
+  assert.equal((await api('GET', '/admin/verifications/all', { token: reg.data.session_token })).status, 401);
+});
