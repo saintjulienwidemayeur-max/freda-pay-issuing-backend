@@ -10274,10 +10274,17 @@ test('incident alert: preview, then email + chat to every Live merchant that iss
   assert.match(mailA[0].text, /nouvelles cartes/);
   const chatA = mockTables.chat_messages.filter((m) => m.merchant_id === idA && /Incident en cours/.test(m.body));
   assert.equal(chatA.length, 1);
+  // the dashboard banner goes with it
+  assert.equal(sent.data.banner, true);
+  const notice = await api('GET', '/dashboard/notice', { token: a.data.session_token });
+  assert.match(notice.data.notice.message, /Incident en cours.*moins d'une heure/);
+  assert.equal(notice.data.notice.tone, 'warning');
   // not twice within 30 minutes
   assert.equal((await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'cards_outage', confirm: true } })).status, 429);
   // the "resolved" one is separate
   assert.equal((await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'cards_resolved', confirm: true } })).status, 200);
+  const back = await api('GET', '/dashboard/notice', { token: a.data.session_token });
+  assert.ok(!/Incident en cours/.test(back.data.notice.message), 'the usual banner is back');
   // the assistant's tool follows the same rules (role + limit)
   const tools = require('../src/services/agent/tools');
   const viewerTool = tools.build({ kind: 'admin', adminRole: 'editor' });
@@ -10460,4 +10467,20 @@ test('partner balance too low: the merchant never reads it (bank momentarily una
     const ok = await api('POST', '/dashboard/cards', { token, body: { reference: 'FLOAT-2', kind: 'individual', holder_id: h.data.holder.id, amount: 10 } });
     assert.equal(mockTables.cards.find((c) => c.id === ok.data.id).provider, 'monerails', 'back at the selected bank when the balance is fine');
   } finally { Object.assign(config.monerails, saved); issuer.resetFloatCache(); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
+});
+
+test('issuer degraded for 10 minutes after a balance refusal: new cards skip the new issuer without trying', async () => {
+  const issuer = require('../src/services/cardIssuer');
+  const { server, st } = await monerailsMock(4563);
+  const config = require('../src/config'); const saved = Object.assign({}, config.monerails);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4563/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_deg' });
+  try {
+    issuer.resetFloatCache(); st.balanceCents = 50000;
+    assert.equal(await issuer.floatCovers('sandbox', 12), true);
+    issuer.alertFloatShortage({ id: 'card_x', merchant_id: 'mch_x', mode: 'sandbox' }, new Error('Insufficient Balance'));
+    assert.equal(await issuer.floatCovers('sandbox', 12), false, 'degraded: not even the balance check is trusted');
+    assert.equal(await issuer.floatCovers('live', 12), true, 'the other environment is not affected');
+    issuer.resetFloatCache();
+    assert.equal(await issuer.floatCovers('sandbox', 12), true);
+  } finally { Object.assign(config.monerails, saved); issuer.resetFloatCache(); await new Promise((r) => server.close(r)); }
 });
