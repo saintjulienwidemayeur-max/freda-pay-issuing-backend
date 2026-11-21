@@ -550,6 +550,7 @@ async function createMonerailsCard({ merchantId, id, ownReference, brand, profil
       throw Object.assign(new Error("La création de la carte n'a pas pu être confirmée. Elle sera vérifiée automatiquement : consultez la liste de vos cartes dans quelques minutes, et ne la recréez pas."), { code: 'CARD_RESULT_UNKNOWN', httpStatus: 502 });
     }
     const reason = require('./cardIssuer').translateError(err).message;
+    require('./providerErrors').recordCardFailure({ id, merchant_id: merchantId, mode }, err, reason); // the raw answer, for the admin's "why did it fail"
     if (await markCardFailed(id, reason)) await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
     throw require('./cardIssuer').translateError(err);
   }

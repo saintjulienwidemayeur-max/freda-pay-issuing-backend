@@ -162,7 +162,9 @@ async function call(card, fn, { retries } = {}) {
     require('./adminAlerts').alert({ key: `card-unknown-${card.id}`, throttleMs: 30 * 60 * 1000, subject: 'Résultat inconnu chez Monerails : à vérifier', eyebrow: 'Cartes', heading: 'Opération de carte à vérifier', tone: 'warning', paragraphs: [`Carte ${card.id} (${card.own_reference}) : le service de cartes n'a pas confirmé une opération (délai ou erreur serveur).`, "L'argent n'a pas été remboursé automatiquement pour éviter un double paiement. Comparez le solde de la carte chez Monerails et chez nous, puis corrigez."] }).catch(() => {});
     throw e;
   }
-  throw translateError(last);
+  const shown = translateError(last);
+  require('./providerErrors').recordCardFailure(card, last, shown.message); // the raw answer, for the admin's "why did it fail"
+  throw shown;
 }
 
 /**
