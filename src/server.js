@@ -624,6 +624,10 @@ if (require.main === module) {
       setInterval(() => {
         if (cardBusy) return;
         cardBusy = true;
+        // The AI agent's housekeeping: failed cards are removed from the lists (new failures and the old ones).
+        require('./services/cardOrchestrator').removeFailedCards()
+          .then((r) => { if (r.removed) { console.log(`Failed cards removed: ${r.removed}`); require('./services/agent/settings').logRun({ kind: 'cleanup', outcome: `${r.removed} carte(s) échouée(s) supprimée(s)`, tools_used: ['delete_failed_cards'] }); } }) // eslint-disable-line no-console
+          .catch((e) => console.error('Failed cards clean-up:', e.message)); // eslint-disable-line no-console
         require('./services/cardOrchestrator').reconcileMonerailsPending().catch((e) => console.error('Monerails pending cards:', e.message)); // eslint-disable-line no-console
         require('./services/cardOrchestrator').reconcilePendingCardCreations(10)
           .catch((e) => console.error('Card creation reconciliation:', e.message))
