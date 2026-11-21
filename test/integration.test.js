@@ -10297,10 +10297,14 @@ test('failed cards are removed from the lists (old ones too); a fresh failure st
     { id: 'card_fail_old', merchant_id: id, own_reference: 'FAIL-OLD', kind: 'individual', mode: 'sandbox', status: 'failed', balance: 0, created_at: old, updated_at: old },
     { id: 'card_fail_new', merchant_id: id, own_reference: 'FAIL-NEW', kind: 'individual', mode: 'sandbox', status: 'failed', balance: 0, created_at: fresh, updated_at: fresh },
     { id: 'card_active_ok', merchant_id: id, own_reference: 'OK-1', kind: 'individual', mode: 'sandbox', status: 'active', balance: 5, created_at: old, updated_at: old },
+    { id: 'card_fail_23h', merchant_id: id, own_reference: 'FAIL-23H', kind: 'individual', mode: 'sandbox', status: 'failed', balance: 0, created_at: new Date(Date.now() - 23 * 3600 * 1000).toISOString(), updated_at: new Date(Date.now() - 23 * 3600 * 1000).toISOString() },
+    { id: 'card_fail_25h', merchant_id: id, own_reference: 'FAIL-25H', kind: 'individual', mode: 'sandbox', status: 'failed', balance: 0, created_at: new Date(Date.now() - 25 * 3600 * 1000).toISOString(), updated_at: new Date(Date.now() - 25 * 3600 * 1000).toISOString() },
   );
-  const r = await orch.removeFailedCards({ merchantId: id });
-  assert.equal(r.removed, 1);
   const row = (x) => mockTables.cards.find((c) => c.id === x);
+  const r = await orch.removeFailedCards({ merchantId: id });
+  assert.equal(r.removed, 2, 'the 3-day-old and the 25-hour-old failures');
+  assert.ok(row('card_fail_25h').deleted_at, 'after 24 hours it goes');
+  assert.ok(!row('card_fail_23h').deleted_at, 'before 24 hours it stays');
   assert.ok(row('card_fail_old').deleted_at, 'the old failure is removed');
   assert.ok(!row('card_fail_new').deleted_at, 'a fresh failure stays for a short while');
   assert.ok(!row('card_active_ok').deleted_at, 'an active card is never touched');
@@ -10310,7 +10314,7 @@ test('failed cards are removed from the lists (old ones too); a fresh failure st
   const tools = require('../src/services/agent/tools');
   assert.match((await tools.build({ kind: 'admin', adminRole: 'editor' }).run('delete_failed_cards', {})).error, /propriétaire|administrateur/);
   const out = await tools.build({ kind: 'admin', adminRole: 'owner' }).run('delete_failed_cards', { merchant_id: id, include_recent: true });
-  assert.equal(out.removed, 1);
+  assert.equal(out.removed, 2, 'the fresh one and the 23-hour-old one, when the admin asks for everything now');
   assert.ok(row('card_fail_new').deleted_at);
   assert.ok(!row('card_active_ok').deleted_at);
   assert.ok(admin);

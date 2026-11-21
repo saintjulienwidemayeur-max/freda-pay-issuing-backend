@@ -1517,10 +1517,10 @@ function notifyCardCreationFailed(card, reason, refunded, verificationLink, link
 /**
  * Cards that FAILED are removed from every list (the merchant's and the admin's): the failure was already told by e-mail and by the
  * card.failed webhook, and the money was already given back. Old failures (before this clean-up existed) are removed too. A card that
- * failed less than graceMs ago stays visible for a moment, so an integration polling the card can still read its failure.
+ * failed less than 24 hours ago stays visible, so the merchant can still see it (and its reason) in the dashboard and an integration polling the card can read its failure.
  * The row is kept (deleted_at) for the ledger and the audit trail.
  */
-const FAILED_GRACE_MS = 15 * 60 * 1000;
+const FAILED_GRACE_MS = 24 * 3600 * 1000;
 async function removeFailedCards({ graceMs, merchantId, limit } = {}) {
   const grace = graceMs == null ? FAILED_GRACE_MS : Math.max(0, Number(graceMs));
   const filters = { status: 'failed', deleted_at: supabase.isNull() };
