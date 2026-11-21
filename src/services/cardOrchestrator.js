@@ -1513,6 +1513,29 @@ function notifyCardCreationFailed(card, reason, refunded, verificationLink, link
     .catch((e) => console.error(`Card failure e-mail not sent for ${card.id}: ${e.message}`)); // eslint-disable-line no-console
 }
 
+/**
+ * Cards that FAILED are removed from every list (the merchant's and the admin's): the failure was already told by e-mail and by the
+ * card.failed webhook, and the money was already given back. Old failures (before this clean-up existed) are removed too. A card that
+ * failed less than graceMs ago stays visible for a moment, so an integration polling the card can still read its failure.
+ * The row is kept (deleted_at) for the ledger and the audit trail.
+ */
+const FAILED_GRACE_MS = 15 * 60 * 1000;
+async function removeFailedCards({ graceMs, merchantId, limit } = {}) {
+  const grace = graceMs == null ? FAILED_GRACE_MS : Math.max(0, Number(graceMs));
+  const filters = { status: 'failed', deleted_at: supabase.isNull() };
+  if (merchantId) filters.merchant_id = merchantId;
+  const rows = (await supabase.select('cards', filters, { order: 'created_at.asc', limit: 2000 }))
+    .filter((c) => Date.now() - new Date(c.updated_at || c.created_at).getTime() >= grace)
+    .slice(0, limit || 1000);
+  const now = new Date().toISOString();
+  let removed = 0;
+  for (const c of rows) {
+    const [r] = await supabase.update('cards', { id: c.id, status: 'failed' }, { deleted_at: now, updated_at: now }).catch(() => []);
+    if (r) removed += 1;
+  }
+  return { removed, checked: rows.length };
+}
+
 const UNSENT_AFTER_MS = 3 * 60 * 1000;
 async function failUnsentPendingCards() {
   const now = Date.now();
@@ -1801,6 +1824,7 @@ function transactionWebhookData(card, t) {
 
 module.exports = {
   reconcileMonerailsPending,
+  removeFailedCards,
   applyMonerailsCardResult,
   enrollAtMonerails,
   alignCardWithPartner,

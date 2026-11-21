@@ -10285,3 +10285,33 @@ test('incident alert: preview, then email + chat to every Live merchant that iss
   const ownerTool = tools.build({ kind: 'admin', adminRole: 'owner', adminEmail: 'owner@x' });
   assert.equal((await ownerTool.run('send_incident_alert', { kind: 'cards_outage', confirm: false })).preview, true);
 });
+
+test('failed cards are removed from the lists (old ones too); a fresh failure stays visible for a short while; the assistant can run it', async () => {
+  const orch = require('../src/services/cardOrchestrator');
+  const admin = await adminLogin('owner');
+  const reg = await registerAndVerify({ business_name: 'Failed Cards Co', email: 'failed-cards@example.com', password: 'password123' });
+  const id = reg.data.merchant.id;
+  const old = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+  const fresh = new Date().toISOString();
+  mockTables.cards.push(
+    { id: 'card_fail_old', merchant_id: id, own_reference: 'FAIL-OLD', kind: 'individual', mode: 'sandbox', status: 'failed', balance: 0, created_at: old, updated_at: old },
+    { id: 'card_fail_new', merchant_id: id, own_reference: 'FAIL-NEW', kind: 'individual', mode: 'sandbox', status: 'failed', balance: 0, created_at: fresh, updated_at: fresh },
+    { id: 'card_active_ok', merchant_id: id, own_reference: 'OK-1', kind: 'individual', mode: 'sandbox', status: 'active', balance: 5, created_at: old, updated_at: old },
+  );
+  const r = await orch.removeFailedCards({ merchantId: id });
+  assert.equal(r.removed, 1);
+  const row = (x) => mockTables.cards.find((c) => c.id === x);
+  assert.ok(row('card_fail_old').deleted_at, 'the old failure is removed');
+  assert.ok(!row('card_fail_new').deleted_at, 'a fresh failure stays for a short while');
+  assert.ok(!row('card_active_ok').deleted_at, 'an active card is never touched');
+  const list = await api('GET', '/dashboard/cards', { token: reg.data.session_token });
+  assert.ok(!list.data.cards.some((c) => c.id === 'card_fail_old'));
+  // the assistant's tool, with the grace period skipped
+  const tools = require('../src/services/agent/tools');
+  assert.match((await tools.build({ kind: 'admin', adminRole: 'editor' }).run('delete_failed_cards', {})).error, /propriétaire|administrateur/);
+  const out = await tools.build({ kind: 'admin', adminRole: 'owner' }).run('delete_failed_cards', { merchant_id: id, include_recent: true });
+  assert.equal(out.removed, 1);
+  assert.ok(row('card_fail_new').deleted_at);
+  assert.ok(!row('card_active_ok').deleted_at);
+  assert.ok(admin);
+});
