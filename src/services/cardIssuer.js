@@ -136,9 +136,43 @@ function publicDetail(message) {
   return /[.!?)]$/.test(t) ? t : `${t}.`;
 }
 
+/**
+ * The issuer says OUR balance with it is too low (the money we keep at the partner to create and fund cards), not the merchant's.
+ * The merchant must never read that: it is told the bank is momentarily unavailable, and the team is alerted to top the balance up.
+ */
+function isPartnerFloatShortage(err) {
+  const code = String((err && err.code) || ''); const m = String((err && err.message) || '');
+  return /^MONERAILS_/.test(code) && (/BALANCE_INSUFFICIENT|INSUFFICIENT_(BALANCE|FUNDS)/.test(code) || /insufficient (balance|funds)|wallet'?s available balance|available balance/i.test(m));
+}
+function alertFloatShortage(card, err) {
+  require('./adminAlerts').alert({
+    key: `monerails-float-${(card && card.mode) || 'sandbox'}`, throttleMs: 30 * 60 * 1000,
+    subject: 'Solde du compte cartes insuffisant chez Monerails : rechargez-le', eyebrow: 'Cartes', heading: 'Rechargez le solde cartes chez Monerails', tone: 'warning',
+    paragraphs: [`Une opération a été refusée par Monerails parce que notre solde chez eux est trop bas${card && card.id ? ` (carte ${card.id}, marchand ${card.merchant_id})` : ''} : ${String((err && err.message) || '').slice(0, 300)}`, "Le marchand a seulement vu « Notre banque partenaire est momentanément indisponible ». Tant que le solde n'est pas rechargé, les nouvelles cartes sont créées chez l'ancien partenaire."],
+  }).catch(() => {});
+}
+
+const floatCache = {};
+/**
+ * Whether our balance at the new issuer can cover about `needUsd` (cached for a minute). Unknown (Monerails cannot be asked) counts as
+ * covered: the card is then tried there as usual.
+ */
+async function floatCovers(mode, needUsd) {
+  const m = mode === 'live' ? 'live' : 'sandbox';
+  if (!monerails.configured(m)) return true;
+  let c = floatCache[m];
+  if (!c || Date.now() - c.at > 60 * 1000) {
+    try { const b = (await monerails.forMode(m).balance()).data || {}; c = { at: Date.now(), usd: b.cards && b.cards.amount != null ? Number(b.cards.amount) / 100 : null }; } catch (e) { return true; }
+    floatCache[m] = c;
+  }
+  return c.usd == null || c.usd >= Number(needUsd || 0);
+}
+function resetFloatCache() { for (const k of Object.keys(floatCache)) delete floatCache[k]; }
+
 /** Monerails answers with { error: { code } } turned into MONERAILS_<CODE>: the merchant gets our own codes and a short French message. */
 function translateError(err) {
   const code = String((err && err.code) || '');
+  if (isPartnerFloatShortage(err)) return Object.assign(new Error('Notre banque partenaire est momentanément indisponible. Réessayez plus tard.'), { code: 'CARD_SERVICE_ERROR', httpStatus: 503, partnerFloat: true, providerInfo: { provider: 'monerails', code, message: String(err.message).slice(0, 300) } });
   const map = {
     MONERAILS_CARD_MINIMUM_BALANCE: [400, 'CARD_MINIMUM_BALANCE', 'Au moins 1 $ doit rester sur la carte.'],
     MONERAILS_CARD_OPERATION_IN_PROGRESS: [409, 'CARD_OPERATION_IN_PROGRESS', 'Une autre opération est en cours sur cette carte. Réessayez dans un instant.'],
@@ -178,7 +212,8 @@ async function call(card, fn, { retries } = {}) {
     throw e;
   }
   const shown = translateError(last);
-  require('./providerErrors').recordCardFailure(card, last, shown.message); // the raw answer, for the admin's "why did it fail"
+  require('./providerErrors').recordCardFailure(card, last, shown.message);
+  if (shown.partnerFloat) alertFloatShortage(card, last); // the raw answer, for the admin's "why did it fail"
   throw shown;
 }
 
@@ -210,4 +245,4 @@ async function checkMonerailsBalance() {
   return out;
 }
 
-module.exports = { publicDetail, merchantChoice, setMerchantIssuer, checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };
+module.exports = { floatCovers, resetFloatCache, alertFloatShortage, isPartnerFloatShortage, publicDetail, merchantChoice, setMerchantIssuer, checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };
