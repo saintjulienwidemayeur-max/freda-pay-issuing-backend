@@ -637,6 +637,7 @@ paths:
       summary: Enregistrer (ou remplacer) votre endpoint webhook
       description: |
         Événements envoyés : `payment.succeeded`, `payout.succeeded`, `payout.failed`, `card.created`, `card.failed`,
+        `holder.verified`, `holder.rejected` (résultat de l'acceptation d'un titulaire par le nouveau programme de cartes),
         `card.frozen`, `card.unfrozen`, `card.terminated`, `card.transaction`, `card.funded`, `card.withdrawn`,
         et `webhook.test` (test manuel). Corps : `{ id, event, created_at, data }`, signé par l'en-tête
         `X-Freda-Signature: sha256=<HMAC-SHA256 du corps brut avec votre secret>`.

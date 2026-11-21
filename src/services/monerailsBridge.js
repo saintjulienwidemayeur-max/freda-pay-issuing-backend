@@ -9,6 +9,21 @@ const webhookDispatcher = require('./webhookDispatcher');
  */
 const TX_TYPE = { card_payment: 'AUTHORIZATION', card_refund: 'REFUND', card_reversal: 'REVERSAL', card_fee: 'CHARGE' };
 
+/**
+ * Tells the merchant, by webhook, whether its holder was accepted by the new card program: holder.verified or holder.rejected
+ * (in-between states are not sent). The reason is the issuer's own sentence without the partner's name, links or ids.
+ */
+function notifyHolderResult(holder, status, reason) {
+  if (!holder || !holder.merchant_id) return;
+  if (status !== 'verified' && status !== 'rejected' && status !== 'failed') return;
+  const ok = status === 'verified';
+  const why = ok ? null : (require('./cardIssuer').publicDetail(reason) || null);
+  webhookDispatcher.dispatch(holder.merchant_id, ok ? 'holder.verified' : 'holder.rejected', {
+    id: holder.id, email: holder.email || null, mode: holder.mode || null, status: ok ? 'verified' : 'rejected', reason: why,
+    note: ok ? 'Ce titulaire est accepté par le nouveau programme de cartes : ses prochaines cartes y sont créées.' : "Ce titulaire n'est pas accepté par le nouveau programme de cartes : ses cartes restent chez notre banque partenaire actuelle. Renvoyez sa pièce d'identité (recto et verso) pour réessayer.",
+  });
+}
+
 async function handle(event, mode) {
   const env = mode === 'live' ? 'live' : 'sandbox';
   const orch = require('./cardOrchestrator');
@@ -52,11 +67,15 @@ async function handle(event, mode) {
     case 'cardholder.kyc_updated': {
       if (!obj.id) return null;
       const v = obj.verification || {};
+      const before = await supabase.selectOne('maplerad_customers', { monerails_cardholder_id: obj.id }).catch(() => null);
+      if (before && (before.mode || 'sandbox') !== env) return null; // environments never cross
       const rows = await supabase.update('maplerad_customers', { monerails_cardholder_id: obj.id }, { monerails_status: v.status || null, monerails_reason: v.reason || null, updated_at: new Date().toISOString() }).catch(() => []);
+      // The merchant is told the result (once: only when the status really changed).
+      if (rows && rows[0] && (!before || before.monerails_status !== v.status)) notifyHolderResult(rows[0], v.status, v.reason);
       return rows && rows[0];
     }
     default: return null;
   }
 }
 
-module.exports = { handle };
+module.exports = { handle, notifyHolderResult };

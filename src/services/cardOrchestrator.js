@@ -511,10 +511,14 @@ async function enrollAtMonerails(holder, profile) {
       const approved = await monerails.testVerification(chId, 'approved');
       status = (approved.data && approved.data.verification && approved.data.verification.status) || status;
     }
-    return save({ monerails_status: status, monerails_reason: null });
+    const saved = await save({ monerails_status: status, monerails_reason: null });
+    require('./monerailsBridge').notifyHolderResult(Object.assign({}, holder, saved), status, null); // verified now (Sandbox) or later by webhook
+    return saved;
   } catch (err) {
     console.error(`Monerails enrollment failed for holder ${holder.id}: ${err.message}`); // eslint-disable-line no-console
-    return save({ monerails_status: 'failed', monerails_reason: String(err.message || err).slice(0, 300) });
+    const failed = await save({ monerails_status: 'failed', monerails_reason: String(err.message || err).slice(0, 300) });
+    require('./monerailsBridge').notifyHolderResult(Object.assign({}, holder, failed), 'failed', err.message);
+    return failed;
   }
 }
 
