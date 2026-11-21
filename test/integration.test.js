@@ -10425,3 +10425,39 @@ test('information message about the new holder webhooks: only Live card merchant
   assert.match(mails[0].text, /docs\/webhooks/);
   assert.ok(mockTables.chat_messages.some((c) => c.merchant_id === withHook.data.merchant.id && /holder\.verified/.test(c.body)));
 });
+
+test('partner balance too low: the merchant never reads it (bank momentarily unavailable), the team is alerted, and a new card is created at the other bank instead of failing', async () => {
+  const config = require('../src/config');
+  const issuer = require('../src/services/cardIssuer');
+  const { server, st } = await monerailsMock(4562);
+  const saved = Object.assign({}, config.monerails);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4562/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_float' });
+  try {
+    // the message from the field: what the merchant must NOT see
+    const e = Object.assign(new Error("Monerails (HTTP 400, insufficient_balance) : Insufficient Balance. Transaction Amount 4.00 cannot be greater than Wallet's available balance 1.86."), { code: 'MONERAILS_INSUFFICIENT_BALANCE' });
+    const t = issuer.translateError(e);
+    assert.equal(t.message, 'Notre banque partenaire est momentanément indisponible. Réessayez plus tard.');
+    assert.ok(t.partnerFloat && t.httpStatus === 503);
+    assert.ok(!/balance|1\.86|wallet/i.test(t.message));
+    // the check before creating
+    await issuer.saveSettings({ new_cards: 'monerails', merchant_issuer: {} });
+    st.balanceCents = 100; issuer.resetFloatCache();
+    assert.equal(await issuer.floatCovers('sandbox', 12), false);
+    st.balanceCents = 50000; issuer.resetFloatCache();
+    assert.equal(await issuer.floatCovers('sandbox', 12), true);
+    // creation: the holder is verified at the new issuer
+    const reg = await registerAndVerify({ business_name: 'Float Co', email: 'float-co@example.com', password: 'password123' });
+    const token = reg.data.session_token; const mid = reg.data.merchant.id;
+    const idBack = { ...TEST_IDENTITY, type: 'NIN', imageBackUrl: TEST_IDENTITY.imageUrl };
+    const h = await api('POST', '/dashboard/cards/holders', { token, body: { firstName: 'Flo', lastName: 'At', email: 'flo.at@example.com', country: 'HT', dob: '1990-01-01', identificationNumber: 'ID-FL', identity: idBack, phoneNumber: '37011111', phoneShortCode: '+509', address: { street: '1 rue A', city: 'Port-au-Prince', state: 'Ouest', postal_code: 'HT6110', country: 'HT' } } });
+    assert.equal(h.status, 201);
+    await require('../src/services/ledger').creditMasterWallet(mid, 200, 'USD', 'float-topup', null, 'sandbox');
+    st.balanceCents = 100; issuer.resetFloatCache();
+    const low = await api('POST', '/dashboard/cards', { token, body: { reference: 'FLOAT-1', kind: 'individual', holder_id: h.data.holder.id, amount: 10 } });
+    assert.ok([201, 202].includes(low.status), JSON.stringify(low.data));
+    assert.notEqual(mockTables.cards.find((c) => c.id === low.data.id).provider, 'monerails', 'created at the other bank');
+    st.balanceCents = 50000; issuer.resetFloatCache();
+    const ok = await api('POST', '/dashboard/cards', { token, body: { reference: 'FLOAT-2', kind: 'individual', holder_id: h.data.holder.id, amount: 10 } });
+    assert.equal(mockTables.cards.find((c) => c.id === ok.data.id).provider, 'monerails', 'back at the selected bank when the balance is fine');
+  } finally { Object.assign(config.monerails, saved); issuer.resetFloatCache(); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
+});

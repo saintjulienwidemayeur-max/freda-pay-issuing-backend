@@ -555,6 +555,7 @@ async function createMonerailsCard({ merchantId, id, ownReference, brand, profil
     }
     const reason = require('./cardIssuer').translateError(err).message;
     require('./providerErrors').recordCardFailure({ id, merchant_id: merchantId, mode }, err, reason); // the raw answer, for the admin's "why did it fail"
+    if (require('./cardIssuer').isPartnerFloatShortage(err)) require('./cardIssuer').alertFloatShortage({ id, merchant_id: merchantId, mode }, err);
     if (await markCardFailed(id, reason)) await refundMasterWalletForFailedCard(merchantId, totalDebit, ownReference, id, mode);
     throw require('./cardIssuer').translateError(err);
   }
@@ -710,7 +711,13 @@ async function createIndividualCard({ merchantId, id, ownReference, brand, amoun
     }
   }
   // A holder verified at the new issuer gets its new card there; otherwise the current issuer, as always.
-  if (profile.monerails_cardholder_id && profile.monerails_status === 'verified' && await require('./cardIssuer').issuerFor(merchantId, effMode, 'individual') === 'monerails') {
+  let useNewIssuer = !!(profile.monerails_cardholder_id && profile.monerails_status === 'verified' && await require('./cardIssuer').issuerFor(merchantId, effMode, 'individual') === 'monerails');
+  // Our balance at the new issuer cannot cover this card: it is created at the current issuer instead of failing (the team is alerted).
+  if (useNewIssuer && !(await require('./cardIssuer').floatCovers(effMode, Number(amountUsd || 0) + 2))) {
+    useNewIssuer = false;
+    require('./cardIssuer').alertFloatShortage({ id: null, merchant_id: merchantId, mode: effMode }, { message: `Solde insuffisant détecté avant la création : la carte de ${Number(amountUsd || 0)} $ a été créée chez l'ancien partenaire.` });
+  }
+  if (useNewIssuer) {
     const merchantM = await getMerchant(merchantId);
     const planM = planKeyFor(merchantM, 'issuing', mode);
     await assertUnderCardLimit(merchantId, planM, mode);
