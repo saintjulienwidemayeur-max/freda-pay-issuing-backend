@@ -15,7 +15,7 @@ async function handle(event, mode) {
   const obj = (event && event.data && event.data.object) || {};
   switch (event.type) {
     case 'card.issued': return orch.applyMonerailsCardResult(obj, true, null, env);
-    case 'card.issue_failed': return orch.applyMonerailsCardResult(obj, false, obj.failure_reason || obj.reason ? `Création refusée par le service de cartes : ${obj.failure_reason || obj.reason}. Les montants débités ont été remboursés.` : null, env);
+    case 'card.issue_failed': return orch.applyMonerailsCardResult(obj, false, obj.failure_reason || obj.reason ? `Création refusée par notre banque partenaire : ${obj.failure_reason || obj.reason}. Les montants débités ont été remboursés.` : null, env);
     case 'card.transaction':
     case 'card.refunded':
     case 'card.reversed': {
@@ -48,7 +48,7 @@ async function handle(event, mode) {
       if (changed) webhookDispatcher.dispatch(card.merchant_id, frozen ? 'card.frozen' : 'card.unfrozen', { id: card.id, reference: card.own_reference, reason: 'issuer' });
       return changed || card;
     }
-    case 'card.terminated': return obj.id ? orch.applyCardTerminationWebhook({ card_id: obj.id, reason: obj.reason || 'fermée par le service de cartes' }, env) : null;
+    case 'card.terminated': return obj.id ? orch.applyCardTerminationWebhook({ card_id: obj.id, reason: obj.reason || 'fermée par notre banque partenaire' }, env) : null;
     case 'cardholder.kyc_updated': {
       if (!obj.id) return null;
       const v = obj.verification || {};

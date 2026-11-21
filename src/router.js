@@ -203,7 +203,7 @@ function createHandler(router, options) {
         return;
       }
       // A card partner's name never reaches a merchant: outside the admin panel, its name in any message is replaced.
-      const clean = (m) => (pathname.startsWith('/admin') ? m : String(m).replace(/monerails?|maplerad/gi, 'le service de cartes'));
+      const clean = (m) => (pathname.startsWith('/admin') ? m : String(m).replace(/monerails?|maplerad/gi, 'notre banque partenaire'));
       const errorBody = { code: err.code || 'ERROR', message: clean(err.message || 'Erreur interne.') };
       // Handlers can attach err.details = {...} for small, non-sensitive extra
       // context the client needs to react to a specific error (e.g. the

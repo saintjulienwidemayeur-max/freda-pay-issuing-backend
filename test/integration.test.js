@@ -10362,12 +10362,12 @@ test('merchant message for an unmapped issuer refusal: keeps what the issuer sai
   const issuer = require('../src/services/cardIssuer');
   const mk = (msg, code) => Object.assign(new Error(msg), { code });
   const a = issuer.translateError(mk('Monerails (HTTP 400, invalid_birth_date) : The cardholder must be at least 18 years old [champ : birth_date]', 'MONERAILS_INVALID_BIRTH_DATE'));
-  assert.match(a.message, /refusé la demande : The cardholder must be at least 18 years old \(champ : birth_date\)\.?$/);
+  assert.match(a.message, /Notre banque partenaire a refusé la demande : The cardholder must be at least 18 years old \(champ : birth_date\)\.?$/);
   assert.equal(a.code, 'CARD_SERVICE_ERROR');
   const b = issuer.translateError(mk('Monerails (HTTP 422, x) : See https://docs.monerails.com/x or docs.monerails.com/y for ch_abc12345. Monerails says no', 'MONERAILS_X'));
   assert.ok(!/monerails|http|ch_abc/i.test(b.message), b.message);
   // nothing useful: the generic sentence
-  assert.equal(issuer.translateError(mk('Monerails (HTTP 400) : erreur', 'MONERAILS_400')).message, 'Le service de cartes a refusé la demande. Réessayez ou contactez le support.');
+  assert.equal(issuer.translateError(mk('Monerails (HTTP 400) : erreur', 'MONERAILS_400')).message, 'Notre banque partenaire a refusé la demande. Réessayez ou contactez le support.');
   // mapped codes keep their own French sentence
   assert.equal(issuer.translateError(mk('Monerails (HTTP 400) : x', 'MONERAILS_CARD_MINIMUM_BALANCE')).code, 'CARD_MINIMUM_BALANCE');
   // the admin still sees the raw answer

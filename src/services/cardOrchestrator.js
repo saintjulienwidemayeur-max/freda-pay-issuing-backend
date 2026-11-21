@@ -611,7 +611,7 @@ async function applyMonerailsCardResult(cardObj, ok, reason, env) {
     }
     return done || card;
   }
-  const why = reason || "Le service de cartes n'a pas pu créer la carte. Les montants débités ont été remboursés.";
+  const why = reason || "Notre banque partenaire n'a pas pu créer la carte. Les montants débités ont été remboursés.";
   if (await markCardFailed(card.id, why)) {
     const refund = fromCents(card.initial_amount || 0) + Number(card.creation_fee || 0);
     if (refund > 0) await refundMasterWalletForFailedCard(card.merchant_id, refund, card.own_reference, card.id, card.mode);
@@ -1488,7 +1488,7 @@ async function applyCardTerminationWebhook(event, webhookMode) {
   if (webhookMode && (card.mode || 'sandbox') !== webhookMode) return null;
   if (card.status === 'terminated' || card.status === 'failed') return card;
   const reason = event.reason ? String(event.reason).slice(0, 200) : null;
-  const [done] = await supabase.update('cards', { id: card.id, status: card.status }, { status: 'terminated', failure_reason: reason ? `Carte fermée : ${reason}` : 'Carte fermée par le service de cartes.', updated_at: new Date().toISOString() });
+  const [done] = await supabase.update('cards', { id: card.id, status: card.status }, { status: 'terminated', failure_reason: reason ? `Carte fermée : ${reason}` : 'Carte fermée par notre banque partenaire.', updated_at: new Date().toISOString() });
   if (!done) return card;
   webhookDispatcher.dispatch(card.merchant_id, 'card.terminated', { id: card.id, reference: card.own_reference, reason });
   require('./adminAlerts').cardClosedByPartner({ card, reason, balance: Number(card.balance || 0) }).catch(() => {});

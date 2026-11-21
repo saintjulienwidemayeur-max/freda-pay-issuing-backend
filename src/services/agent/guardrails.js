@@ -34,7 +34,7 @@ const PATTERNS = [
  * Replaced silently (this is not an incident, so it is not a finding). The admin assistant keeps them (keepPartners).
  */
 const PARTNER_NAMES = /\bPay['’]m\s+PlopPlop\b|\bPlopPlop\b|\bPay['’]m\b|\bMonerails?\b|\bMaplerad\b|\bTranzak\b/gi;
-const hidePartners = (text) => String(text == null ? '' : text).replace(PARTNER_NAMES, 'notre partenaire').replace(/(notre partenaire)(?:\s*(?:\/|,|et|and|ou)\s*notre partenaire)+/gi, '$1');
+const hidePartners = (text) => String(text == null ? '' : text).replace(PARTNER_NAMES, 'notre banque partenaire').replace(/(notre banque partenaire)(?:\s*(?:\/|,|et|and|ou)\s*notre banque partenaire)+/gi, '$1');
 
 /** Returns { text, findings: [kind...] }. Card numbers are recognised by their length AND the Luhn check, so long reference numbers are left alone. */
 function redact(input, opts) {
