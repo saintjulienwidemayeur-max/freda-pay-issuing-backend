@@ -144,7 +144,11 @@ function isPartnerFloatShortage(err) {
   const code = String((err && err.code) || ''); const m = String((err && err.message) || '');
   return /^MONERAILS_/.test(code) && (/BALANCE_INSUFFICIENT|INSUFFICIENT_(BALANCE|FUNDS)/.test(code) || /insufficient (balance|funds)|wallet'?s available balance|available balance/i.test(m));
 }
+const degradedUntil = {};
+/** The new issuer just refused for "balance": for the next 10 minutes new cards go to the current issuer without trying (no failed card, no retry by the merchant). */
+function markDegraded(mode) { degradedUntil[mode === 'live' ? 'live' : 'sandbox'] = Date.now() + 10 * 60 * 1000; }
 function alertFloatShortage(card, err) {
+  markDegraded(card && card.mode);
   require('./adminAlerts').alert({
     key: `monerails-float-${(card && card.mode) || 'sandbox'}`, throttleMs: 30 * 60 * 1000,
     subject: 'Solde du compte cartes insuffisant chez Monerails : rechargez-le', eyebrow: 'Cartes', heading: 'Rechargez le solde cartes chez Monerails', tone: 'warning',
@@ -160,6 +164,7 @@ const floatCache = {};
 async function floatCovers(mode, needUsd) {
   const m = mode === 'live' ? 'live' : 'sandbox';
   if (!monerails.configured(m)) return true;
+  if ((degradedUntil[m] || 0) > Date.now()) return false;
   let c = floatCache[m];
   if (!c || Date.now() - c.at > 60 * 1000) {
     try { const b = (await monerails.forMode(m).balance()).data || {}; c = { at: Date.now(), usd: b.cards && b.cards.amount != null ? Number(b.cards.amount) / 100 : null }; } catch (e) { return true; }
@@ -167,7 +172,7 @@ async function floatCovers(mode, needUsd) {
   }
   return c.usd == null || c.usd >= Number(needUsd || 0);
 }
-function resetFloatCache() { for (const k of Object.keys(floatCache)) delete floatCache[k]; }
+function resetFloatCache() { for (const k of Object.keys(floatCache)) delete floatCache[k]; for (const k of Object.keys(degradedUntil)) delete degradedUntil[k]; }
 
 /** Monerails answers with { error: { code } } turned into MONERAILS_<CODE>: the merchant gets our own codes and a short French message. */
 function translateError(err) {

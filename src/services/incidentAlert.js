@@ -52,6 +52,12 @@ Merci de votre patience. Si une opération a échoué pendant l'incident, vous p
   },
 };
 
+/** The dashboard banner that goes with the alert (what every merchant sees at the top of its dashboard). */
+const BANNERS = {
+  cards_outage: { tone: 'warning', message: "Incident en cours : la création de nouvelles cartes et la recharge des cartes sont momentanément indisponibles. Toutes les autres opérations fonctionnent normalement. Nous travaillons à le résoudre en moins d'une heure." },
+  cards_resolved: { restore: true },
+};
+
 function httpError(status, code, message) { const e = new Error(message); e.httpStatus = status; e.code = code; return e; }
 
 /** Live merchants that issue cards: verified email, not deleted. kind 'webhooks': only those that registered an active webhook. */
@@ -80,7 +86,7 @@ let sending = false;
  * kind: cards_outage | cards_resolved. message (optional, 600 characters at most) replaces the email text and the chat text.
  * confirm !== true: nothing is sent, the audience and the text are returned (preview).
  */
-async function send({ kind, message, confirm, adminEmail, adminId }) {
+async function send({ kind, message, confirm, banner, adminEmail, adminId }) {
   const tpl = TEMPLATES[kind];
   if (!tpl) throw httpError(400, 'INVALID_KIND', 'Type invalide : cards_outage, cards_resolved ou webhooks_news.');
   const custom = message ? String(message).trim().slice(0, 600) : '';
@@ -107,8 +113,18 @@ async function send({ kind, message, confirm, adminEmail, adminId }) {
         } catch (e) { /* the email is the main channel */ }
       }));
     }
+    // The dashboard banner (outage: shown; resolved: back to the usual one). banner: false to leave the banner alone.
+    let bannerSet = false;
+    if (banner !== false && BANNERS[kind]) {
+      const notice = require('./notice');
+      try {
+        if (BANNERS[kind].restore) await notice.save({ enabled: true, tone: notice.DEFAULT.tone, message: notice.DEFAULT.message }, adminEmail);
+        else await notice.save({ enabled: true, tone: BANNERS[kind].tone, message: custom ? custom.slice(0, 400) : BANNERS[kind].message }, adminEmail);
+        bannerSet = true;
+      } catch (e) { /* the emails and chat messages went out; the banner can be set from Paramètres */ }
+    }
     await supabase.insert('admin_messages', { id: `msg_${crypto.randomBytes(8).toString('hex')}`, sent_by: adminId || null, sent_by_email: adminEmail || null, audience: 'live', merchant_id: null, subject: tpl.subject, body, recipients: list.length, sent: emailed, failed }).catch(() => {});
-    return { sent: true, kind, recipients: list.length, emailed, chat_messages: chatted, failed };
+    return { sent: true, kind, recipients: list.length, emailed, chat_messages: chatted, failed, banner: bannerSet };
   } finally { sending = false; }
 }
 

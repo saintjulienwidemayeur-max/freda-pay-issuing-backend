@@ -219,7 +219,7 @@ router.post('/admin/announcement/disarm', adminSession.requireAdminSession, asyn
 router.post('/admin/incident-alert', adminSession.requireAdminSession, async (ctx) => {
   adminSession.requireComplianceRole(ctx);
   const b = ctx.body || {};
-  return { status: 200, body: await require('./services/incidentAlert').send({ kind: String(b.kind || ''), message: b.message, confirm: b.confirm === true, adminEmail: ctx.admin && ctx.admin.email, adminId: ctx.adminId }) };
+  return { status: 200, body: await require('./services/incidentAlert').send({ kind: String(b.kind || ''), message: b.message, confirm: b.confirm === true, banner: b.banner, adminEmail: ctx.admin && ctx.admin.email, adminId: ctx.adminId }) };
 });
 router.get('/admin/activity', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return require('./handlers/adminActivity').list(ctx); });
 router.get('/admin/card-issuer/merchants', adminSession.requireAdminSession, async (ctx) => {
