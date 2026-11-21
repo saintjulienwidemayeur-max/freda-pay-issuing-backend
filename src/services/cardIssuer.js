@@ -148,12 +148,12 @@ function translateError(err) {
     MONERAILS_CARD_TERMINATED: [409, 'CARD_TERMINATED', 'Cette carte est fermée.'],
     MONERAILS_CARD_NOT_READY: [409, 'CARD_NOT_READY', "Cette carte n'est pas encore active (création en cours)."],
     MONERAILS_RATE_LIMITED: [429, 'CARD_REVEAL_LIMIT', 'Trop de demandes pour cette carte. Réessayez plus tard.'],
-    MONERAILS_BALANCE_INSUFFICIENT: [503, 'CARD_SERVICE_ERROR', 'Le service de cartes est momentanément indisponible. Réessayez plus tard.'],
+    MONERAILS_BALANCE_INSUFFICIENT: [503, 'CARD_SERVICE_ERROR', 'Notre banque partenaire est momentanément indisponible. Réessayez plus tard.'],
   };
   if (/Cards Created Today Cannot be Terminated/i.test(String(err && err.message))) return Object.assign(new Error('Une carte ne peut pas être fermée le jour de sa création. Gelez-la maintenant, puis fermez-la demain.'), { code: 'CARD_TERMINATE_SAME_DAY', httpStatus: 400 });
   const m = map[code];
   if (m) return Object.assign(new Error(m[2]), { code: m[1], httpStatus: m[0] });
-  if (/^MONERAILS_/.test(code)) { const detail = publicDetail(err.message); return Object.assign(new Error(detail ? `Le service de cartes a refusé la demande : ${detail}` : 'Le service de cartes a refusé la demande. Réessayez ou contactez le support.'), { code: 'CARD_SERVICE_ERROR', httpStatus: 502, providerInfo: { provider: 'monerails', code, message: String(err.message).slice(0, 300) } }); }
+  if (/^MONERAILS_/.test(code)) { const detail = publicDetail(err.message); return Object.assign(new Error(detail ? `Notre banque partenaire a refusé la demande : ${detail}` : 'Notre banque partenaire a refusé la demande. Réessayez ou contactez le support.'), { code: 'CARD_SERVICE_ERROR', httpStatus: 502, providerInfo: { provider: 'monerails', code, message: String(err.message).slice(0, 300) } }); }
   return err;
 }
 /**
@@ -173,7 +173,7 @@ async function call(card, fn, { retries } = {}) {
     }
   }
   if (last && last.unknownOutcome && attempts > 1) {
-    const e = Object.assign(new Error("Le résultat de l'opération n'a pas pu être confirmé par le service de cartes. Ne la répétez pas : l'équipe vérifie et corrige si besoin."), { code: 'CARD_RESULT_UNKNOWN', httpStatus: 502, unknownOutcome: true });
+    const e = Object.assign(new Error("Le résultat de l'opération n'a pas pu être confirmé par notre banque partenaire. Ne la répétez pas : l'équipe vérifie et corrige si besoin."), { code: 'CARD_RESULT_UNKNOWN', httpStatus: 502, unknownOutcome: true });
     require('./adminAlerts').alert({ key: `card-unknown-${card.id}`, throttleMs: 30 * 60 * 1000, subject: 'Résultat inconnu chez Monerails : à vérifier', eyebrow: 'Cartes', heading: 'Opération de carte à vérifier', tone: 'warning', paragraphs: [`Carte ${card.id} (${card.own_reference}) : le service de cartes n'a pas confirmé une opération (délai ou erreur serveur).`, "L'argent n'a pas été remboursé automatiquement pour éviter un double paiement. Comparez le solde de la carte chez Monerails et chez nous, puis corrigez."] }).catch(() => {});
     throw e;
   }
