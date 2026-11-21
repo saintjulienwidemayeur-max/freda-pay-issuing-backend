@@ -10248,3 +10248,40 @@ test('admin KYC export: one ZIP with every KYC file (people), never KYB; one fol
   assert.ok(/index\.csv/.test(text));
   assert.equal((await fetch(`${baseUrl}/admin/verifications/export-kyc`)).status, 401);
 });
+
+test('incident alert: preview, then email + chat to every Live merchant that issues cards; once per 30 min; staff only; the admin assistant can send it', async () => {
+  const admin = await adminLogin('owner');
+  const incident = require('../src/services/incidentAlert');
+  const a = await registerAndVerify({ business_name: 'Incident A', email: 'inc-a@example.com', password: 'password123' });
+  const b = await registerAndVerify({ business_name: 'Incident B', email: 'inc-b@example.com', password: 'password123' });
+  const idA = a.data.merchant.id;
+  mockTables.merchants.find((m) => m.id === idA).issuing_live_enabled = true; // only A issues cards in Live
+  const before = sentEmails.length;
+  // preview sends nothing
+  const pv = await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'cards_outage' } });
+  assert.equal(pv.status, 200); assert.equal(pv.data.sent, false); assert.ok(pv.data.recipients >= 1);
+  assert.equal(sentEmails.length, before);
+  // refused for a bad kind and without a session
+  assert.equal((await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'nope', confirm: true } })).status, 400);
+  assert.equal((await api('POST', '/admin/incident-alert', { body: { kind: 'cards_outage', confirm: true } })).status, 401);
+  // the real send
+  const sent = await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'cards_outage', confirm: true } });
+  assert.equal(sent.status, 200); assert.equal(sent.data.sent, true);
+  const mailA = sentEmails.filter((e) => e.to === 'inc-a@example.com' && /Incident en cours sur les cartes/.test(e.subject || ''));
+  assert.equal(mailA.length, 1);
+  assert.equal(sentEmails.filter((e) => e.to === 'inc-b@example.com' && /Incident en cours/.test(e.subject || '')).length, 0, 'B does not issue cards in Live');
+  assert.ok(!/monerails|maplerad/i.test(mailA[0].html + mailA[0].text));
+  assert.match(mailA[0].text, /nouvelles cartes/);
+  const chatA = mockTables.chat_messages.filter((m) => m.merchant_id === idA && /Incident en cours/.test(m.body));
+  assert.equal(chatA.length, 1);
+  // not twice within 30 minutes
+  assert.equal((await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'cards_outage', confirm: true } })).status, 429);
+  // the "resolved" one is separate
+  assert.equal((await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'cards_resolved', confirm: true } })).status, 200);
+  // the assistant's tool follows the same rules (role + limit)
+  const tools = require('../src/services/agent/tools');
+  const viewerTool = tools.build({ kind: 'admin', adminRole: 'editor' });
+  assert.match((await viewerTool.run('send_incident_alert', { kind: 'cards_outage', confirm: true })).error, /propriétaire|administrateur/);
+  const ownerTool = tools.build({ kind: 'admin', adminRole: 'owner', adminEmail: 'owner@x' });
+  assert.equal((await ownerTool.run('send_incident_alert', { kind: 'cards_outage', confirm: false })).preview, true);
+});

@@ -52,6 +52,7 @@ const ADMIN_TOOLS = [
   { name: 'list_pending_drafts', description: "Les brouillons de réponse en attente d'approbation, avec leur raison.", parameters: obj({}) },
   { name: 'trace_card', description: "Qui a réellement fait chaque opération d'une carte : requêtes API du marchand, débits du Master Wallet et écritures de la banque partenaire.", parameters: obj({ card: S('Identifiant, référence ou identifiant partenaire') }, ['card']) },
   { name: 'explain_wallet', description: "Explique un solde : ce qui l'a fait monter et descendre, et les crédits sans source.", parameters: obj({ merchant_id: S('Identifiant du marchand'), wallet: S('master_wallet, gateway ou crypto'), mode: S('live ou sandbox') }, ['merchant_id']) },
+  { name: 'send_incident_alert', description: "ACTION (envoi réel, à tous les marchands Live qui émettent des cartes) : envoie une alerte d'incident par email ET dans leur chat. kind = cards_outage (panne : nouvelles cartes et recharges de cartes touchées, le reste fonctionne, résolution en moins d'1 h) ou cards_resolved (c'est rétabli). Tu PEUX et tu DOIS l'utiliser quand un admin te demande d'envoyer ou de diffuser cette alerte : sa demande est la confirmation, ne refuse pas et ne renvoie pas vers l'équipe. Pour seulement voir le nombre de destinataires et le texte, mets confirm à false. Limité à un envoi par type toutes les 30 minutes. N'envoie jamais de message libre sans qu'on te l'ait demandé.", parameters: obj({ kind: S('cards_outage ou cards_resolved'), message: S('Texte personnalisé (facultatif, 600 caractères) : seulement si l\'admin le fournit'), confirm: { type: 'boolean', description: 'true pour envoyer vraiment ; false pour un aperçu' } }, ['kind']) },
   { name: 'platform_report', description: "Le rapport opérationnel de l'agent et de la plateforme sur une période (emails, chats, erreurs fréquentes, alertes).", parameters: obj({ days: I('Nombre de jours (défaut 7)') }) },
 ];
 
@@ -271,6 +272,10 @@ function build(scope) {
         const results = [];
         for (const c of list) results.push({ business_name: c.business_name, merchant_id: c.merchant_id, outcome: (await chatAgent.handleMerchantMessage(c.merchant_id, { force: true })).outcome });
         return { answered: results.filter((r) => r.outcome === 'replied').length, handed_to_humans: results.filter((r) => r.outcome === 'handed_off').length, results };
+      },
+      async send_incident_alert(input) {
+        if (scope.adminRole !== 'owner' && scope.adminRole !== 'admin') return { error: "Seul un propriétaire ou un administrateur peut envoyer cette alerte." };
+        return require('../incidentAlert').send({ kind: str(input.kind, 30), message: input.message ? str(input.message, 600) : '', confirm: input.confirm === true, adminEmail: scope.adminEmail, adminId: scope.adminId });
       },
       async platform_report(input) { return require('./report').build(clampInt(input.days, 7, 90)); },
     });

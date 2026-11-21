@@ -7,13 +7,13 @@ const alerts = require('./alerts');
 const settings = require('./settings');
 
 /** The admin's own chat with the agent. Stateless: the page sends the conversation so far. Read-only tools over the whole platform. */
-async function chat(messages, adminEmail) {
+async function chat(messages, adminEmail, admin) {
   const started = Date.now();
   const cfg = await settings.get();
   const turns = (Array.isArray(messages) ? messages : []).slice(-20).map((m) => ({ role: m && m.role === 'assistant' ? 'assistant' : 'user', content: String((m && m.content) || '').slice(0, 4000) })).filter((m) => m.content.trim());
   while (turns.length && turns[0].role !== 'user') turns.shift();
   if (!turns.length || turns[turns.length - 1].role !== 'user') { const e = new Error('Écrivez une question.'); e.httpStatus = 400; e.code = 'MISSING_FIELDS'; throw e; }
-  const toolset = tools.build({ kind: 'admin' });
+  const toolset = tools.build({ kind: 'admin', adminRole: admin && admin.role, adminEmail, adminId: admin && admin.id });
   try {
     const out = await llm.generate({ system: await prompts.adminSystem(), messages: turns, tools: toolset.definitions, runTool: toolset.run, model: cfg.model || undefined, maxTokens: 1200 });
     const red = guardrails.redact(out.text || '', { keepPartners: true }); // the team may talk about its partners
