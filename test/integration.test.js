@@ -10377,3 +10377,32 @@ test('merchant message for an unmapped issuer refusal: keeps what the issuer sai
   // the admin still sees the raw answer
   assert.match(a.providerInfo.message, /Monerails \(HTTP 400, invalid_birth_date\)/);
 });
+
+test('holder webhooks: the merchant is told when its holder is accepted or refused by the new card program (no partner name, once per change)', async () => {
+  const dispatcher = require('../src/services/webhookDispatcher');
+  const bridge = require('../src/services/monerailsBridge');
+  const seen = []; const orig = dispatcher.dispatch;
+  dispatcher.dispatch = (m, ev, data) => seen.push({ m, ev, data });
+  try {
+    const reg = await registerAndVerify({ business_name: 'Holder Hook Co', email: 'holder-hook@example.com', password: 'password123' });
+    const id = reg.data.merchant.id;
+    mockTables.maplerad_customers.push({ id: 'mpc_hh1', merchant_id: id, mode: 'sandbox', status: 'enrolled', email: 'h1@example.com', first_name: 'A', last_name: 'B', monerails_cardholder_id: 'ch_hh1', monerails_status: 'in_review' });
+    const ev = (status, reason) => ({ id: `evt_${status}_${Math.random()}`, type: 'cardholder.kyc_updated', data: { object: { id: 'ch_hh1', verification: { status, reason } } } });
+    await bridge.handle(ev('in_review'), 'sandbox');
+    assert.equal(seen.length, 0, 'in-between states are not sent');
+    await bridge.handle(ev('verified'), 'sandbox');
+    assert.deepEqual(seen.map((x) => x.ev), ['holder.verified']);
+    assert.equal(seen[0].m, id); assert.equal(seen[0].data.id, 'mpc_hh1'); assert.equal(seen[0].data.status, 'verified');
+    await bridge.handle(ev('verified'), 'sandbox');
+    assert.equal(seen.length, 1, 'the same status again is not sent twice');
+    await bridge.handle(ev('rejected', 'Monerails (HTTP 400) : The ID document is blurry [champ : documents]'), 'sandbox');
+    assert.equal(seen[1].ev, 'holder.rejected');
+    assert.match(seen[1].data.reason, /blurry/);
+    assert.ok(!/monerails|http/i.test(JSON.stringify(seen[1].data)), 'no partner name');
+    // the other environment's event never touches a holder
+    mockTables.maplerad_customers.push({ id: 'mpc_hh2', merchant_id: id, mode: 'live', status: 'enrolled', monerails_cardholder_id: 'ch_hh2', monerails_status: 'in_review' });
+    await bridge.handle({ id: 'evt_x', type: 'cardholder.kyc_updated', data: { object: { id: 'ch_hh2', verification: { status: 'verified' } } } }, 'sandbox');
+    assert.equal(seen.length, 2);
+    assert.equal(mockTables.maplerad_customers.find((h) => h.id === 'mpc_hh2').monerails_status, 'in_review');
+  } finally { dispatcher.dispatch = orig; }
+});
