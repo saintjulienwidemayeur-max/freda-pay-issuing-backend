@@ -10343,4 +10343,17 @@ test('admin Monerails failures: why a card or an operation failed (raw answer, w
   const one = await api('GET', '/admin/monerails/failures?q=wf-op', { token: admin.token });
   assert.ok(one.data.items.length >= 1 && one.data.items.every((i) => i.reference === 'WF-OP' || i.merchant_id));
   assert.equal((await api('GET', '/admin/monerails/failures')).status, 401);
+  // older failures: the cause is looked for in the webhook event and in the old error journal
+  const t = new Date().toISOString();
+  mockTables.cards.push(
+    { id: 'card_wf_ev', merchant_id: id, own_reference: 'WF-EV', kind: 'individual', mode: 'sandbox', status: 'failed', provider: 'monerails', provider_card_id: 'mrc_failed_1', failure_reason: 'Création refusée par le service de cartes.', created_at: t, updated_at: t },
+    { id: 'card_wf_jr', merchant_id: id, own_reference: 'WF-JR', kind: 'individual', mode: 'sandbox', status: 'failed', provider: 'monerails', failure_reason: 'Le service de cartes a refusé la demande.', created_at: t, updated_at: t },
+  );
+  mockTables.monerails_events.push({ id: 'evt_wf1', type: 'card.issue_failed', livemode: false, object_id: 'mrc_failed_1', payload: { type: 'card.issue_failed', data: { object: { id: 'mrc_failed_1', failure_reason: 'cardholder not verified' } } }, received_at: t });
+  await providerErrors.record({ mode: 'sandbox', merchant_id: id, route: 'POST /dashboard/cards', http_status: 422, message: 'insufficient program balance', shown_to_merchant: 'Le service de cartes a refusé la demande.' });
+  const old2 = await api('GET', '/admin/monerails/failures?q=wf-', { token: admin.token });
+  const ev = old2.data.items.find((i) => i.card_id === 'card_wf_ev');
+  assert.match(ev.raw, /cardholder not verified/); assert.match(ev.hint, /événement/);
+  const jr = old2.data.items.find((i) => i.card_id === 'card_wf_jr');
+  assert.match(jr.raw, /insufficient program balance/); assert.match(jr.hint, /ancien journal/); assert.match(jr.hint, /solde du compte Freda Pay chez Monerails/);
 });
