@@ -448,8 +448,21 @@ function toPublicProfile(p) {
     address: p.address || null,
     identification_number_last4: p.identification_number ? String(p.identification_number).slice(-4) : null,
     failure_reason: p.failure_reason,
+    new_program: newProgramOf(p),
     created_at: p.created_at,
   };
+}
+
+/**
+ * Where this holder stands with the new card program, without any partner name: accepted | refused | pending, with the reason when it was refused.
+ * null = the holder was never sent to the new program (it keeps using the current bank).
+ */
+function newProgramOf(p) {
+  const st = p && p.monerails_status;
+  if (!p || !p.monerails_cardholder_id && !st) return null;
+  if (st === 'verified') return { status: 'accepted', reason: null };
+  if (st === 'rejected' || st === 'failed') return { status: 'refused', reason: require('../services/cardIssuer').publicDetail(p.monerails_reason) || null };
+  return { status: 'pending', reason: null };
 }
 
 /** From the dashboard, an individual card is shown by its last 4 digits only (an end user's card is not the merchant's to read). */

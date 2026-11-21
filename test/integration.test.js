@@ -10484,3 +10484,39 @@ test('issuer degraded for 10 minutes after a balance refusal: new cards skip the
     assert.equal(await issuer.floatCovers('sandbox', 12), true);
   } finally { Object.assign(config.monerails, saved); issuer.resetFloatCache(); await new Promise((r) => server.close(r)); }
 });
+
+test('holders: the admin sees every merchant\'s holders (confirmed, pending, refused, and the new program result); the merchant sees its own with the new program result, never the partner name', async () => {
+  const admin = await adminLogin('owner');
+  const reg = await registerAndVerify({ business_name: 'Holders View Co', email: 'holders-view@example.com', password: 'password123' });
+  const id = reg.data.merchant.id; const token = reg.data.session_token;
+  const now = new Date().toISOString();
+  mockTables.maplerad_customers.push(
+    { id: 'mpc_hv1', merchant_id: id, mode: 'sandbox', status: 'enrolled', first_name: 'Ana', last_name: 'Ok', email: 'ana@example.com', country: 'HT', created_at: now, monerails_cardholder_id: 'ch_hv1', monerails_status: 'verified' },
+    { id: 'mpc_hv2', merchant_id: id, mode: 'sandbox', status: 'enrolled', first_name: 'Ben', last_name: 'No', email: 'ben@example.com', country: 'HT', created_at: now, monerails_cardholder_id: 'ch_hv2', monerails_status: 'rejected', monerails_reason: 'Monerails (HTTP 400) : The ID document is blurry [champ : documents]' },
+    { id: 'mpc_hv3', merchant_id: id, mode: 'sandbox', status: 'failed', failure_reason: 'Pièce illisible', first_name: 'Cy', last_name: 'Fail', email: 'cy@example.com', country: 'HT', created_at: now },
+    { id: 'mpc_hv4', merchant_id: id, mode: 'sandbox', status: 'enrolled', first_name: 'Di', last_name: 'Wait', email: 'di@example.com', country: 'HT', created_at: now, monerails_cardholder_id: 'ch_hv4', monerails_status: 'in_review' },
+  );
+  const a = await api('GET', '/admin/holders?q=holders%20view', { token: admin.token });
+  assert.equal(a.status, 200);
+  assert.equal(a.data.total, 4);
+  const ben = a.data.holders.find((h) => h.id === 'mpc_hv2');
+  assert.equal(ben.program, 'refused'); assert.match(ben.program_reason, /blurry/); assert.equal(ben.merchant_name, 'Holders View Co');
+  assert.equal(a.data.holders.find((h) => h.id === 'mpc_hv1').program, 'accepted');
+  assert.equal(a.data.holders.find((h) => h.id === 'mpc_hv3').program, 'none');
+  assert.equal(a.data.counts.enrolled, 3); assert.equal(a.data.counts.failed, 1); assert.equal(a.data.counts.program_refused, 1);
+  const f = await api('GET', '/admin/holders?q=holders%20view&status=failed', { token: admin.token });
+  assert.deepEqual(f.data.holders.map((h) => h.id), ['mpc_hv3']);
+  const p = await api('GET', '/admin/holders?q=holders%20view&program=refused', { token: admin.token });
+  assert.deepEqual(p.data.holders.map((h) => h.id), ['mpc_hv2']);
+  assert.equal((await api('GET', '/admin/holders')).status, 401);
+  // the merchant's own dashboard
+  const mine = await api('GET', '/dashboard/cards/holders', { token });
+  assert.equal(mine.status, 200);
+  const hs = mine.data.holders;
+  const by = (x) => hs.find((h) => h.id === x);
+  assert.deepEqual(by('mpc_hv1').new_program, { status: 'accepted', reason: null });
+  assert.equal(by('mpc_hv2').new_program.status, 'refused'); assert.match(by('mpc_hv2').new_program.reason, /blurry/);
+  assert.equal(by('mpc_hv4').new_program.status, 'pending');
+  assert.equal(by('mpc_hv3').new_program, null);
+  assert.ok(!/monerails/i.test(JSON.stringify(hs)), 'no partner name, no partner id');
+});
