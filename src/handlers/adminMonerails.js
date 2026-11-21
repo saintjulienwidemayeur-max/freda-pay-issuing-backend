@@ -258,9 +258,31 @@ async function failures(ctx) {
     seen.add(card ? card.id : e.path);
     items.push({ ...base(card, e.merchant_id), at: e.created_at, mode: e.mode || (card && card.mode) || null, kind: card && card.status === 'failed' ? 'Création de la carte' : 'Opération sur la carte', shown_to_merchant: e.shown_to_merchant || (card && card.failure_reason) || null, raw: e.message, http_status: e.http_status || null, hint: e.hint });
   }
+  // Failures from before the raw answer was kept: look for it elsewhere (the webhook event, the old error journal, Monerails itself).
+  const events = await supabase.select('monerails_events', { type: 'card.issue_failed' }, { order: 'received_at.desc', limit: 500 }).catch(() => []);
+  const oldErrors = errs.filter((e) => !String(e.path || '').startsWith('card:')).concat((await providerErrors.list(500)).filter((e) => !String(e.path || '').startsWith('card:')));
+  const reasonOf = (o) => { const d = (o && (o.data && o.data.object ? o.data.object : o.data)) || o || {}; return d.failure_reason || d.reason || d.failure_message || d.error || null; };
+  let lookups = 0;
   for (const c of failedCards) {
     if (seen.has(c.id)) continue;
-    items.push({ ...base(c), at: c.updated_at || c.created_at, mode: c.mode, kind: 'Création de la carte', shown_to_merchant: c.failure_reason, raw: null, http_status: null, hint: "La réponse brute de Monerails n'a pas été gardée (échec survenu avant cette fonction). La phrase montrée au marchand est la seule trace." });
+    let raw = null; let source = null; let http = null;
+    const ev = c.provider_card_id ? events.find((e) => e.object_id === c.provider_card_id) : null;
+    if (ev) { const r = reasonOf(typeof ev.payload === 'string' ? JSON.parse(ev.payload) : ev.payload); if (r) { raw = `card.issue_failed : ${typeof r === 'string' ? r : JSON.stringify(r)}`; source = "Retrouvée dans l'événement reçu de Monerails."; } }
+    if (!raw) {
+      const t0 = new Date(c.created_at).getTime();
+      const near = oldErrors.filter((e) => e.merchant_id === c.merchant_id && /^POST/.test(String(e.route || '')) && Math.abs(new Date(e.created_at).getTime() - t0) < 3 * 60 * 1000 && e.message).sort((x, y) => Math.abs(new Date(x.created_at) - t0) - Math.abs(new Date(y.created_at) - t0))[0];
+      if (near) { raw = near.message; http = near.http_status || null; source = "Retrouvée dans l'ancien journal d'erreurs."; }
+    }
+    if (!raw && c.provider_card_id && lookups < 8) {
+      lookups += 1;
+      try {
+        const live = (await mr.forMode(c.mode === 'live' ? 'live' : 'sandbox').getCard(c.provider_card_id)).data || {};
+        const r = reasonOf(live);
+        raw = `Monerails (maintenant) : statut ${live.status || '?'}${r ? ` · ${typeof r === 'string' ? r : JSON.stringify(r)}` : ''}`; source = 'Demandée à Monerails à l\'instant.';
+      } catch (e) { /* Monerails cannot be asked: nothing more to say */ }
+    }
+    items.push({ ...base(c), at: c.updated_at || c.created_at, mode: c.mode, kind: 'Création de la carte', shown_to_merchant: c.failure_reason, raw, http_status: http,
+      hint: raw ? `${source} ${providerErrors.hintFor({ message: `MONERAILS_ISSUE_FAILED: ${raw}`, http_status: http })}` : "La réponse brute de Monerails n'a pas été gardée (échec survenu avant cette fonction) et on ne la retrouve ni dans les événements, ni dans le journal, ni chez Monerails. La phrase montrée au marchand est la seule trace." });
   }
   let rows = items.filter((i) => !mode || i.mode === mode);
   if (q) rows = rows.filter((i) => `${i.card_id || ''} ${i.reference || ''} ${i.holder_name || ''} ${i.merchant_name || ''} ${i.merchant_email || ''} ${i.merchant_id || ''}`.toLowerCase().includes(q));
