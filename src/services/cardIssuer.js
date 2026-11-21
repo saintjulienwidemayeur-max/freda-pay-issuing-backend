@@ -121,6 +121,21 @@ function ops(card) {
   };
 }
 
+/**
+ * What the issuer said, kept for the merchant WITHOUT the partner: its own sentence and the field it complains about, with the "HTTP code"
+ * wrapper, links, ids, keys and any partner name taken out. Empty when there is nothing useful to say.
+ */
+function publicDetail(message) {
+  const m = /^Monerails \(HTTP \d+(?:, [^)]*)?\) : ([\s\S]*)$/.exec(String(message || ''));
+  let t = m ? m[1] : String(message || '');
+  t = t.replace(/\[champ : ([^\]]+)\]/, '(champ : $1)');
+  t = t.replace(/https?:\/\/\S+/g, '').replace(/\b[\w-]+(?:\.[\w-]+)*\.(?:com|io|net|org|app|co|dev)\b\S*/gi, '');
+  t = require('./agent/guardrails').redact(t).text;
+  t = t.replace(/\b(?:ch|card|cardholder|txn|req|evt|ca)_[A-Za-z0-9]{6,}\b/g, '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (t.length < 3 || /^(erreur|error|bad request)\.?$/i.test(t)) return '';
+  return /[.!?)]$/.test(t) ? t : `${t}.`;
+}
+
 /** Monerails answers with { error: { code } } turned into MONERAILS_<CODE>: the merchant gets our own codes and a short French message. */
 function translateError(err) {
   const code = String((err && err.code) || '');
@@ -138,7 +153,7 @@ function translateError(err) {
   if (/Cards Created Today Cannot be Terminated/i.test(String(err && err.message))) return Object.assign(new Error('Une carte ne peut pas être fermée le jour de sa création. Gelez-la maintenant, puis fermez-la demain.'), { code: 'CARD_TERMINATE_SAME_DAY', httpStatus: 400 });
   const m = map[code];
   if (m) return Object.assign(new Error(m[2]), { code: m[1], httpStatus: m[0] });
-  if (/^MONERAILS_/.test(code)) return Object.assign(new Error('Le service de cartes a refusé la demande. Réessayez ou contactez le support.'), { code: 'CARD_SERVICE_ERROR', httpStatus: 502, providerInfo: { provider: 'monerails', code, message: String(err.message).slice(0, 300) } });
+  if (/^MONERAILS_/.test(code)) { const detail = publicDetail(err.message); return Object.assign(new Error(detail ? `Le service de cartes a refusé la demande : ${detail}` : 'Le service de cartes a refusé la demande. Réessayez ou contactez le support.'), { code: 'CARD_SERVICE_ERROR', httpStatus: 502, providerInfo: { provider: 'monerails', code, message: String(err.message).slice(0, 300) } }); }
   return err;
 }
 /**
@@ -195,4 +210,4 @@ async function checkMonerailsBalance() {
   return out;
 }
 
-module.exports = { merchantChoice, setMerchantIssuer, checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };
+module.exports = { publicDetail, merchantChoice, setMerchantIssuer, checkMonerailsBalance, settings, saveSettings, issuerFor, isMonerails, providerCardId, findByProviderId, ops, call, translateError };

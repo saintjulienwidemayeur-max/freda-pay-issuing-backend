@@ -262,7 +262,7 @@ async function failures(ctx) {
   const events = await supabase.select('monerails_events', { type: 'card.issue_failed' }, { order: 'received_at.desc', limit: 500 }).catch(() => []);
   const oldErrors = errs.filter((e) => !String(e.path || '').startsWith('card:')).concat((await providerErrors.list(500)).filter((e) => !String(e.path || '').startsWith('card:')));
   const reasonOf = (o) => { const d = (o && (o.data && o.data.object ? o.data.object : o.data)) || o || {}; return d.failure_reason || d.reason || d.failure_message || d.error || null; };
-  let lookups = 0;
+  let lookups = 0; const listed = {};
   for (const c of failedCards) {
     if (seen.has(c.id)) continue;
     let raw = null; let source = null; let http = null;
@@ -272,6 +272,16 @@ async function failures(ctx) {
       const t0 = new Date(c.created_at).getTime();
       const near = oldErrors.filter((e) => e.merchant_id === c.merchant_id && /^POST/.test(String(e.route || '')) && Math.abs(new Date(e.created_at).getTime() - t0) < 3 * 60 * 1000 && e.message).sort((x, y) => Math.abs(new Date(x.created_at) - t0) - Math.abs(new Date(y.created_at) - t0))[0];
       if (near) { raw = near.message; http = near.http_status || null; source = "Retrouvée dans l'ancien journal d'erreurs."; }
+    }
+    if (!raw && !c.provider_card_id && lookups < 8) {
+      // No Monerails id was ever saved: look for the card at Monerails by its label (our reference).
+      lookups += 1;
+      try {
+        const mode = c.mode === 'live' ? 'live' : 'sandbox';
+        if (!listed[mode]) listed[mode] = ((await mr.forMode(mode).listCards({ limit: 100 })).data.data) || [];
+        const found = listed[mode].find((x) => x.label === String(c.own_reference).slice(0, 60));
+        if (found) { const r = reasonOf(found); raw = `Monerails (maintenant) : statut ${found.status || '?'}${r ? ` · ${typeof r === 'string' ? r : JSON.stringify(r)}` : ''}`; source = "Retrouvée chez Monerails avec la référence de la carte."; }
+      } catch (e) { /* Monerails cannot be asked */ }
     }
     if (!raw && c.provider_card_id && lookups < 8) {
       lookups += 1;
