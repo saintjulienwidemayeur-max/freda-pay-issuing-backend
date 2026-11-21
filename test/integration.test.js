@@ -10315,3 +10315,32 @@ test('failed cards are removed from the lists (old ones too); a fresh failure st
   assert.ok(!row('card_active_ok').deleted_at);
   assert.ok(admin);
 });
+
+test('admin Monerails failures: why a card or an operation failed (raw answer, what the merchant saw, what to check); failed cards stay listed after removal; search', async () => {
+  const admin = await adminLogin('owner');
+  const providerErrors = require('../src/services/providerErrors');
+  const reg = await registerAndVerify({ business_name: 'Why Failed Co', email: 'why-failed@example.com', password: 'password123' });
+  const id = reg.data.merchant.id;
+  const now = new Date().toISOString();
+  mockTables.cards.push(
+    { id: 'card_wf_old', merchant_id: id, own_reference: 'WF-OLD', kind: 'individual', mode: 'sandbox', status: 'failed', provider: 'monerails', failure_reason: 'Le service de cartes a refusé la demande.', deleted_at: now, created_at: now, updated_at: now },
+    { id: 'card_wf_op', merchant_id: id, own_reference: 'WF-OP', kind: 'individual', mode: 'sandbox', status: 'active', provider: 'monerails', created_at: now, updated_at: now },
+    { id: 'card_wf_other', merchant_id: id, own_reference: 'WF-OTHER', kind: 'individual', mode: 'sandbox', status: 'failed', provider: 'maplerad', created_at: now, updated_at: now },
+  );
+  await providerErrors.recordCardFailure({ id: 'card_wf_op', merchant_id: id, mode: 'sandbox' }, { code: 'MONERAILS_BALANCE_INSUFFICIENT', httpStatus: 402, message: 'Insufficient funds on the program balance' }, 'Le service de cartes est momentanément indisponible.');
+  await providerErrors.recordCardFailure({ id: 'card_wf_new', merchant_id: id, mode: 'sandbox' }, { code: 'MONERAILS_VALIDATION_ERROR', httpStatus: 422, message: 'birth_date invalid' }, 'Le service de cartes a refusé la demande.');
+  const r = await api('GET', '/admin/monerails/failures?q=why%20failed', { token: admin.token });
+  assert.equal(r.status, 200);
+  const op = r.data.items.find((i) => i.card_id === 'card_wf_op');
+  assert.ok(op && /MONERAILS_BALANCE_INSUFFICIENT/.test(op.raw) && /Insufficient funds/.test(op.raw), 'the raw answer is kept');
+  assert.match(op.shown_to_merchant, /indisponible/);
+  assert.match(op.hint, /solde du compte Freda Pay chez Monerails/);
+  assert.equal(op.kind, 'Opération sur la carte');
+  const old = r.data.items.find((i) => i.card_id === 'card_wf_old');
+  assert.ok(old && old.removed === true && old.kind === 'Création de la carte' && old.raw === null, 'a removed failed card is still explained');
+  assert.ok(!r.data.items.some((i) => i.card_id === 'card_wf_other'), 'only the new issuer');
+  assert.ok(r.data.items.some((i) => /birth_date invalid/.test(i.raw || '') && /refusée|refusé/.test(i.hint)));
+  const one = await api('GET', '/admin/monerails/failures?q=wf-op', { token: admin.token });
+  assert.ok(one.data.items.length >= 1 && one.data.items.every((i) => i.reference === 'WF-OP' || i.merchant_id));
+  assert.equal((await api('GET', '/admin/monerails/failures')).status, 401);
+});

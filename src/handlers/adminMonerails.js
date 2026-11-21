@@ -233,4 +233,39 @@ async function receive(ctx) {
   return { status: 200, body: { received: true } };
 }
 
-module.exports = { status, listCardholders, getCardholder, createCardholder, submitVerification, testVerification, listCards, getCard, createCard, cardAction, cardDetails, testAuthorization, transactions, events, registerWebhook, receive, summaryOf };
+/**
+ * GET /admin/monerails/failures?q=&mode= : why cards and card operations failed at Monerails, one line per failure: what the merchant was
+ * told, Monerails' own answer, and what to check. Failed cards stay listed here even after they are removed from the merchants' lists.
+ * q: part of a card id, reference, holder name, merchant name, email or id.
+ */
+async function failures(ctx) {
+  const providerErrors = require('../services/providerErrors');
+  const q = String((ctx.query && ctx.query.q) || '').trim().toLowerCase().slice(0, 80);
+  const mode = ctx.query && (ctx.query.mode === 'live' || ctx.query.mode === 'sandbox') ? ctx.query.mode : null;
+  const errs = (await providerErrors.list(500)).filter((r) => String(r.path || '').startsWith('card:'));
+  const failedCards = await supabase.select('cards', { provider: 'monerails', status: 'failed' }, { order: 'created_at.desc', limit: 300 }).catch(() => []);
+  const ids = [...new Set([...errs.map((e) => e.path.slice(5)), ...failedCards.map((c) => c.id)])];
+  const cards = ids.length ? await supabase.select('cards', { id: supabase.inList(ids) }, { limit: 1000 }).catch(() => []) : [];
+  const byCard = new Map(cards.map((c) => [c.id, c]));
+  const mids = [...new Set([...cards.map((c) => c.merchant_id), ...errs.map((e) => e.merchant_id)].filter(Boolean))];
+  const merchants = mids.length ? await supabase.select('merchants', { id: supabase.inList(mids) }, { limit: 1000 }).catch(() => []) : [];
+  const byMerchant = new Map(merchants.map((m) => [m.id, m]));
+  const items = []; const seen = new Set();
+  const base = (card, merchantId) => { const m = byMerchant.get((card && card.merchant_id) || merchantId) || {}; return { card_id: card ? card.id : null, reference: card ? card.own_reference : null, holder_name: card ? card.holder_name : null, merchant_id: (card && card.merchant_id) || merchantId || null, merchant_name: m.business_name || null, merchant_email: m.email || null, card_status: card ? card.status : null, removed: !!(card && card.deleted_at) }; };
+  for (const e of errs) {
+    const card = byCard.get(e.path.slice(5)) || null;
+    if (card && card.provider !== 'monerails') continue;
+    seen.add(card ? card.id : e.path);
+    items.push({ ...base(card, e.merchant_id), at: e.created_at, mode: e.mode || (card && card.mode) || null, kind: card && card.status === 'failed' ? 'Création de la carte' : 'Opération sur la carte', shown_to_merchant: e.shown_to_merchant || (card && card.failure_reason) || null, raw: e.message, http_status: e.http_status || null, hint: e.hint });
+  }
+  for (const c of failedCards) {
+    if (seen.has(c.id)) continue;
+    items.push({ ...base(c), at: c.updated_at || c.created_at, mode: c.mode, kind: 'Création de la carte', shown_to_merchant: c.failure_reason, raw: null, http_status: null, hint: "La réponse brute de Monerails n'a pas été gardée (échec survenu avant cette fonction). La phrase montrée au marchand est la seule trace." });
+  }
+  let rows = items.filter((i) => !mode || i.mode === mode);
+  if (q) rows = rows.filter((i) => `${i.card_id || ''} ${i.reference || ''} ${i.holder_name || ''} ${i.merchant_name || ''} ${i.merchant_email || ''} ${i.merchant_id || ''}`.toLowerCase().includes(q));
+  rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return { status: 200, body: { total: rows.length, items: rows.slice(0, 200) } };
+}
+
+module.exports = { failures, status, listCardholders, getCardholder, createCardholder, submitVerification, testVerification, listCards, getCard, createCard, cardAction, cardDetails, testAuthorization, transactions, events, registerWebhook, receive, summaryOf };

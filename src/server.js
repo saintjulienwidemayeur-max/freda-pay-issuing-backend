@@ -127,6 +127,7 @@ router.post('/admin/monerails/cardholders', adminSession.requireAdminSession, (c
 router.get('/admin/monerails/cardholders/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.getCardholder(ctx); });
 router.post('/admin/monerails/cardholders/:id/verification', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.submitVerification(ctx); });
 router.post('/admin/monerails/cardholders/:id/test-verification', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.testVerification(ctx); });
+router.get('/admin/monerails/failures', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.failures(ctx); });
 router.get('/admin/monerails/cards', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.listCards(ctx); });
 router.post('/admin/monerails/cards', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.createCard(ctx); });
 router.get('/admin/monerails/cards/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMonerails.getCard(ctx); });
