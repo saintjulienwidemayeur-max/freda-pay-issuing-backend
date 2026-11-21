@@ -27,6 +27,22 @@ Résolution attendue en moins d'une heure. Nous vous écrirons dès que tout est
 Nous sommes désolés pour la gêne.`,
     chat: "Incident en cours : la création de nouvelles cartes et la recharge des cartes sont momentanément indisponibles. Toutes les autres opérations fonctionnent normalement. Notre équipe est sur le problème, résolution attendue en moins d'une heure. Nous vous écrirons dès que tout est rétabli. Désolé pour la gêne.",
   },
+  webhooks_news: {
+    audience: 'webhooks',
+    subject: 'Nouveaux événements webhook pour les cartes : holder.verified et holder.rejected',
+    message: `Deux nouveaux événements webhook sont disponibles pour vos titulaires de cartes. Vous n'avez rien à modifier : votre intégration continue de fonctionner comme avant.
+
+CE QUI EST NOUVEAU
+- holder.verified : un titulaire est accepté par le nouveau programme de cartes ; ses prochaines cartes y sont créées.
+- holder.rejected : un titulaire n'est pas accepté. data.reason donne la raison quand elle est connue ; ses cartes restent chez notre banque partenaire actuelle. Renvoyez sa pièce d'identité (recto et verso) pour réessayer.
+
+CE QUE VOUS DEVEZ FAIRE
+- Rien d'obligatoire.
+- Si votre endpoint webhook renvoie une erreur quand il reçoit un événement qu'il ne connaît pas, faites-le plutôt ignorer cet événement et répondre 200.
+
+Détails : https://issuing.fredapay.com/docs/webhooks`,
+    chat: "Nouveau côté webhooks : deux événements pour vos titulaires de cartes, holder.verified (titulaire accepté par le nouveau programme de cartes) et holder.rejected (refusé, avec la raison dans data.reason ; ses cartes restent chez notre banque partenaire actuelle, renvoyez sa pièce d'identité recto et verso pour réessayer). Rien à modifier chez vous. Si votre endpoint renvoie une erreur sur un événement inconnu, faites-le répondre 200 et l'ignorer. Détails : https://issuing.fredapay.com/docs/webhooks",
+  },
   cards_resolved: {
     subject: "Rétabli : la création et la recharge de cartes fonctionnent à nouveau",
     message: `L'incident sur les cartes est résolu : la création de nouvelles cartes et la recharge des cartes fonctionnent à nouveau normalement.
@@ -38,10 +54,14 @@ Merci de votre patience. Si une opération a échoué pendant l'incident, vous p
 
 function httpError(status, code, message) { const e = new Error(message); e.httpStatus = status; e.code = code; return e; }
 
-/** Live merchants that issue cards: verified email, not deleted. */
-async function audience() {
+/** Live merchants that issue cards: verified email, not deleted. kind 'webhooks': only those that registered an active webhook. */
+async function audience(kind) {
   const rows = await supabase.select('merchants', { deleted_at: supabase.isNull(), email_verified: true, issuing_live_enabled: true }, { order: 'created_at.desc', limit: 5000 });
-  return rows.filter((m) => m.email);
+  const list = rows.filter((m) => m.email);
+  if (!TEMPLATES[kind] || TEMPLATES[kind].audience !== 'webhooks') return list;
+  const hooks = await supabase.select('webhook_endpoints', { active: true }, { limit: 20000 }).catch(() => []);
+  const withHook = new Set(hooks.map((h) => h.merchant_id));
+  return list.filter((m) => withHook.has(m.id));
 }
 
 async function lastSend() {
@@ -62,13 +82,13 @@ let sending = false;
  */
 async function send({ kind, message, confirm, adminEmail, adminId }) {
   const tpl = TEMPLATES[kind];
-  if (!tpl) throw httpError(400, 'INVALID_KIND', 'Type invalide : cards_outage ou cards_resolved.');
+  if (!tpl) throw httpError(400, 'INVALID_KIND', 'Type invalide : cards_outage, cards_resolved ou webhooks_news.');
   const custom = message ? String(message).trim().slice(0, 600) : '';
   const body = custom || tpl.message;
   const chatText = custom || tpl.chat;
-  const list = await audience();
+  const list = await audience(kind);
   if (confirm !== true) return { sent: false, preview: true, kind, recipients: list.length, subject: tpl.subject, message: body };
-  if (!list.length) throw httpError(400, 'NO_RECIPIENTS', 'Aucun marchand Live qui émet des cartes.');
+  if (!list.length) throw httpError(400, 'NO_RECIPIENTS', 'Aucun marchand Live concerné.');
   const last = (await lastSend())[kind];
   if (last && Date.now() - new Date(last).getTime() < MIN_GAP_MS) throw httpError(429, 'ALREADY_SENT_RECENTLY', `Cette alerte a déjà été envoyée il y a moins de 30 minutes (${new Date(last).toISOString()}). Rien n'a été renvoyé.`);
   if (sending) throw httpError(409, 'SEND_IN_PROGRESS', 'Un envoi est déjà en cours.');

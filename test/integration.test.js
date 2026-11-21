@@ -10406,3 +10406,22 @@ test('holder webhooks: the merchant is told when its holder is accepted or refus
     assert.equal(mockTables.maplerad_customers.find((h) => h.id === 'mpc_hh2').monerails_status, 'in_review');
   } finally { dispatcher.dispatch = orig; }
 });
+
+test('information message about the new holder webhooks: only Live card merchants that registered a webhook get it (email + chat), without the partner name', async () => {
+  const admin = await adminLogin('owner');
+  const mk = async (email, name) => (await registerAndVerify({ business_name: name, email, password: 'password123' }));
+  const withHook = await mk('wh-yes@example.com', 'Hook Yes'); const noHook = await mk('wh-no@example.com', 'Hook No');
+  for (const m of [withHook, noHook]) mockTables.merchants.find((x) => x.id === m.data.merchant.id).issuing_live_enabled = true;
+  mockTables.webhook_endpoints.push({ id: 'whe_x1', merchant_id: withHook.data.merchant.id, url: 'https://example.com/hook', secret: 'whsec_x', active: true });
+  const pv = await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'webhooks_news' } });
+  assert.equal(pv.status, 200); assert.equal(pv.data.sent, false);
+  const before = sentEmails.length;
+  const r = await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'webhooks_news', confirm: true } });
+  assert.equal(r.status, 200); assert.equal(r.data.sent, true);
+  const mails = sentEmails.slice(before).filter((e) => /holder\.verified/.test(e.subject || ''));
+  assert.ok(mails.some((e) => e.to === 'wh-yes@example.com'));
+  assert.ok(!mails.some((e) => e.to === 'wh-no@example.com'), 'no webhook registered: not concerned');
+  assert.ok(!/monerails|maplerad/i.test(mails[0].html + mails[0].text));
+  assert.match(mails[0].text, /docs\/webhooks/);
+  assert.ok(mockTables.chat_messages.some((c) => c.merchant_id === withHook.data.merchant.id && /holder\.verified/.test(c.body)));
+});
