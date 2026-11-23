@@ -10627,6 +10627,14 @@ test('one holder at a time: the admin sees what is missing or wrong (no partner 
     assert.equal(sent.id_number, 'NIN-0012345'); assert.equal(sent.address.line1, '14 Avenue d Haiti, Delmas 33'); assert.equal(sent.address.state, 'Ouest');
     const row2 = mockTables.maplerad_customers.find((h) => h.id === 'mpc_one1');
     assert.equal(row2.monerails_status, 'verified'); assert.equal(row2.identification_number, 'NIN-0012345');
+    // a passport: 6 to 9 letters or digits; a document type different from the one registered is flagged
+    const badPass = await api('POST', '/admin/holders/mpc_one1/relaunch', { token: admin.token, body: { document_type: 'passport', id_number: 'AB-1234' } });
+    assert.equal(badPass.status, 400);
+    st.holders.find((h) => h.id === 'ch_one1').id_document = 'national_id';
+    const pass = await api('POST', '/admin/holders/mpc_one1/relaunch', { token: admin.token, body: { document_type: 'passport', id_number: 'AB123456' } });
+    assert.equal(pass.status, 200); assert.match(pass.data.warning, /Passeport/);
+    const dd = await api('GET', '/admin/holders/mpc_one1', { token: admin.token });
+    assert.equal(dd.data.remote.id_document, 'national_id');
     // a holder never sent to the new program cannot be relaunched from here
     assert.equal((await api('POST', '/admin/holders/mpc_one2/relaunch', { token: admin.token, body: {} })).status, 409);
     assert.equal((await api('GET', '/admin/holders/mpc_one1')).status, 401);
