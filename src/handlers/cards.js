@@ -461,6 +461,7 @@ function newProgramOf(p) {
   const st = p && p.monerails_status;
   if (!p || !p.monerails_cardholder_id && !st) return null;
   if (st === 'verified') return { status: 'accepted', reason: null };
+  if (p.monerails_cardholder_id && (st === 'failed' || st === 'pending')) return { status: 'pending', reason: null }; // exists there, the check is being (re)started by the team
   if (st === 'rejected' || st === 'failed') return { status: 'refused', reason: require('../services/cardIssuer').publicDetail(p.monerails_reason) || null };
   return { status: 'pending', reason: null };
 }

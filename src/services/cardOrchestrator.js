@@ -361,12 +361,23 @@ async function createHolder(merchantId, profile, mode, options) {
       await upgradeToTier2(provider, existing.maplerad_customer_id, toProviderIdentity(profile), profile.photoIdUrl);
     }
     // A holder created before the switch to the new issuer joins it when the merchant sends the identity documents again.
-    const refused = ['rejected', 'failed'].includes(existing.monerails_status);
-    if ((!existing.monerails_cardholder_id || refused) && profile.identity && await require('./cardIssuer').issuerFor(merchantId, providerMode, 'individual') === 'monerails') {
-      // A refused holder sent again with a new photo starts a new verification (a holder never sent starts one too).
-      if (refused) { await supabase.update('maplerad_customers', { id: existing.id }, { monerails_cardholder_id: null, monerails_status: 'pending', monerails_reason: null, updated_at: new Date().toISOString() }).catch(() => {}); existing.monerails_cardholder_id = null; existing.monerails_status = 'pending'; }
-      const done = await enrollAtMonerails(existing, profile);
-      if (done) Object.assign(existing, done);
+    const refused = ['rejected', 'failed', 'pending'].includes(existing.monerails_status);
+    if (profile.identity && await require('./cardIssuer').issuerFor(merchantId, providerMode, 'individual') === 'monerails') {
+      if (!existing.monerails_cardholder_id) {
+        const done = await enrollAtMonerails(existing, profile);
+        if (done) Object.assign(existing, done);
+      } else if (refused) {
+        // Sent again with a new photo: the SAME holder is checked again with the new documents (the issuer allows 5 tries per 24 h).
+        const idn = profile.identity;
+        try {
+          const front = await require('./identityImage').toBase64Uri(idn.imageUrl || idn.image);
+          const backRaw = idn.imageBackUrl || idn.image_back;
+          const back = backRaw ? await require('./identityImage').toBase64Uri(backRaw) : null;
+          if (/^data:image\/webp/i.test(front) || (back && /^data:image\/webp/i.test(back))) throw new Error('Format WebP non accepté : envoyez la photo de la pièce en JPEG ou PNG (4 Mo au plus).');
+          await require('./holderVerification').relaunch(existing, { documents: back ? { front, back } : { front } });
+          Object.assign(existing, (await supabase.selectOne('maplerad_customers', { id: existing.id })) || {});
+        } catch (e) { await supabase.update('maplerad_customers', { id: existing.id }, { monerails_reason: String(e.message || e).slice(0, 300) }).catch(() => {}); }
+      }
     }
     Object.defineProperty(existing, 'alreadyExisted', { value: true, enumerable: false });
     return existing;
@@ -498,7 +509,7 @@ async function enrollAtMonerails(holder, profile) {
     const back = backRaw ? await identityImage.toBase64Uri(backRaw) : null;
     if (/^data:image\/webp/i.test(front) || (back && /^data:image\/webp/i.test(back))) throw new Error('Format WebP non accepté : envoyez la photo de la pièce en JPEG ou PNG (4 Mo au plus).');
     const addr = profile.address || {};
-    const address = { line1: String(addr.street || addr.line1 || '').slice(0, 120), city: String(addr.city || '').slice(0, 60), state: String(addr.state || '').slice(0, 60), postal_code: String(addr.postalCode || addr.postal_code || '').slice(0, 20) || undefined };
+    const address = { line1: String(addr.street || addr.line1 || '').slice(0, 120), city: String(addr.city || '').slice(0, 60), state: String(addr.state || addr.city || addr.country || profile.country || '').slice(0, 60), postal_code: String(addr.postalCode || addr.postal_code || '').slice(0, 20) || undefined };
     const phone = `${String(profile.phoneShortCode || '').replace(/[^+\d]/g, '')}${String(profile.phoneNumber || '').replace(/\D/g, '')}`;
     const created = await monerails.createCardholder({
       first_name: String(profile.firstName || '').slice(0, 50), last_name: String(profile.lastName || '').slice(0, 50), email: String(profile.email || '').slice(0, 200), country: String(profile.country || '').toUpperCase(),
@@ -507,7 +518,13 @@ async function enrollAtMonerails(holder, profile) {
     });
     const chId = created.data.id;
     await save({ monerails_cardholder_id: chId, monerails_status: 'pending', monerails_reason: null });
-    const sent = await monerails.submitVerification(chId, { id_number: String(id.number || profile.identificationNumber || ''), address, birth_date: profile.dob });
+    let sent;
+    try { sent = await monerails.submitVerification(chId, { id_number: String(id.number || profile.identificationNumber || ''), address, birth_date: profile.dob }); } catch (subErr) {
+      // The holder exists at the new program but its check could not be started: it stays "pending" (re-launchable from the admin panel), with the reason.
+      const pend = await save({ monerails_status: 'pending', monerails_reason: String(subErr.message || subErr).slice(0, 300) });
+      require('./providerErrors').record({ mode: holder.mode, merchant_id: holder.merchant_id, route: 'holder verification', path: `holder:${holder.id}`, http_status: subErr.httpStatus, message: `${subErr.code || 'ERROR'}: ${subErr.message}` }).catch(() => {});
+      return pend;
+    }
     let status = (sent.data && sent.data.verification && sent.data.verification.status) || 'in_review';
     if (status !== 'verified' && !live) {
       // Sandbox only (test key): the test helper approves at once. In Live the real check takes its time and its result comes by the
