@@ -12,18 +12,41 @@ const save = async (holder, fields) => {
   return row || Object.assign({}, holder, fields);
 };
 
+/**
+ * The issuer accepts letters, digits, spaces and , . - in an address (an apostrophe, #, / or accents make it refuse: "parameter_invalid").
+ * Accents are removed and any other sign becomes a space.
+ */
+function cleanText(v) {
+  return String(v == null ? '' : v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ,.\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 /** What we already know about the holder, in the shape the issuer asks for. State falls back to the city, then the country (it is required). */
 function submissionFor(holder) {
   const a = holder.address || {};
-  const city = String(a.city || '').slice(0, 60);
+  const city = cleanText(a.city).slice(0, 60);
   return {
-    id_number: String(holder.identification_number || '').slice(0, 30),
-    address: { line1: String(a.street || a.line1 || '').slice(0, 120), city, state: String(a.state || city || a.country || holder.country || '').slice(0, 60), postal_code: String(a.postal_code || a.postalCode || '').slice(0, 20) || undefined },
+    id_number: String(holder.identification_number || '').trim().slice(0, 30),
+    address: { line1: cleanText(a.street || a.line1).slice(0, 120), city, state: cleanText(a.state || city || a.country || holder.country).slice(0, 60), postal_code: cleanText(a.postal_code || a.postalCode).replace(/\s+/g, '').slice(0, 20) || undefined },
     birth_date: holder.dob || undefined,
   };
 }
 
-async function relaunch(holder, { documents } = {}) {
+/** What is missing or wrong before the check can be sent: the admin completes it one holder at a time. */
+function issuesFor(holder, docsOnFile) {
+  const a = holder.address || {};
+  const out = [];
+  if (!String(holder.identification_number || '').trim()) out.push({ field: 'id_number', label: "Numéro de la pièce d'identité manquant" });
+  if (!cleanText(a.street || a.line1)) out.push({ field: 'address.line1', label: 'Adresse (rue) manquante' });
+  else if (cleanText(a.street || a.line1) !== String(a.street || a.line1).trim()) out.push({ field: 'address.line1', label: "L'adresse contient des signes non acceptés (apostrophe, #, /, accents…) : ils seront retirés à l'envoi", auto: true });
+  if (!cleanText(a.city)) out.push({ field: 'address.city', label: 'Ville manquante' });
+  if (!String(a.state || '').trim()) out.push({ field: 'address.state', label: 'Région / département manquant : la ville sera utilisée', auto: true });
+  if (!holder.dob) out.push({ field: 'birth_date', label: 'Date de naissance manquante' });
+  else if (Date.now() - new Date(holder.dob).getTime() < 18 * 365.25 * 24 * 3600 * 1000) out.push({ field: 'birth_date', label: 'Moins de 18 ans' });
+  if (docsOnFile === false) out.push({ field: 'documents', label: 'Aucune photo de la pièce chez le programme : ajoutez le recto (et le verso sauf passeport)' });
+  return out;
+}
+
+async function relaunch(holder, { documents, force } = {}) {
   const monerails = require('./monerails').forMode(holder.mode === 'live' ? 'live' : 'sandbox');
   const bridge = require('./monerailsBridge');
   const chId = holder.monerails_cardholder_id;
@@ -36,9 +59,9 @@ async function relaunch(holder, { documents } = {}) {
       return row;
     };
     if (v.status === 'verified') { await state('verified'); return { status: 'verified', changed: holder.monerails_status !== 'verified' }; }
-    if (v.status === 'in_review' && !documents) { await state('in_review'); return { status: 'in_review', changed: holder.monerails_status !== 'in_review' }; }
-    if (v.status === 'rejected' && !documents) { await state('rejected', v.reason); return { status: 'rejected', needs_photo: true, reason: v.reason || null }; }
-    if (!documents && v.documents_on_file === false) return { status: 'pending', needs_photo: true };
+    if (v.status === 'in_review' && !documents && !force) { await state('in_review'); return { status: 'in_review', changed: holder.monerails_status !== 'in_review' }; }
+    if (v.status === 'rejected' && !documents && !force) { await state('rejected', v.reason); return { status: 'rejected', needs_photo: true, reason: v.reason || null }; }
+    if (!documents && v.documents_on_file === false) return { status: v.status === 'rejected' ? 'rejected' : 'pending', needs_photo: true };
     const r = await monerails.submitVerification(chId, Object.assign(submissionFor(holder), documents ? { documents } : {}));
     let status = ((r.data || {}).verification || {}).status || 'in_review';
     if (status !== 'verified' && holder.mode !== 'live') {
@@ -77,4 +100,4 @@ async function relaunchStuck({ mode, merchantId, confirm, limit } = {}) {
   return out;
 }
 
-module.exports = { relaunch, relaunchStuck, stuckHolders, submissionFor };
+module.exports = { cleanText, issuesFor, relaunch, relaunchStuck, stuckHolders, submissionFor };

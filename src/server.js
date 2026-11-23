@@ -225,6 +225,8 @@ router.post('/admin/holders/relaunch', adminSession.requireAdminSession, (ctx) =
   adminSession.requireComplianceRole(ctx);
   return require('./handlers/adminHolders').relaunch(ctx);
 });
+router.get('/admin/holders/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return require('./handlers/adminHolders').detail(ctx); });
+router.post('/admin/holders/:id/relaunch', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return require('./handlers/adminHolders').relaunchOne(ctx); });
 router.get('/admin/holders', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return require('./handlers/adminHolders').list(ctx); });
 router.get('/admin/activity', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return require('./handlers/adminActivity').list(ctx); });
 router.get('/admin/card-issuer/merchants', adminSession.requireAdminSession, async (ctx) => {

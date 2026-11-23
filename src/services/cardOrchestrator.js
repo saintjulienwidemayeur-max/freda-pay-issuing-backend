@@ -509,7 +509,8 @@ async function enrollAtMonerails(holder, profile) {
     const back = backRaw ? await identityImage.toBase64Uri(backRaw) : null;
     if (/^data:image\/webp/i.test(front) || (back && /^data:image\/webp/i.test(back))) throw new Error('Format WebP non accepté : envoyez la photo de la pièce en JPEG ou PNG (4 Mo au plus).');
     const addr = profile.address || {};
-    const address = { line1: String(addr.street || addr.line1 || '').slice(0, 120), city: String(addr.city || '').slice(0, 60), state: String(addr.state || addr.city || addr.country || profile.country || '').slice(0, 60), postal_code: String(addr.postalCode || addr.postal_code || '').slice(0, 20) || undefined };
+    const clean = require('./holderVerification').cleanText;
+    const address = { line1: clean(addr.street || addr.line1).slice(0, 120), city: clean(addr.city).slice(0, 60), state: clean(addr.state || addr.city || addr.country || profile.country).slice(0, 60), postal_code: clean(addr.postalCode || addr.postal_code).replace(/\s+/g, '').slice(0, 20) || undefined };
     const phone = `${String(profile.phoneShortCode || '').replace(/[^+\d]/g, '')}${String(profile.phoneNumber || '').replace(/\D/g, '')}`;
     const created = await monerails.createCardholder({
       first_name: String(profile.firstName || '').slice(0, 50), last_name: String(profile.lastName || '').slice(0, 50), email: String(profile.email || '').slice(0, 200), country: String(profile.country || '').toUpperCase(),
