@@ -10636,7 +10636,46 @@ test('one holder at a time: the admin sees what is missing or wrong (no partner 
     const dd = await api('GET', '/admin/holders/mpc_one1', { token: admin.token });
     assert.equal(dd.data.remote.id_document, 'national_id');
     // a holder never sent to the new program cannot be relaunched from here
-    assert.equal((await api('POST', '/admin/holders/mpc_one2/relaunch', { token: admin.token, body: {} })).status, 409);
+    assert.equal((await api('POST', '/admin/holders/mpc_one2/relaunch', { token: admin.token, body: {} })).status, 400, 'a holder never sent needs its photos');
     assert.equal((await api('GET', '/admin/holders/mpc_one1')).status, 401);
   } finally { Object.assign(config.monerails, saved); await new Promise((r) => server.close(r)); }
+});
+
+test('merchant dashboard: the merchant sees what is missing for its own holders and completes it (own holders only, no partner name); a holder not yet at the new program is sent there with photos', async () => {
+  const config = require('../src/config'); const saved = Object.assign({}, config.monerails);
+  const issuer = require('../src/services/cardIssuer');
+  const { server, st } = await monerailsMock(4566);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4566/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_mer' });
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  try {
+    await issuer.saveSettings({ new_cards: 'monerails', merchant_issuer: {} });
+    const mine = await registerAndVerify({ business_name: 'Mer Holders', email: 'mer-holders@example.com', password: 'password123' });
+    const other = await registerAndVerify({ business_name: 'Other Holders', email: 'other-holders@example.com', password: 'password123' });
+    const mid = mine.data.merchant.id; const token = mine.data.session_token; const now = new Date().toISOString();
+    st.holders.push({ id: 'ch_mh1', object: 'cardholder', id_document: 'national_id', verification: { status: 'pending', reason: null } });
+    mockTables.maplerad_customers.push(
+      { id: 'mpc_mh1', merchant_id: mid, mode: 'sandbox', status: 'enrolled', first_name: 'Mia', last_name: 'Un', email: 'mh1@example.com', country: 'HT', dob: '1990-01-01', identification_number: 'NIN-1', address: { street: "3 Rue d'Haïti", city: 'Jacmel' }, monerails_cardholder_id: 'ch_mh1', monerails_status: 'failed', monerails_reason: 'Monerails (HTTP 400) : Adresse : lettres, chiffres, espaces et les signes , . - uniquement. [champ : address.line1]', created_at: now },
+      { id: 'mpc_mh2', merchant_id: mid, mode: 'sandbox', status: 'enrolled', first_name: 'Max', last_name: 'Deux', email: 'mh2@example.com', country: 'HT', dob: '1991-02-02', identification_number: 'NIN-22222', phone_short_code: '+509', phone_number: '37011111', address: { street: '5 Rue A', city: 'Cap-Haitien', state: 'Nord' }, created_at: now },
+    );
+    const info = await api('GET', '/dashboard/cards/holders/mpc_mh1/verification', { token });
+    assert.equal(info.status, 200);
+    assert.ok(info.data.issues.some((i) => i.field === 'address.line1' && i.auto));
+    assert.equal(info.data.new_program.status, 'pending');
+    assert.ok(!/monerails/i.test(JSON.stringify(info.data)), 'no partner name');
+    assert.equal((await api('GET', '/dashboard/cards/holders/mpc_mh1/verification', { token: other.data.session_token })).status, 404, "another merchant's holder");
+    // completing: no photo needed when one is on file
+    const ok = await api('POST', '/dashboard/cards/holders/mpc_mh1/verification', { token, body: { id_number: 'NIN-0000001', address: { street: "3 Rue d'Haïti", city: 'Jacmel', state: 'Sud-Est' } } });
+    assert.equal(ok.status, 200); assert.equal(ok.data.status, 'accepted'); assert.equal(ok.data.documents_sent, false);
+    assert.equal(ok.data.new_program.status, 'accepted');
+    assert.equal(st.verificationBodies[st.verificationBodies.length - 1].address.line1, '3 Rue d Haiti');
+    // a holder not yet at the new program: photos are required, then it is sent there
+    const noPhoto = await api('POST', '/dashboard/cards/holders/mpc_mh2/verification', { token, body: {} });
+    assert.equal(noPhoto.status, 400); assert.equal(noPhoto.data.error.code, 'PHOTO_REQUIRED');
+    const sent = await api('POST', '/dashboard/cards/holders/mpc_mh2/verification', { token, body: { document_type: 'national_id', documents: { front: png, back: png } } });
+    assert.equal(sent.status, 200, JSON.stringify(sent.data)); assert.equal(sent.data.status, 'accepted'); assert.equal(sent.data.documents_sent, true);
+    assert.ok(mockTables.maplerad_customers.find((h) => h.id === 'mpc_mh2').monerails_cardholder_id);
+    // someone else cannot send for it; unauthenticated neither
+    assert.equal((await api('POST', '/dashboard/cards/holders/mpc_mh2/verification', { token: other.data.session_token, body: {} })).status, 404);
+    assert.equal((await api('POST', '/dashboard/cards/holders/mpc_mh2/verification', { body: {} })).status, 401);
+  } finally { Object.assign(config.monerails, saved); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
 });

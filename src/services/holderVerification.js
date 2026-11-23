@@ -100,4 +100,65 @@ async function relaunchStuck({ mode, merchantId, confirm, limit } = {}) {
   return out;
 }
 
-module.exports = { cleanText, issuesFor, relaunch, relaunchStuck, stuckHolders, submissionFor };
+const DOC_TYPES = { national_id: "Carte nationale d'identité", passport: 'Passeport', driver_license: 'Permis de conduire', voters_card: "Carte d'électeur" };
+const OLD_TYPE = { national_id: 'NIN', passport: 'PASSPORT', driver_license: 'DRIVERS_LICENSE', voters_card: 'VOTERS_CARD' };
+const err = (status, code, message) => { const e = new Error(message); e.httpStatus = status; e.code = code; return e; };
+const DOC = /^data:image\/(png|jpeg|jpg);base64,[A-Za-z0-9+/]+=*$/;
+function readDoc(v, label) {
+  if (v == null || v === '') return null;
+  const s = String(v);
+  if (!DOC.test(s)) throw err(400, 'INVALID_DOCUMENT', `${label} : image JPEG ou PNG requise.`);
+  if (s.length * 0.75 > 4 * 1024 * 1024) throw err(413, 'DOCUMENT_TOO_LARGE', `${label} : 4 Mo au plus.`);
+  return s;
+}
+
+/**
+ * Completes what is missing for ONE holder (number, birth date, address, document type, photos) and sends its identity check. Used by the admin
+ * panel and by the merchant's own dashboard. A holder not yet at the new program is sent there now (photos required); one already there is
+ * checked again. rateLimit: the issuer allows 5 submissions per holder per 24 h. Returns { r, warning, front }.
+ */
+async function applyAndSend(h, b, { rateLimit } = {}) {
+  const fields = {};
+  if (b.id_number !== undefined) { const v = String(b.id_number).trim(); if (v.length < 4 || v.length > 30) throw err(400, 'INVALID_ID_NUMBER', "Numéro de pièce : 4 à 30 caractères, tel qu'il figure sur la pièce."); fields.identification_number = v; }
+  if (b.birth_date !== undefined) { const v = String(b.birth_date).trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) throw err(400, 'INVALID_DOB', 'Date de naissance : AAAA-MM-JJ.'); fields.dob = v; }
+  if (b.address && typeof b.address === 'object') {
+    const a = Object.assign({}, h.address || {});
+    for (const k of ['street', 'city', 'state', 'postal_code']) if (b.address[k] !== undefined) a[k] = String(b.address[k]).trim().slice(0, 120);
+    fields.address = a;
+  }
+  const docType = b.document_type && DOC_TYPES[b.document_type] ? b.document_type : null;
+  if (docType === 'passport') {
+    const num = String(fields.identification_number || h.identification_number || '').trim();
+    if (!/^[A-Za-z0-9]{6,9}$/.test(num)) throw err(400, 'INVALID_ID_NUMBER', "Passeport : le numéro a 6 à 9 lettres ou chiffres, sans espace ni tiret, tel qu'il figure sur la page photo.");
+  }
+  const front = readDoc(b.documents && b.documents.front, 'Recto');
+  const back = docType === 'passport' ? null : readDoc(b.documents && b.documents.back, 'Verso');
+  if (readDoc(b.documents && b.documents.back, 'Verso') && !front) throw err(400, 'INVALID_DOCUMENT', 'Ajoutez aussi le recto.');
+  let warning = null;
+  if (docType && h.monerails_cardholder_id) {
+    try {
+      const ch = (await require('./monerails').forMode(h.mode === 'live' ? 'live' : 'sandbox').getCardholder(h.monerails_cardholder_id)).data || {};
+      if (ch.id_document && ch.id_document !== docType) warning = `Ce titulaire est enregistré dans le nouveau programme avec « ${DOC_TYPES[ch.id_document] || ch.id_document} », pas « ${DOC_TYPES[docType]} ». Si la vérification est refusée pour cette raison, le type de pièce doit être changé par le programme.`;
+    } catch (e) { /* the type cannot be compared */ }
+  }
+  if (!h.monerails_cardholder_id && !front) throw err(400, 'PHOTO_REQUIRED', "Ajoutez la photo de la pièce : le recto, et le verso sauf pour un passeport.");
+  if (!h.monerails_cardholder_id && await require('./cardIssuer').issuerFor(h.merchant_id, h.mode, 'individual') !== 'monerails') throw err(409, 'NOT_AVAILABLE', "Le nouveau programme de cartes n'est pas disponible pour ce compte pour le moment.");
+  if (rateLimit) await require('./cardOrchestrator').countVerificationAttempt(h.id);
+  let holder = h;
+  if (Object.keys(fields).length) holder = (await supabase.update('maplerad_customers', { id: h.id }, Object.assign({ updated_at: new Date().toISOString() }, fields)).catch(() => [h]))[0] || Object.assign({}, h, fields);
+  const documents = front ? (back ? { front, back } : { front }) : undefined;
+  let r;
+  if (!holder.monerails_cardholder_id) {
+    const a = holder.address || {};
+    const done = await require('./cardOrchestrator').enrollAtMonerails(holder, {
+      firstName: holder.first_name, lastName: holder.last_name, email: holder.email, country: holder.country, dob: holder.dob,
+      phoneShortCode: holder.phone_short_code, phoneNumber: holder.phone_number, address: { street: a.street || a.line1, city: a.city, state: a.state, postal_code: a.postal_code || a.postalCode, country: a.country }, identificationNumber: holder.identification_number,
+      identity: { type: OLD_TYPE[docType || 'national_id'], number: holder.identification_number, image: front, imageBackUrl: back || undefined },
+    });
+    const st = done && done.monerails_status;
+    r = { status: st === 'failed' ? 'rejected' : (st || 'pending'), submitted: true, error: st === 'failed' || st === 'pending' ? (done.monerails_reason || null) : null };
+  } else r = await relaunch(holder, { force: true, documents });
+  return { r, warning, front };
+}
+
+module.exports = { applyAndSend, DOC_TYPES, cleanText, issuesFor, relaunch, relaunchStuck, stuckHolders, submissionFor };

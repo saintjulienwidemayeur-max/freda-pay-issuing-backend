@@ -316,6 +316,8 @@ router.post('/dashboard/cards/holder-profile', session.requireSession, cardHandl
 router.get('/dashboard/cards/holders', session.requireSession, cardHandlers.listHolders);
 router.post('/dashboard/cards/holders', session.requireSession, cardHandlers.createHolder);
 router.get('/dashboard/cards/holders/:id', session.requireSession, cardHandlers.getHolder);
+router.get('/dashboard/cards/holders/:id/verification', session.requireSession, cardHandlers.holderVerificationInfo);
+router.post('/dashboard/cards/holders/:id/verification', session.requireSession, cardHandlers.submitHolderVerification);
 router.post('/dashboard/cards', session.requireSession, cardHandlers.createCard);
 router.get('/dashboard/cards', session.requireSession, cardHandlers.list);
 router.get('/dashboard/cards/transactions', session.requireSession, cardHandlers.getAllTransactions); // consolidated, for the Overview page - must come before /:id below

@@ -67,53 +67,15 @@ async function detail(ctx) {
   } };
 }
 
-const DOC = /^data:image\/(png|jpeg|jpg);base64,[A-Za-z0-9+/]+=*$/;
-function readDoc(v, label) {
-  if (v == null || v === '') return null;
-  const s = String(v);
-  if (!DOC.test(s)) throw httpError(400, 'INVALID_DOCUMENT', `${label} : image JPEG ou PNG requise.`);
-  if (s.length * 0.75 > 4 * 1024 * 1024) throw httpError(413, 'DOCUMENT_TOO_LARGE', `${label} : 4 Mo au plus.`);
-  return s;
-}
-
 /**
- * POST /admin/holders/:id/relaunch { id_number?, birth_date?, address?: { street, city, state, postal_code }, documents?: { front, back } } :
+ * POST /admin/holders/:id/relaunch { id_number?, birth_date?, document_type?, address?: { street, city, state, postal_code }, documents?: { front, back } } :
  * completes what is missing for ONE holder, then sends its check. Documents are JPEG/PNG data URLs, 4 MB at most.
  */
 async function relaunchOne(ctx) {
-  const hv = require('../services/holderVerification');
   const h = await supabase.selectOne('maplerad_customers', { id: ctx.params.id });
   if (!h) throw httpError(404, 'NOT_FOUND', 'Titulaire introuvable.');
-  if (!h.monerails_cardholder_id) throw httpError(409, 'NOT_AT_PROGRAM', "Ce titulaire n'a pas encore été envoyé au nouveau programme : il le sera quand le marchand renvoie sa pièce d'identité.");
-  const b = ctx.body || {};
-  const fields = {};
-  if (b.id_number !== undefined) { const v = String(b.id_number).trim(); if (v.length < 4 || v.length > 30) throw httpError(400, 'INVALID_ID_NUMBER', "Numéro de pièce : 4 à 30 caractères, tel qu'il figure sur la pièce."); fields.identification_number = v; }
-  if (b.birth_date !== undefined) { const v = String(b.birth_date).trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) throw httpError(400, 'INVALID_DOB', 'Date de naissance : AAAA-MM-JJ.'); fields.dob = v; }
-  if (b.address && typeof b.address === 'object') {
-    const a = Object.assign({}, h.address || {});
-    for (const k of ['street', 'city', 'state', 'postal_code']) if (b.address[k] !== undefined) a[k] = String(b.address[k]).trim().slice(0, 120);
-    fields.address = a;
-  }
-  const DOC_TYPES = { national_id: "Carte nationale d'identité", passport: 'Passeport', driver_license: 'Permis de conduire', voters_card: "Carte d'électeur" };
-  const docType = b.document_type && DOC_TYPES[b.document_type] ? b.document_type : null;
-  if (docType === 'passport') {
-    const num = String(fields.identification_number || h.identification_number || '').trim();
-    if (!/^[A-Za-z0-9]{6,9}$/.test(num)) throw httpError(400, 'INVALID_ID_NUMBER', 'Passeport : le numéro a 6 à 9 lettres ou chiffres, sans espace ni tiret, tel qu\'il figure sur la page photo.');
-  }
-  let warning = null;
-  if (docType && h.monerails_cardholder_id) {
-    try {
-      const ch = (await require('../services/monerails').forMode(h.mode === 'live' ? 'live' : 'sandbox').getCardholder(h.monerails_cardholder_id)).data || {};
-      if (ch.id_document && ch.id_document !== docType) warning = `Ce titulaire est enregistré dans le nouveau programme avec « ${DOC_TYPES[ch.id_document] || ch.id_document} », pas « ${DOC_TYPES[docType]} ». Si la vérification est refusée pour cette raison, le type de pièce doit être changé par le programme.`;
-    } catch (e) { /* the type cannot be compared */ }
-  }
-  const front = readDoc(b.documents && b.documents.front, 'Recto');
-  const back = readDoc(b.documents && b.documents.back, 'Verso');
-  if (back && !front) throw httpError(400, 'INVALID_DOCUMENT', 'Ajoutez aussi le recto.');
-  let holder = h;
-  if (Object.keys(fields).length) holder = (await supabase.update('maplerad_customers', { id: h.id }, Object.assign({ updated_at: new Date().toISOString() }, fields)).catch(() => [h]))[0] || Object.assign({}, h, fields);
   console.log(`Holder verification sent by ${(ctx.admin && ctx.admin.email) || ctx.adminId}: ${h.id}`); // eslint-disable-line no-console
-  const r = await hv.relaunch(holder, { force: true, documents: front ? (back ? { front, back } : { front }) : undefined });
+  const { r, warning, front } = await require('../services/holderVerification').applyAndSend(h, ctx.body || {});
   return { status: 200, body: { status: r.status, warning, documents_sent: !!front, submitted: !!r.submitted, needs_photo: !!r.needs_photo, reason: publicText(r.reason), error: publicText(r.error) || (r.error ? 'Envoi refusé : voir le détail du titulaire' : null) } };
 }
 

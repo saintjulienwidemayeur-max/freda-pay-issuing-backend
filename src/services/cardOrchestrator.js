@@ -1861,6 +1861,7 @@ module.exports = {
   removeFailedCards,
   applyMonerailsCardResult,
   enrollAtMonerails,
+  countVerificationAttempt,
   alignCardWithPartner,
   alignCardIfStale,
   alignAllCards,
