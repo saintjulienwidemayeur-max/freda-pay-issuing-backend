@@ -17,8 +17,9 @@ async function list(ctx) {
     const st = h.monerails_status;
     if (!h.monerails_cardholder_id && !st) return 'none';
     if (st === 'verified') return 'accepted';
+    if (h.monerails_cardholder_id && (!st || st === 'pending' || st === 'failed')) return 'to_relaunch'; // exists there, the check never started: can be relaunched
     if (st === 'rejected' || st === 'failed') return 'refused';
-    return 'pending';
+    return 'pending'; // in review
   };
   const ids = [...new Set(rows.map((h) => h.merchant_id))];
   const merchants = ids.length ? await supabase.select('merchants', { id: supabase.inList(ids) }, { limit: 5000 }) : [];
@@ -33,11 +34,18 @@ async function list(ctx) {
       program: programOf(h), program_reason: h.monerails_reason || null,
     };
   });
-  const counts = { all: 0, enrolled: 0, pending: 0, failed: 0, program_accepted: 0, program_refused: 0, program_pending: 0 };
+  const counts = { all: 0, enrolled: 0, pending: 0, failed: 0, program_accepted: 0, program_refused: 0, program_pending: 0, program_to_relaunch: 0 };
   if (needle) list = list.filter((h) => `${h.first_name || ''} ${h.last_name || ''} ${h.email || ''} ${h.id} ${h.merchant_name || ''} ${h.merchant_email || ''} ${h.merchant_id}`.toLowerCase().includes(needle));
   for (const h of list) { counts.all += 1; if (counts[h.status] != null) counts[h.status] += 1; if (h.program !== 'none') counts[`program_${h.program}`] += 1; }
-  if (['accepted', 'refused', 'pending', 'none'].includes(q.program)) list = list.filter((h) => h.program === q.program);
+  if (['accepted', 'refused', 'pending', 'to_relaunch', 'none'].includes(q.program)) list = list.filter((h) => h.program === q.program);
   return { status: 200, body: { counts, total: list.length, holders: list.slice(0, limit) } };
 }
 
-module.exports = { list };
+/** POST /admin/holders/relaunch { mode?, merchant_id?, confirm } : starts the check of every holder whose check never started (preview without confirm). */
+async function relaunch(ctx) {
+  const b = ctx.body || {};
+  const r = await require('../services/holderVerification').relaunchStuck({ mode: b.mode, merchantId: /^mch_[A-Za-z0-9_]+$/.test(String(b.merchant_id || '')) ? b.merchant_id : undefined, confirm: b.confirm === true });
+  return { status: 200, body: r };
+}
+
+module.exports = { list, relaunch };

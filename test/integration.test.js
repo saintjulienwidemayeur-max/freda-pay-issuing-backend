@@ -9278,6 +9278,7 @@ function monerailsMock(port) {
       if (req.method === 'GET' && u === '/v1/balance') return send(200, { object: 'balance', livemode: false, available: [], cards: { currency: 'USD', amount: st.balanceCents == null ? 50000 : st.balanceCents } });
       if (req.method === 'POST' && u === '/v1/cardholders') { const h = { id: id('ch'), object: 'cardholder', livemode: isLive, ...body, documents: undefined, verification: { status: 'pending', reason: null } }; st.holders.push(h); return send(201, h); }
       if (req.method === 'GET' && u === '/v1/cardholders') return send(200, { object: 'list', data: st.holders, has_more: false });
+      if (req.method === 'GET' && (m = u.match(/^\/v1\/cardholders\/([^/]+)$/))) { const h = st.holders.find((x) => x.id === m[1]); return h ? send(200, { ...h, verification: { ...h.verification, documents_on_file: true } }) : fail(404, 'not_found', 'cardholder'); }
       if ((m = u.match(/^\/v1\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (!body.id_number || !body.address) return fail(400, 'parameter_missing', 'id_number/address'); h.verification.status = 'in_review'; return send(202, h); }
       if ((m = u.match(/^\/v1\/test\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (h.verification.status === 'pending') return fail(400, 'verification_not_submitted', 'Vérification non envoyée'); h.verification.status = body.result === 'approved' ? 'verified' : 'rejected'; return send(200, h); }
       if (req.method === 'POST' && u === '/v1/cards') {
@@ -10544,4 +10545,46 @@ test('photo tips message: only merchants with refused Live holders get it, each 
   assert.ok(!/paul@example/.test(mine.text), "another merchant's holder is never listed");
   assert.ok(!/monerails|maplerad/i.test(mine.html + mine.text));
   assert.ok(mockTables.chat_messages.some((c) => c.merchant_id === yes.data.merchant.id && /Rita Floue/.test(c.body)));
+});
+
+test('holders stuck at "to verify": the admin relaunches their check (their data is sent, no new photo needed when one is on file); refused ones are left for a new photo', async () => {
+  const admin = await adminLogin('owner');
+  const config = require('../src/config'); const saved = Object.assign({}, config.monerails);
+  const dispatcher = require('../src/services/webhookDispatcher'); const seen = []; const orig = dispatcher.dispatch;
+  dispatcher.dispatch = (m, ev, data) => seen.push({ ev, id: data.id });
+  const { server, st } = await monerailsMock(4564);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4564/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_relaunch' });
+  try {
+    const reg = await registerAndVerify({ business_name: 'Relaunch Co', email: 'relaunch@example.com', password: 'password123' });
+    const mid = reg.data.merchant.id; const now = new Date().toISOString();
+    const mkHolder = (n, dbStatus, remote, extra) => {
+      const ch = { id: `ch_rl${n}`, object: 'cardholder', verification: { status: remote, reason: remote === 'rejected' ? 'Name/dob mismatch' : null } };
+      st.holders.push(ch);
+      mockTables.maplerad_customers.push({ id: `mpc_rl${n}`, merchant_id: mid, mode: 'sandbox', status: 'enrolled', first_name: `H${n}`, last_name: 'Test', email: `h${n}@example.com`, country: 'HT', dob: '1990-01-01', identification_number: `NIN-00${n}`, address: { street: '1 rue A', city: 'Port-au-Prince' }, monerails_cardholder_id: ch.id, monerails_status: dbStatus, created_at: now, ...extra });
+    };
+    mkHolder(1, 'failed', 'pending');      // the check never started (no state in the address)
+    mkHolder(2, 'pending', 'pending');     // same
+    mkHolder(3, 'rejected', 'rejected');   // refused: needs a new photo
+    mkHolder(4, 'verified', 'verified');
+    const pv = await api('POST', '/admin/holders/relaunch', { token: admin.token, body: { mode: 'sandbox', merchant_id: mid } });
+    assert.equal(pv.status, 200); assert.equal(pv.data.preview, true); assert.equal(pv.data.holders, 2, 'only the two whose check never started');
+    // the list says so
+    const list = await api('GET', '/admin/holders?q=relaunch%20co&program=to_relaunch', { token: admin.token });
+    assert.deepEqual(list.data.holders.map((h) => h.id).sort(), ['mpc_rl1', 'mpc_rl2']);
+    const go = await api('POST', '/admin/holders/relaunch', { token: admin.token, body: { mode: 'sandbox', merchant_id: mid, confirm: true } });
+    assert.equal(go.status, 200); assert.equal(go.data.holders, 2); assert.equal(go.data.errors, 0, JSON.stringify(go.data));
+    const dbs = (n) => mockTables.maplerad_customers.find((h) => h.id === `mpc_rl${n}`).monerails_status;
+    assert.equal(dbs(1), 'verified'); assert.equal(dbs(2), 'verified');
+    assert.equal(dbs(3), 'rejected', 'a refused holder is not retried without a new photo');
+    assert.deepEqual(seen.map((x) => x.ev).sort(), ['holder.verified', 'holder.verified']);
+    // the address sent had a state (it is required): the city stands in
+    const sentTo = st.calls.filter((c) => /\/verification$/.test(c.url) && !/\/test\//.test(c.url));
+    assert.equal(sentTo.length, 2);
+    // a refused holder sent again WITH new documents is checked again (same holder, new documents)
+    const holder3 = mockTables.maplerad_customers.find((h) => h.id === 'mpc_rl3');
+    const { relaunch } = require('../src/services/holderVerification');
+    const r = await relaunch(holder3, { documents: { front: 'data:image/png;base64,iVBORw0KGgo=' } });
+    assert.ok(['verified', 'in_review'].includes(r.status));
+    assert.equal((await api('POST', '/admin/holders/relaunch', { body: {} })).status, 401);
+  } finally { dispatcher.dispatch = orig; Object.assign(config.monerails, saved); await new Promise((r) => server.close(r)); }
 });
