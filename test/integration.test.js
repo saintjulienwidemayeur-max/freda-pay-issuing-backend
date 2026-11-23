@@ -9279,7 +9279,7 @@ function monerailsMock(port) {
       if (req.method === 'POST' && u === '/v1/cardholders') { const h = { id: id('ch'), object: 'cardholder', livemode: isLive, ...body, documents: undefined, verification: { status: 'pending', reason: null } }; st.holders.push(h); return send(201, h); }
       if (req.method === 'GET' && u === '/v1/cardholders') return send(200, { object: 'list', data: st.holders, has_more: false });
       if (req.method === 'GET' && (m = u.match(/^\/v1\/cardholders\/([^/]+)$/))) { const h = st.holders.find((x) => x.id === m[1]); return h ? send(200, { ...h, verification: { ...h.verification, documents_on_file: true } }) : fail(404, 'not_found', 'cardholder'); }
-      if ((m = u.match(/^\/v1\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (!body.id_number || !body.address) return fail(400, 'parameter_missing', 'id_number/address'); h.verification.status = 'in_review'; return send(202, h); }
+      if ((m = u.match(/^\/v1\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (!body.id_number || !body.address) return fail(400, 'parameter_missing', 'id_number/address'); h.verification.status = 'in_review'; (st.verificationBodies = st.verificationBodies || []).push(body); return send(202, h); }
       if ((m = u.match(/^\/v1\/test\/cardholders\/([^/]+)\/verification$/))) { const h = st.holders.find((x) => x.id === m[1]); if (h.verification.status === 'pending') return fail(400, 'verification_not_submitted', 'Vérification non envoyée'); h.verification.status = body.result === 'approved' ? 'verified' : 'rejected'; return send(200, h); }
       if (req.method === 'POST' && u === '/v1/cards') {
         const h = st.holders.find((x) => x.id === body.cardholder);
@@ -10587,4 +10587,47 @@ test('holders stuck at "to verify": the admin relaunches their check (their data
     assert.ok(['verified', 'in_review'].includes(r.status));
     assert.equal((await api('POST', '/admin/holders/relaunch', { body: {} })).status, 401);
   } finally { dispatcher.dispatch = orig; Object.assign(config.monerails, saved); await new Promise((r) => server.close(r)); }
+});
+
+test('one holder at a time: the admin sees what is missing or wrong (no partner name), completes it, and sends its check; addresses are cleaned to what the issuer accepts', async () => {
+  const admin = await adminLogin('owner');
+  const config = require('../src/config'); const saved = Object.assign({}, config.monerails);
+  const { server, st } = await monerailsMock(4565);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4565/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_one' });
+  try {
+    const reg = await registerAndVerify({ business_name: 'One By One Co', email: 'one-by-one@example.com', password: 'password123' });
+    const mid = reg.data.merchant.id;
+    st.holders.push({ id: 'ch_one1', object: 'cardholder', verification: { status: 'pending', reason: null } });
+    mockTables.maplerad_customers.push(
+      { id: 'mpc_one1', merchant_id: mid, mode: 'sandbox', status: 'enrolled', first_name: 'Ona', last_name: 'Un', email: 'one1@example.com', country: 'HT', dob: '1990-01-01', identification_number: 'NIN-001', address: { street: "12 Rue de l'Église #5", city: 'Port-au-Prince' }, monerails_cardholder_id: 'ch_one1', monerails_status: 'failed', monerails_reason: "Monerails (HTTP 400, parameter_invalid) : Adresse : lettres, chiffres, espaces et les signes , . - uniquement. [champ : address.line1]", created_at: new Date().toISOString() },
+      { id: 'mpc_one2', merchant_id: mid, mode: 'sandbox', status: 'enrolled', first_name: 'Ana', last_name: 'Deux', email: 'one2@example.com', country: 'HT', created_at: new Date().toISOString() },
+    );
+    // the list never shows the partner's name, only the issuer's sentence
+    const list = await api('GET', '/admin/holders?q=one%20by%20one', { token: admin.token });
+    const row = list.data.holders.find((h) => h.id === 'mpc_one1');
+    assert.match(row.program_reason, /Adresse : lettres, chiffres, espaces/);
+    assert.ok(!/monerails|HTTP/i.test(row.program_reason), row.program_reason);
+    // detail: what is wrong, what would be sent
+    const d = await api('GET', '/admin/holders/mpc_one1', { token: admin.token });
+    assert.equal(d.status, 200);
+    assert.ok(d.data.issues.some((i) => i.field === 'address.line1' && i.auto), 'signs that will be removed');
+    assert.ok(d.data.issues.some((i) => i.field === 'address.state' && i.auto));
+    assert.equal(d.data.will_send.address.line1, '12 Rue de l Eglise 5');
+    assert.equal(d.data.will_send.address.state, 'Port-au-Prince');
+    assert.ok(!/monerails/i.test(JSON.stringify(d.data)));
+    // completing and sending
+    const bad = await api('POST', '/admin/holders/mpc_one1/relaunch', { token: admin.token, body: { id_number: 'x' } });
+    assert.equal(bad.status, 400);
+    const badDoc = await api('POST', '/admin/holders/mpc_one1/relaunch', { token: admin.token, body: { documents: { front: 'data:image/webp;base64,AAAA' } } });
+    assert.equal(badDoc.status, 400);
+    const ok = await api('POST', '/admin/holders/mpc_one1/relaunch', { token: admin.token, body: { id_number: 'NIN-0012345', address: { street: "14 Avenue d'Haïti, Delmas 33", state: 'Ouest' } } });
+    assert.equal(ok.status, 200); assert.equal(ok.data.submitted, true); assert.equal(ok.data.status, 'verified');
+    const sent = st.verificationBodies[st.verificationBodies.length - 1];
+    assert.equal(sent.id_number, 'NIN-0012345'); assert.equal(sent.address.line1, '14 Avenue d Haiti, Delmas 33'); assert.equal(sent.address.state, 'Ouest');
+    const row2 = mockTables.maplerad_customers.find((h) => h.id === 'mpc_one1');
+    assert.equal(row2.monerails_status, 'verified'); assert.equal(row2.identification_number, 'NIN-0012345');
+    // a holder never sent to the new program cannot be relaunched from here
+    assert.equal((await api('POST', '/admin/holders/mpc_one2/relaunch', { token: admin.token, body: {} })).status, 409);
+    assert.equal((await api('GET', '/admin/holders/mpc_one1')).status, 401);
+  } finally { Object.assign(config.monerails, saved); await new Promise((r) => server.close(r)); }
 });
