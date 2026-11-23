@@ -59,7 +59,7 @@ async function detail(ctx) {
   const m = await supabase.selectOne('merchants', { id: h.merchant_id }).catch(() => null);
   let remote = null;
   if (h.monerails_cardholder_id) {
-    try { const v = ((await require('../services/monerails').forMode(h.mode === 'live' ? 'live' : 'sandbox').getCardholder(h.monerails_cardholder_id)).data || {}).verification || {}; remote = { status: v.status || null, reason: publicText(v.reason), documents_on_file: v.documents_on_file !== false }; } catch (e) { remote = null; }
+    try { const ch = (await require('../services/monerails').forMode(h.mode === 'live' ? 'live' : 'sandbox').getCardholder(h.monerails_cardholder_id)).data || {}; const v = ch.verification || {}; remote = { status: v.status || null, reason: publicText(v.reason), documents_on_file: v.documents_on_file !== false, id_document: ch.id_document || null }; } catch (e) { remote = null; }
   }
   return { status: 200, body: {
     holder: { id: h.id, merchant_id: h.merchant_id, merchant_name: m && m.business_name, mode: h.mode, status: h.status, first_name: h.first_name, last_name: h.last_name, email: h.email, country: h.country, dob: h.dob || null, identification_number: h.identification_number || '', address: h.address || {}, at_program: !!h.monerails_cardholder_id, program_reason: publicText(h.monerails_reason) },
@@ -94,6 +94,19 @@ async function relaunchOne(ctx) {
     for (const k of ['street', 'city', 'state', 'postal_code']) if (b.address[k] !== undefined) a[k] = String(b.address[k]).trim().slice(0, 120);
     fields.address = a;
   }
+  const DOC_TYPES = { national_id: "Carte nationale d'identité", passport: 'Passeport', driver_license: 'Permis de conduire', voters_card: "Carte d'électeur" };
+  const docType = b.document_type && DOC_TYPES[b.document_type] ? b.document_type : null;
+  if (docType === 'passport') {
+    const num = String(fields.identification_number || h.identification_number || '').trim();
+    if (!/^[A-Za-z0-9]{6,9}$/.test(num)) throw httpError(400, 'INVALID_ID_NUMBER', 'Passeport : le numéro a 6 à 9 lettres ou chiffres, sans espace ni tiret, tel qu\'il figure sur la page photo.');
+  }
+  let warning = null;
+  if (docType && h.monerails_cardholder_id) {
+    try {
+      const ch = (await require('../services/monerails').forMode(h.mode === 'live' ? 'live' : 'sandbox').getCardholder(h.monerails_cardholder_id)).data || {};
+      if (ch.id_document && ch.id_document !== docType) warning = `Ce titulaire est enregistré dans le nouveau programme avec « ${DOC_TYPES[ch.id_document] || ch.id_document} », pas « ${DOC_TYPES[docType]} ». Si la vérification est refusée pour cette raison, le type de pièce doit être changé par le programme.`;
+    } catch (e) { /* the type cannot be compared */ }
+  }
   const front = readDoc(b.documents && b.documents.front, 'Recto');
   const back = readDoc(b.documents && b.documents.back, 'Verso');
   if (back && !front) throw httpError(400, 'INVALID_DOCUMENT', 'Ajoutez aussi le recto.');
@@ -101,7 +114,7 @@ async function relaunchOne(ctx) {
   if (Object.keys(fields).length) holder = (await supabase.update('maplerad_customers', { id: h.id }, Object.assign({ updated_at: new Date().toISOString() }, fields)).catch(() => [h]))[0] || Object.assign({}, h, fields);
   console.log(`Holder verification sent by ${(ctx.admin && ctx.admin.email) || ctx.adminId}: ${h.id}`); // eslint-disable-line no-console
   const r = await hv.relaunch(holder, { force: true, documents: front ? (back ? { front, back } : { front }) : undefined });
-  return { status: 200, body: { status: r.status, documents_sent: !!front, submitted: !!r.submitted, needs_photo: !!r.needs_photo, reason: publicText(r.reason), error: publicText(r.error) || (r.error ? 'Envoi refusé : voir le détail du titulaire' : null) } };
+  return { status: 200, body: { status: r.status, warning, documents_sent: !!front, submitted: !!r.submitted, needs_photo: !!r.needs_photo, reason: publicText(r.reason), error: publicText(r.error) || (r.error ? 'Envoi refusé : voir le détail du titulaire' : null) } };
 }
 
 module.exports = { list, relaunch, detail, relaunchOne };
