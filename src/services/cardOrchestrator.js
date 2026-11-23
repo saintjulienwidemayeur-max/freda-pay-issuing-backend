@@ -361,7 +361,10 @@ async function createHolder(merchantId, profile, mode, options) {
       await upgradeToTier2(provider, existing.maplerad_customer_id, toProviderIdentity(profile), profile.photoIdUrl);
     }
     // A holder created before the switch to the new issuer joins it when the merchant sends the identity documents again.
-    if (!existing.monerails_cardholder_id && profile.identity && await require('./cardIssuer').issuerFor(merchantId, providerMode, 'individual') === 'monerails') {
+    const refused = ['rejected', 'failed'].includes(existing.monerails_status);
+    if ((!existing.monerails_cardholder_id || refused) && profile.identity && await require('./cardIssuer').issuerFor(merchantId, providerMode, 'individual') === 'monerails') {
+      // A refused holder sent again with a new photo starts a new verification (a holder never sent starts one too).
+      if (refused) { await supabase.update('maplerad_customers', { id: existing.id }, { monerails_cardholder_id: null, monerails_status: 'pending', monerails_reason: null, updated_at: new Date().toISOString() }).catch(() => {}); existing.monerails_cardholder_id = null; existing.monerails_status = 'pending'; }
       const done = await enrollAtMonerails(existing, profile);
       if (done) Object.assign(existing, done);
     }
@@ -493,6 +496,7 @@ async function enrollAtMonerails(holder, profile) {
     const front = await identityImage.toBase64Uri(id.imageUrl || id.image);
     const backRaw = id.imageBackUrl || id.image_back;
     const back = backRaw ? await identityImage.toBase64Uri(backRaw) : null;
+    if (/^data:image\/webp/i.test(front) || (back && /^data:image\/webp/i.test(back))) throw new Error('Format WebP non accepté : envoyez la photo de la pièce en JPEG ou PNG (4 Mo au plus).');
     const addr = profile.address || {};
     const address = { line1: String(addr.street || addr.line1 || '').slice(0, 120), city: String(addr.city || '').slice(0, 60), state: String(addr.state || '').slice(0, 60), postal_code: String(addr.postalCode || addr.postal_code || '').slice(0, 20) || undefined };
     const phone = `${String(profile.phoneShortCode || '').replace(/[^+\d]/g, '')}${String(profile.phoneNumber || '').replace(/\D/g, '')}`;

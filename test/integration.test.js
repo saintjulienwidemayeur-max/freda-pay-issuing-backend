@@ -10520,3 +10520,28 @@ test('holders: the admin sees every merchant\'s holders (confirmed, pending, ref
   assert.equal(by('mpc_hv3').new_program, null);
   assert.ok(!/monerails/i.test(JSON.stringify(hs)), 'no partner name, no partner id');
 });
+
+test('photo tips message: only merchants with refused Live holders get it, each with the list of ITS holders, no partner name', async () => {
+  const admin = await adminLogin('owner');
+  const mk = async (email, name) => (await registerAndVerify({ business_name: name, email, password: 'password123' }));
+  const yes = await mk('tips-yes@example.com', 'Tips Yes'); const no = await mk('tips-no@example.com', 'Tips No');
+  for (const m of [yes, no]) mockTables.merchants.find((x) => x.id === m.data.merchant.id).issuing_live_enabled = true;
+  mockTables.maplerad_customers.push(
+    { id: 'mpc_tp1', merchant_id: yes.data.merchant.id, mode: 'live', status: 'enrolled', first_name: 'Rita', last_name: 'Floue', email: 'rita@example.com', monerails_cardholder_id: 'ch_tp1', monerails_status: 'rejected', created_at: new Date().toISOString() },
+    { id: 'mpc_tp2', merchant_id: no.data.merchant.id, mode: 'live', status: 'enrolled', first_name: 'Paul', last_name: 'Ok', email: 'paul@example.com', monerails_cardholder_id: 'ch_tp2', monerails_status: 'verified', created_at: new Date().toISOString() },
+  );
+  const pv = await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'holder_photo_tips' } });
+  assert.equal(pv.status, 200); assert.equal(pv.data.sent, false);
+  const before = sentEmails.length;
+  const r = await api('POST', '/admin/incident-alert', { token: admin.token, body: { kind: 'holder_photo_tips', confirm: true } });
+  assert.equal(r.status, 200); assert.equal(r.data.banner, false, 'no banner for an information message');
+  const mails = sentEmails.slice(before).filter((e) => /Titulaires refusés/.test(e.subject || ''));
+  const mine = mails.find((e) => e.to === 'tips-yes@example.com');
+  assert.ok(mine, 'the merchant with a refused holder is written to');
+  assert.ok(!mails.some((e) => e.to === 'tips-no@example.com'), 'the merchant with only accepted holders is not');
+  assert.match(mine.text, /Rita Floue \(rita@example\.com\)/);
+  assert.match(mine.text, /capture d'écran/); assert.match(mine.text, /quatre coins/); assert.match(mine.text, /4 Mo/);
+  assert.ok(!/paul@example/.test(mine.text), "another merchant's holder is never listed");
+  assert.ok(!/monerails|maplerad/i.test(mine.html + mine.text));
+  assert.ok(mockTables.chat_messages.some((c) => c.merchant_id === yes.data.merchant.id && /Rita Floue/.test(c.body)));
+});
