@@ -113,6 +113,40 @@ async function createHolder(ctx) {
   }
 }
 
+const newProgramStatusOf = (st) => (st === 'verified' ? 'accepted' : (st === 'rejected' || st === 'failed' ? 'refused' : 'pending'));
+
+/** GET /dashboard/cards/holders/:id/verification : what is missing or wrong for one of the merchant's holders, and what it can send now. */
+async function holderVerificationInfo(ctx) {
+  const hv = require('../services/holderVerification');
+  const h = await cardOrchestrator.getHolderById(ctx.merchantId, ctx.params.id);
+  if (!h) throw httpError(404, 'NOT_FOUND', 'Titulaire introuvable.');
+  let docsOnFile; let docType = null;
+  if (h.monerails_cardholder_id) {
+    try { const ch = (await require('../services/monerails').forMode(h.mode === 'live' ? 'live' : 'sandbox').getCardholder(h.monerails_cardholder_id)).data || {}; docsOnFile = (ch.verification || {}).documents_on_file; docType = ch.id_document || null; } catch (e) { /* unknown */ }
+  }
+  const pub = toPublicProfile(h);
+  return { status: 200, body: {
+    holder: Object.assign({}, pub, { identification_number: h.identification_number || '', address: h.address || {}, dob: h.dob || null }),
+    new_program: pub.new_program, available: await require('../services/cardIssuer').issuerFor(h.merchant_id, h.mode, 'individual') === 'monerails' || !!h.monerails_cardholder_id,
+    document_type: docType, issues: hv.issuesFor(h, h.monerails_cardholder_id ? docsOnFile : false),
+  } };
+}
+
+/** POST /dashboard/cards/holders/:id/verification : the merchant completes what is missing (number, birth date, address, document type, photos) and sends the check. */
+async function submitHolderVerification(ctx) {
+  if (ctx.role && !['owner', 'admin'].includes(ctx.role)) throw httpError(403, 'FORBIDDEN', "Seul le propriétaire ou un administrateur du compte peut envoyer la vérification d'un titulaire.");
+  const h = await cardOrchestrator.getHolderById(ctx.merchantId, ctx.params.id);
+  if (!h) throw httpError(404, 'NOT_FOUND', 'Titulaire introuvable.');
+  const { r, warning, front } = await require('../services/holderVerification').applyAndSend(h, ctx.body || {}, { rateLimit: true });
+  const detail = (t) => (t ? require('../services/cardIssuer').publicDetail(t) || null : null);
+  const fresh = (await cardOrchestrator.getHolderById(ctx.merchantId, ctx.params.id)) || h;
+  return { status: 200, body: {
+    status: newProgramStatusOf(r.status === 'verified' ? 'verified' : r.status), documents_sent: !!front, needs_photo: !!r.needs_photo,
+    reason: detail(r.reason), error: detail(r.error) || (r.error ? "L'envoi a été refusé : vérifiez les informations et la photo." : null), warning: warning || null,
+    new_program: toPublicProfile(fresh).new_program,
+  } };
+}
+
 async function createCard(ctx) {
   const b = ctx.body || {};
   const { kind, brand, amount, reference, business_name, holder_id } = b;
@@ -501,4 +535,4 @@ function httpError(status, code, message) {
 }
 
 module.exports = {
-  setSpendingLimit, getHolderProfile, submitHolderProfile, listHolders, getHolder, createHolder, createCard, list, get, getTransactions, getAllTransactions, simulateTransaction, revealDetails, fund, withdraw, freeze, unfreeze, terminate };
+  holderVerificationInfo, submitHolderVerification, setSpendingLimit, getHolderProfile, submitHolderProfile, listHolders, getHolder, createHolder, createCard, list, get, getTransactions, getAllTransactions, simulateTransaction, revealDetails, fund, withdraw, freeze, unfreeze, terminate };
