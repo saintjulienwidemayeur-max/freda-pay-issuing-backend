@@ -20,7 +20,7 @@ function notifyHolderResult(holder, status, reason) {
   const why = ok ? null : (require('./cardIssuer').publicDetail(reason) || null);
   webhookDispatcher.dispatch(holder.merchant_id, ok ? 'holder.verified' : 'holder.rejected', {
     id: holder.id, email: holder.email || null, mode: holder.mode || null, status: ok ? 'verified' : 'rejected', reason: why,
-    note: ok ? 'Ce titulaire est accepté par le nouveau programme de cartes : ses prochaines cartes y sont créées.' : "Ce titulaire n'est pas accepté par le nouveau programme de cartes : ses cartes restent chez notre banque partenaire actuelle. Renvoyez sa pièce d'identité (recto et verso) pour réessayer.",
+    note: ok ? 'Ce titulaire est accepté par le nouveau programme de cartes : ses prochaines cartes y sont créées.' : "Ce titulaire n'est pas accepté par le nouveau programme de cartes : ses cartes restent chez notre banque partenaire actuelle. Le plus souvent la photo de la pièce est en cause (capture d'écran, coins coupés, image floue) : refaites une photo de la pièce physique, entière, nette, sans reflet, recto et verso, puis renvoyez le titulaire (même e-mail).",
   });
 }
 

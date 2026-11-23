@@ -43,6 +43,36 @@ CE QUE VOUS DEVEZ FAIRE
 Détails : https://issuing.fredapay.com/docs/webhooks`,
     chat: "Nouveau côté webhooks : deux événements pour vos titulaires de cartes, holder.verified (titulaire accepté par le nouveau programme de cartes) et holder.rejected (refusé, avec la raison dans data.reason ; ses cartes restent chez notre banque partenaire actuelle, renvoyez sa pièce d'identité recto et verso pour réessayer). Rien à modifier chez vous. Si votre endpoint renvoie une erreur sur un événement inconnu, faites-le répondre 200 et l'ignorer. Détails : https://issuing.fredapay.com/docs/webhooks",
   },
+  holder_photo_tips: {
+    audience: 'refused_holders',
+    subject: "Titulaires refusés : comment faire accepter la photo de la pièce d'identité",
+    message: `Certains de vos titulaires n'ont pas été acceptés par le nouveau programme de cartes. Dans la quasi-totalité des cas, ce n'est pas l'identité qui pose problème mais la qualité de la photo de la pièce.
+
+LES TROIS CAUSES LES PLUS FRÉQUENTES
+- Une capture d'écran envoyée à la place d'une vraie photo de la pièce.
+- Une pièce dont une partie sort du cadre (coins coupés).
+- Une image trop floue pour que les informations soient lues.
+
+CE QUE VOS UTILISATEURS DOIVENT FAIRE
+- Photographier la pièce physique elle-même, entière, les quatre coins visibles, bien à plat, nette et bien éclairée, sans reflet et sans capture d'écran.
+- Envoyer le recto et le verso pour toute pièce autre que le passeport.
+- JPEG ou PNG, 4 Mo au plus par image.
+- Vérifier que le prénom, le nom, la date de naissance (AAAA-MM-JJ, 18 ans minimum) et le numéro sont exactement ceux de la pièce, qui doit être en cours de validité.
+
+COMMENT RELANCER LA VÉRIFICATION
+- Renvoyez le titulaire avec la nouvelle photo (même e-mail) : sa vérification est relancée et vous recevez le webhook holder.verified s'il est accepté.
+- Tant qu'il n'est pas accepté, ses cartes continuent d'être créées comme avant.
+
+Détails : https://issuing.fredapay.com/docs/titulaires-de-cartes#photo-piece`,
+    chat: "Certains de vos titulaires n'ont pas été acceptés par le nouveau programme de cartes : presque toujours à cause de la photo de la pièce (capture d'écran, coins coupés, image floue). Demandez une photo de la pièce physique, entière (4 coins visibles), à plat, nette, sans reflet et sans capture d'écran, recto et verso (sauf passeport), en JPEG ou PNG de 4 Mo au plus, puis renvoyez le titulaire (même e-mail) pour relancer la vérification. Détails : https://issuing.fredapay.com/docs/titulaires-de-cartes#photo-piece",
+    /** Each merchant also gets the list of ITS refused holders. */
+    async extra(m) {
+      const hs = (await supabase.select('maplerad_customers', { merchant_id: m.id, mode: 'live' }, { limit: 500 }).catch(() => [])).filter((h) => h.monerails_status === 'rejected' || h.monerails_status === 'failed');
+      if (!hs.length) return null;
+      const lines = hs.slice(0, 20).map((h) => `${[h.first_name, h.last_name].filter(Boolean).join(' ') || h.id}${h.email ? ` (${h.email})` : ''}`);
+      return { email: `\n\nTITULAIRES CONCERNÉS\n${lines.map((l) => `- ${l}`).join('\n')}${hs.length > 20 ? `\n- … et ${hs.length - 20} autre(s)` : ''}`, chat: ` Titulaires concernés : ${lines.slice(0, 5).join(', ')}${hs.length > 5 ? ` et ${hs.length - 5} autre(s)` : ''}.` };
+    },
+  },
   cards_resolved: {
     subject: "Rétabli : la création et la recharge de cartes fonctionnent à nouveau",
     message: `L'incident sur les cartes est résolu : la création de nouvelles cartes et la recharge des cartes fonctionnent à nouveau normalement.
@@ -64,6 +94,11 @@ function httpError(status, code, message) { const e = new Error(message); e.http
 async function audience(kind) {
   const rows = await supabase.select('merchants', { deleted_at: supabase.isNull(), email_verified: true, issuing_live_enabled: true }, { order: 'created_at.desc', limit: 5000 });
   const list = rows.filter((m) => m.email);
+  if (TEMPLATES[kind] && TEMPLATES[kind].audience === 'refused_holders') {
+    const out = [];
+    for (const m of list) if (await TEMPLATES[kind].extra(m)) out.push(m);
+    return out;
+  }
   if (!TEMPLATES[kind] || TEMPLATES[kind].audience !== 'webhooks') return list;
   const hooks = await supabase.select('webhook_endpoints', { active: true }, { limit: 20000 }).catch(() => []);
   const withHook = new Set(hooks.map((h) => h.merchant_id));
@@ -88,7 +123,7 @@ let sending = false;
  */
 async function send({ kind, message, confirm, banner, adminEmail, adminId }) {
   const tpl = TEMPLATES[kind];
-  if (!tpl) throw httpError(400, 'INVALID_KIND', 'Type invalide : cards_outage, cards_resolved ou webhooks_news.');
+  if (!tpl) throw httpError(400, 'INVALID_KIND', 'Type invalide : cards_outage, cards_resolved, webhooks_news ou holder_photo_tips.');
   const custom = message ? String(message).trim().slice(0, 600) : '';
   const body = custom || tpl.message;
   const chatText = custom || tpl.chat;
@@ -106,9 +141,10 @@ async function send({ kind, message, confirm, banner, adminEmail, adminId }) {
     for (let i = 0; i < list.length; i += 5) {
       const batch = list.slice(i, i + 5);
       await Promise.all(batch.map(async (m) => {
-        try { await adminMessages.sendOne(m, tpl.subject, body); emailed += 1; } catch (e) { failed += 1; }
+        const more = tpl.extra ? await tpl.extra(m).catch(() => null) : null;
+        try { await adminMessages.sendOne(m, tpl.subject, body + (more ? more.email : '')); emailed += 1; } catch (e) { failed += 1; }
         try {
-          await supabase.insert('chat_messages', { id: `msg_${crypto.randomBytes(8).toString('hex')}`, merchant_id: m.id, sender: 'admin', author_name: 'Freda Pay Issuing', by_agent: false, body: chatText.slice(0, 2000), read_by_merchant: false, read_by_admin: true });
+          await supabase.insert('chat_messages', { id: `msg_${crypto.randomBytes(8).toString('hex')}`, merchant_id: m.id, sender: 'admin', author_name: 'Freda Pay Issuing', by_agent: false, body: `${chatText}${more ? more.chat : ''}`.slice(0, 2000), read_by_merchant: false, read_by_admin: true });
           chatted += 1;
         } catch (e) { /* the email is the main channel */ }
       }));
