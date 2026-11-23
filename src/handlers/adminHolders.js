@@ -101,7 +101,7 @@ async function relaunchOne(ctx) {
   if (Object.keys(fields).length) holder = (await supabase.update('maplerad_customers', { id: h.id }, Object.assign({ updated_at: new Date().toISOString() }, fields)).catch(() => [h]))[0] || Object.assign({}, h, fields);
   console.log(`Holder verification sent by ${(ctx.admin && ctx.admin.email) || ctx.adminId}: ${h.id}`); // eslint-disable-line no-console
   const r = await hv.relaunch(holder, { force: true, documents: front ? (back ? { front, back } : { front }) : undefined });
-  return { status: 200, body: { status: r.status, submitted: !!r.submitted, needs_photo: !!r.needs_photo, reason: publicText(r.reason), error: publicText(r.error) || (r.error ? 'Envoi refusé : voir le détail du titulaire' : null) } };
+  return { status: 200, body: { status: r.status, documents_sent: !!front, submitted: !!r.submitted, needs_photo: !!r.needs_photo, reason: publicText(r.reason), error: publicText(r.error) || (r.error ? 'Envoi refusé : voir le détail du titulaire' : null) } };
 }
 
 module.exports = { list, relaunch, detail, relaunchOne };

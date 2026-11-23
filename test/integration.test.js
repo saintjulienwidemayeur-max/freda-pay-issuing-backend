@@ -10622,6 +10622,7 @@ test('one holder at a time: the admin sees what is missing or wrong (no partner 
     assert.equal(badDoc.status, 400);
     const ok = await api('POST', '/admin/holders/mpc_one1/relaunch', { token: admin.token, body: { id_number: 'NIN-0012345', address: { street: "14 Avenue d'Haïti, Delmas 33", state: 'Ouest' } } });
     assert.equal(ok.status, 200); assert.equal(ok.data.submitted, true); assert.equal(ok.data.status, 'verified');
+    assert.equal(ok.data.documents_sent, false, 'no new photo was sent: the answer says so');
     const sent = st.verificationBodies[st.verificationBodies.length - 1];
     assert.equal(sent.id_number, 'NIN-0012345'); assert.equal(sent.address.line1, '14 Avenue d Haiti, Delmas 33'); assert.equal(sent.address.state, 'Ouest');
     const row2 = mockTables.maplerad_customers.find((h) => h.id === 'mpc_one1');
