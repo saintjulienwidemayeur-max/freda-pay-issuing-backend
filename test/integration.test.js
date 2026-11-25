@@ -10732,3 +10732,38 @@ test('signup source: each signup keeps its address, tool and website; the admin 
   assert.ok(r.data.by_ip.length >= 1 && r.data.by_ip[0].count >= 1);
   assert.equal((await api('GET', '/admin/signups')).status, 401);
 });
+
+test('signup guard: the owner can pause signups, block addresses (exact or range), block domains and require the website; answers stay generic', async () => {
+  const owner = await adminLogin('owner');
+  const guard = require('../src/services/signupGuard');
+  const put = (body, token = owner.token) => api('PUT', '/admin/signup-guard', { token, body });
+  const reg = (email, headers = {}) => api('POST', '/auth/register', { headers: { ...freshIp(), ...headers }, body: { business_name: 'Guard Co', email, password: 'password123' } });
+  try {
+    assert.equal((await api('GET', '/admin/signup-guard')).status, 401);
+    assert.equal((await put({ paused: true }, 'bad')).status, 401);
+    // paused
+    assert.equal((await put({ paused: true })).status, 200);
+    const p = await reg('guard-paused@example.com');
+    assert.equal(p.status, 403); assert.equal(p.data.error.code, 'SIGNUPS_PAUSED');
+    assert.ok(!/pause|\bip\b|domain/i.test(p.data.error.message));
+    await put({ paused: false });
+    assert.equal((await reg('guard-open@example.com')).status, 201);
+    // blocked address + range
+    const ip = '203.0.113.7';
+    await put({ add_ip: ip }); await put({ add_ip: '198.51.100.0/24' });
+    assert.equal((await reg('guard-ip@example.com', { 'X-Forwarded-For': ip })).status, 403);
+    assert.equal((await reg('guard-range@example.com', { 'X-Forwarded-For': '198.51.100.99' })).status, 403);
+    assert.equal(guard.ipBlocked('198.51.101.1', ['198.51.100.0/24']), false);
+    // blocked domain
+    await put({ blocked_domains: ['bad-domain.test'] });
+    assert.equal((await reg('x@bad-domain.test')).status, 403);
+    assert.equal((await reg('x@sub.bad-domain.test')).status, 403);
+    // website only
+    await put({ require_site: true });
+    assert.equal((await reg('guard-direct@example.com', { 'User-Agent': 'curl/8' })).status, 403);
+    assert.equal((await reg('guard-site@example.com', { Origin: 'https://issuing.fredapay.com' })).status, 201);
+    assert.equal((await reg('guard-fake@example.com', { Origin: 'https://fredapay.com.evil.test' })).status, 403);
+    const s = await api('GET', '/admin/signup-guard', { token: owner.token });
+    assert.equal(s.data.settings.require_site, true); assert.ok(s.data.settings.blocked_ips.includes(ip));
+  } finally { await guard.save({ paused: false, require_site: false, blocked_ips: [], blocked_domains: [] }); }
+});

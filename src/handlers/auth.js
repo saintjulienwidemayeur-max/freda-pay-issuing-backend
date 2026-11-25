@@ -106,6 +106,7 @@ function readOwner(o, signupCountry) {
 
 async function register(ctx) {
   const { business_name, entity_type, account_type, email, phone, password, onboarding, owner } = ctx.body || {};
+  await require('../services/signupGuard').check(ctx.req, ctx.body && ctx.body.email); // the team's brakes (pause, site only, blocked addresses and domains)
 
   if (!business_name || !email || !password) {
     throw httpError(400, 'MISSING_FIELDS', 'business_name, email et password sont requis.');
