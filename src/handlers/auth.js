@@ -121,6 +121,14 @@ async function register(ctx) {
   }
   if (!EMAIL_RE.test(email.trim())) throw httpError(400, 'INVALID_EMAIL', 'Entrez une adresse email valide.');
 
+  // A throw-away mailbox is how automated signups read the verification code: refused with a clear message.
+  if (require('../utils/emailRisk').isDisposable(email)) throw httpError(400, 'DISPOSABLE_EMAIL', 'Cette adresse email jetable n\'est pas acceptée. Utilisez une adresse email durable (personnelle ou professionnelle).');
+  // A burst of signups from one address: the team is told (the account itself is still created, they are flagged in the admin panel).
+  try {
+    const ip = ctx.req ? rateLimit.clientIp(ctx.req) : null;
+    if (ip && rateLimit.hit(`signup-burst:${ip}`, 5, 10 * 60 * 1000).limited) require('../services/adminAlerts').alert({ key: `signup-burst-${ip}`, throttleMs: 60 * 60 * 1000, subject: 'Inscriptions en rafale depuis une même adresse', eyebrow: 'Sécurité', heading: 'Plusieurs inscriptions en quelques minutes', tone: 'warning', paragraphs: [`Plus de 5 inscriptions en 10 minutes depuis l'adresse ${ip}. Dernier email : ${String(email).slice(0, 80)}.`, 'Voyez Admin › Marchands › Suspects pour suspendre les comptes automatiques.'] }).catch(() => {});
+  } catch (e) { /* the alert is best effort */ }
+
   const country = String((onboarding && onboarding.country) || '').trim().toUpperCase();
   if (country && !/^[A-Z]{2}$/.test(country)) throw httpError(400, 'INVALID_COUNTRY', 'Le pays doit être un code à 2 lettres (ex. US, FR, NG).');
   if (country && config.restrictedCountries.includes(country)) {

@@ -31,7 +31,7 @@ async function list(ctx) {
         kyc_status: m.kyc_status, kyb_status: m.kyb_status, live_enabled: !!m.gateway_live_enabled,
         gateway_live_enabled: !!m.gateway_live_enabled, issuing_live_enabled: !!m.issuing_live_enabled,
         gateway_plan: planKeyFor(m, 'gateway', 'live'), issuing_plan: planKeyFor(m, 'issuing', 'live'), created_at: m.created_at,
-        deleted_at: m.deleted_at || null, balances: balances[i], sandbox_balances: sandboxBalances[i],
+        deleted_at: m.deleted_at || null, balances: balances[i], sandbox_balances: sandboxBalances[i], flags: require('../utils/emailRisk').flagsFor(m),
       })),
     },
   };
@@ -348,6 +348,34 @@ async function remove(ctx) {
   return { status: 200, body: { deleted: true } };
 }
 
+/**
+ * POST /admin/merchants/suspend-suspects { ids: [...], notify?: false } : suspends the chosen accounts, silently by default (no email to a
+ * throw-away address). Only accounts that look automatic AND have nothing to lose are touched: never one with Live access, a verified identity,
+ * a balance or a card. The rest is reported as skipped. The rows are kept (nothing is deleted).
+ */
+async function suspendSuspects(ctx) {
+  const emailRisk = require('../utils/emailRisk');
+  const ids = Array.isArray(ctx.body && ctx.body.ids) ? [...new Set(ctx.body.ids.map(String))].slice(0, 500) : [];
+  if (!ids.length) throw httpError(400, 'MISSING_FIELDS', 'Cochez au moins un compte.');
+  const out = { suspended: 0, skipped: [] };
+  for (const id of ids) {
+    const m = await supabase.selectOne('merchants', { id });
+    if (!m || m.deleted_at) { out.skipped.push({ id, why: 'introuvable ou déjà suspendu' }); continue; }
+    const flags = emailRisk.flagsFor(m);
+    if (!flags.some((f) => f !== 'no_questionnaire')) { out.skipped.push({ id, why: "aucun signe de compte automatique (le questionnaire manquant seul ne suffit pas)" }); continue; }
+    if (m.gateway_live_enabled || m.issuing_live_enabled || m.kyc_status === 'verified' || m.kyb_status === 'verified') { out.skipped.push({ id, why: 'accès Live ou identité vérifiée' }); continue; }
+    const [bal, sandboxBal, cards] = await Promise.all([balancesFor(id, 'live'), balancesFor(id, 'sandbox').catch(() => ({})), supabase.select('cards', { merchant_id: id, mode: 'live', deleted_at: supabase.isNull() }, { limit: 1 }).catch(() => [])]);
+    if (Number(bal && bal.gateway) > 0 || Number(bal && bal.gateway_usd) > 0 || Number(bal && bal.master_wallet) > 0 || cards.length) { out.skipped.push({ id, why: 'solde ou carte Live' }); continue; }
+    await supabase.update('merchants', { id }, { deleted_at: new Date().toISOString() });
+    require('../middleware/session').forgetMerchant(id);
+    if (ctx.body && ctx.body.notify === true) await notify.accountSuspended(m).catch(() => {});
+    out.suspended += 1;
+  }
+  require('../middleware/apiKey').clearAuthCache();
+  console.log(`Suspects suspended by ${(ctx.admin && ctx.admin.email) || ctx.adminId}: ${out.suspended}`); // eslint-disable-line no-console
+  return { status: 200, body: out };
+}
+
 async function restore(ctx) {
   const merchant = await supabase.selectOne('merchants', { id: ctx.params.id });
   if (!merchant) throw httpError(404, 'NOT_FOUND', 'Marchand introuvable.');
@@ -380,4 +408,4 @@ async function diagnostic(ctx) {
   return { status: 200, body: result };
 }
 
-module.exports = { diagnostic, list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit, getGuarantee, setGuarantee, issuers };
+module.exports = { suspendSuspects, diagnostic, list, get, overview, credit, setPricing, clearPricing, setLive, setFreePlan, remove, restore, debit, getGuarantee, setGuarantee, issuers };
