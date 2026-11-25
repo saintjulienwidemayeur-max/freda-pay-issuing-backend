@@ -10714,3 +10714,21 @@ test('signup abuse: disposable mailboxes are refused; the admin list flags autom
   if (admin) assert.equal((await api('POST', '/admin/merchants/suspend-suspects', { token: admin.token, body: { ids: [bot2] } })).status, 403);
   assert.equal((await api('POST', '/admin/merchants/suspend-suspects', { body: { ids: [bot2] } })).status, 401);
 });
+
+test('signup source: each signup keeps its address, tool and website; the admin sees the list and the addresses that signed up most', async () => {
+  const owner = await adminLogin('owner');
+  const post = (email, headers) => api('POST', '/auth/register', { headers: { ...freshIp(), ...headers }, body: { business_name: 'Source Co', email, password: 'password123' } });
+  const a = await post('src-curl@example.com', { 'User-Agent': 'curl/8.4.0' });
+  const b = await post('src-site@example.com', { 'User-Agent': 'Mozilla/5.0 (Macintosh)', Origin: 'https://issuing.fredapay.com' });
+  assert.equal(a.status, 201); assert.equal(b.status, 201);
+  await new Promise((r) => setTimeout(r, 200));
+  const r = await api('GET', '/admin/signups', { token: owner.token });
+  assert.equal(r.status, 200);
+  const sa = r.data.recent.find((s) => s.merchant_id === a.data.merchant_id);
+  const sb = r.data.recent.find((s) => s.merchant_id === b.data.merchant_id);
+  assert.equal(sa.ua, 'curl/8.4.0'); assert.equal(sa.from_site, false); assert.ok(sa.ip);
+  assert.equal(sb.from_site, true); assert.equal(sb.origin, 'issuing.fredapay.com');
+  assert.equal(sa.email, 'src-curl@example.com');
+  assert.ok(r.data.by_ip.length >= 1 && r.data.by_ip[0].count >= 1);
+  assert.equal((await api('GET', '/admin/signups')).status, 401);
+});
