@@ -548,6 +548,12 @@ router.put('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ct
 router.del('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.clearPricing(ctx); });
 router.put('/admin/merchants/:id/live', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.setLive(ctx); });
 router.put('/admin/merchants/:id/free-plan', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.setFreePlan(ctx); });
+router.get('/admin/signup-guard', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: { settings: await require('./services/signupGuard').settings() } }; });
+router.put('/admin/signup-guard', adminSession.requireAdminSession, async (ctx) => {
+  adminSession.requireComplianceRole(ctx);
+  if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut changer la protection des inscriptions.'), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' });
+  return { status: 200, body: { settings: await require('./services/signupGuard').save(ctx.body || {}, ctx.admin && ctx.admin.email) } };
+});
 router.get('/admin/signups', adminSession.requireAdminSession, async (ctx) => { adminSession.requireComplianceRole(ctx); return { status: 200, body: await require('./services/signupLog').summary(Math.min(500, parseInt((ctx.query || {}).limit || '200', 10) || 200)) }; });
 router.post('/admin/merchants/suspend-suspects', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut suspendre en masse.'), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' }); return adminMerchantHandlers.suspendSuspects(ctx); });
 router.del('/admin/merchants/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.remove(ctx); });
