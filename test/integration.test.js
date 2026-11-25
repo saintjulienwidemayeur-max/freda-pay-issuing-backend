@@ -303,6 +303,21 @@ test('invalid API key is rejected', async () => {
   assert.equal(r.data.error.code, 'INVALID_API_KEY');
 });
 
+
+test('MonCash payment: a partner that answers badly is retried once; if it stays down the merchant gets a readable 424, never a bare 502', async () => {
+  const ctl = (times) => fetch('http://localhost:4501/__control/fail-create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ times }) });
+  const pay = (ref) => api('POST', '/v1/payments', { token: testApiKeySecret, body: { amount: 500, currency: 'HTG', method: 'moncash', reference: ref } });
+  await ctl(1); // one bad answer: the second try goes through
+  const ok = await pay('RETRY-' + Date.now());
+  assert.equal(ok.status, 201, JSON.stringify(ok.data));
+  await ctl(2); // down for both tries
+  const down = await pay('DOWN-' + Date.now());
+  assert.equal(down.status, 424, JSON.stringify(down.data));
+  assert.equal(down.data.error.code, 'PROVIDER_ERROR');
+  assert.ok(/indisponible/i.test(down.data.error.message));
+  await ctl(0);
+});
+
 let paymentId, paymentReference;
 
 test('create a MonCash payment', async () => {
@@ -5301,10 +5316,10 @@ test('card in LIVE without the partner approval: a clear message, and the partne
   assert.equal(r.status, 403);
   assert.equal(r.data.error.code, 'CARD_NOT_AVAILABLE');
   assert.ok(!/tranzak/i.test(JSON.stringify(r.data)));
-  // a partner outage is a clean 502 without provider details either
+  // a partner outage is a clean 424 (a 502 would be replaced by the host's empty page) without provider details either
   await tzControl('set', { failNextCreate: { status: 500, body: { error: 'boom tranzak' } } });
   const down = await m.pay(10, 'CARD-DOWN');
-  assert.equal(down.status, 502);
+  assert.equal(down.status, 424);
   assert.ok(!/tranzak/i.test(JSON.stringify(down.data)));
 });
 
@@ -5313,7 +5328,7 @@ test('card: when the answer to a creation is lost, the retry looks the reference
   await tzControl('reset', {});
   await tzControl('set', { loseNextCreateResponse: true });
   const lost = await m.pay(15, 'CARD-LOST');
-  assert.equal(lost.status, 502);
+  assert.equal(lost.status, 424);
   const retry = await m.pay(15, 'CARD-LOST');
   assert.equal(retry.status, 201);
   const all = await tzControl('all');

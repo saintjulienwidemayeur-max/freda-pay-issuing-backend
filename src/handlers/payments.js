@@ -46,7 +46,8 @@ async function create(ctx) {
     });
     return { status: 201, body: toPublic(payment) };
   } catch (err) {
-    throw httpError(err.httpStatus || (err.code === 'PROVIDER_ERROR' ? 502 : 400), err.code || 'PAYMENT_ERROR', err.message);
+    // 424, not 502: the hosting proxy replaces a 502 by its own empty page, and the merchant's plugin (WooCommerce...) then only shows "HTTP 502" instead of the reason.
+    throw httpError(err.httpStatus === 502 ? 424 : (err.httpStatus || (err.code === 'PROVIDER_ERROR' ? 424 : 400)), err.code || 'PAYMENT_ERROR', err.message);
   }
 }
 
