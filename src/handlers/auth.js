@@ -175,6 +175,7 @@ async function register(ctx) {
     active_mode: 'sandbox',
     onboarding: sanitizedOnboarding,
   });
+  require('../services/signupLog').record(ctx.req, merchant.id); // where it came from (address, tool, site): best effort, never awaited
   if (identity) {
     // Kept for our records (never returned by the API); a failure here must not block the signup, the details are asked again when needed.
     await supabase.insert('merchant_identity', Object.assign({ merchant_id: id, phone: phone || null, source: 'signup' }, identity)).catch((e) => console.error(`Owner identity not saved for ${id}: ${e.message}`)); // eslint-disable-line no-console
