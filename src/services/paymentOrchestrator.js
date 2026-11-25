@@ -41,15 +41,28 @@ async function createPayment({ merchantId, id, ownReference, plopplopReference, 
     throw err;
   }
 
-  const res = await plopplop.createPayment({
-    refferenceId: plopplopReference,
-    montant: amount,
-    paymentMethod: method,
-    phoneNumber,
-  });
+  // One quick second try when the partner did not answer properly (timeout, network error, 5xx, an answer that is not JSON): the reference is
+  // unique, so the partner cannot create two payments from it. A real refusal (JSON with status:false) is never retried.
+  const unavailable = 'Le service de paiement est momentanément indisponible. Réessayez dans un instant.';
+  const ask = async () => {
+    try {
+      return await plopplop.createPayment({ refferenceId: plopplopReference, montant: amount, paymentMethod: method, phoneNumber });
+    } catch (e) {
+      return { httpStatus: 0, data: null, networkError: e && e.message };
+    }
+  };
+  let res = await ask();
+  if (!res.data || (res.httpStatus >= 500 && !(res.data && res.data.status))) {
+    // eslint-disable-next-line no-console
+    console.warn(`Payment ${plopplopReference} (${method}): partner did not answer properly (HTTP ${res.httpStatus}${res.networkError ? `, ${res.networkError}` : ''}); trying once more.`);
+    await new Promise((r) => setTimeout(r, 800));
+    res = await ask();
+  }
 
   if (!res.data || !res.data.status) {
-    const err = new Error((res.data && res.data.message) || 'Le service de paiement est momentanément indisponible. Réessayez dans un instant.');
+    // eslint-disable-next-line no-console
+    console.error(`Payment ${plopplopReference} (${method}) refused by the partner: HTTP ${res.httpStatus}${res.networkError ? `, ${res.networkError}` : ''} ${JSON.stringify(res.data || null).slice(0, 300)}`);
+    const err = new Error((res.data && res.data.message) || unavailable);
     err.code = 'PROVIDER_ERROR';
     throw err;
   }

@@ -22,6 +22,7 @@ const marchandTokens = new Map(); // token -> expires
 // Control knobs the test suite can flip to simulate behaviors.
 const behavior = {
   failNextWithdrawal: false,
+  failCreate: 0, // the next N payment creations answer 502 with an HTML page
   moncashFeePct: 0.025,
 };
 
@@ -58,6 +59,11 @@ const server = http.createServer(async (req, res) => {
     withdrawalTokens.clear();
     marchandTokens.clear();
     behavior.failNextWithdrawal = false;
+    behavior.failCreate = 0;
+    return send(res, 200, { ok: true });
+  }
+  if (url.pathname === '/__control/fail-create') {
+    behavior.failCreate = Number(body.times) || 1;
     return send(res, 200, { ok: true });
   }
   if (url.pathname === '/__control/fail-next-withdrawal') {
@@ -73,6 +79,7 @@ const server = http.createServer(async (req, res) => {
   // ---- api/paiement-marchand ----
   if (url.pathname === '/api/paiement-marchand' && req.method === 'POST') {
     const { client_id, refference_id, montant, payment_method, phone_number } = body;
+    if (behavior.failCreate > 0) { behavior.failCreate--; res.writeHead(502, { 'Content-Type': 'text/html' }); return res.end('<html>Bad Gateway</html>'); }
     if (!client_id || !refference_id || montant == null || !payment_method) {
       return send(res, 400, { status: false, message: 'Paramètre manquant.' });
     }
