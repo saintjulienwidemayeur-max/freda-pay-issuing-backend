@@ -10733,8 +10733,9 @@ test('signup abuse: disposable mailboxes are refused; the admin list flags autom
 test('signup source: each signup keeps its address, tool and website; the admin sees the list and the addresses that signed up most', async () => {
   const owner = await adminLogin('owner');
   const post = (email, headers) => api('POST', '/auth/register', { headers: { ...freshIp(), ...headers }, body: { business_name: 'Source Co', email, password: 'password123' } });
-  const a = await post('src-curl@example.com', { 'User-Agent': 'curl/8.4.0' });
-  const b = await post('src-site@example.com', { 'User-Agent': 'Mozilla/5.0 (Macintosh)', Origin: 'https://issuing.fredapay.com' });
+  const same = { 'X-Forwarded-For': '198.51.100.201' }; // both from one address, so it ranks in the top list and shows both accounts
+  const a = await post('src-curl@example.com', { ...same, 'User-Agent': 'curl/8.4.0' });
+  const b = await post('src-site@example.com', { ...same, 'User-Agent': 'Mozilla/5.0 (Macintosh)', Origin: 'https://issuing.fredapay.com' });
   assert.equal(a.status, 201); assert.equal(b.status, 201);
   await new Promise((r) => setTimeout(r, 200));
   const r = await api('GET', '/admin/signups', { token: owner.token });
@@ -10745,6 +10746,8 @@ test('signup source: each signup keeps its address, tool and website; the admin 
   assert.equal(sb.from_site, true); assert.equal(sb.origin, 'issuing.fredapay.com');
   assert.equal(sa.email, 'src-curl@example.com');
   assert.ok(r.data.by_ip.length >= 1 && r.data.by_ip[0].count >= 1);
+  const grp = r.data.by_ip.find((g) => g.merchant_ids.includes(a.data.merchant_id));
+  assert.ok(grp && grp.ip === '198.51.100.201' && grp.accounts.length >= 2 && grp.accounts.some((x) => x.email === 'src-curl@example.com' && x.suspended === false), 'each address lists the accounts created from it');
   assert.equal((await api('GET', '/admin/signups')).status, 401);
 });
 
@@ -10781,4 +10784,24 @@ test('signup guard: the owner can pause signups, block addresses (exact or range
     const s = await api('GET', '/admin/signup-guard', { token: owner.token });
     assert.equal(s.data.settings.require_site, true); assert.ok(s.data.settings.blocked_ips.includes(ip));
   } finally { await guard.save({ paused: false, require_site: false, blocked_ips: [], blocked_domains: [] }); }
+});
+
+test('signup guard: refused attempts are listed with their address and reason, one line per address with a counter', async () => {
+  const owner = await adminLogin('owner');
+  const guard = require('../src/services/signupGuard');
+  const ip = '203.0.113.55';
+  try {
+    await guard.save({ paused: true });
+    for (let i = 0; i < 3; i++) {
+      const r = await api('POST', '/auth/register', { headers: { 'X-Forwarded-For': ip, 'User-Agent': 'python-requests/2.31' }, body: { business_name: 'Bot', email: `bot${i}@example.com`, password: 'password123' } });
+      assert.equal(r.status, 403);
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    const s = await api('GET', '/admin/signups', { token: owner.token });
+    const line = s.data.recent.find((x) => x.ip === ip && x.blocked === 'paused');
+    assert.ok(line, JSON.stringify(s.data.recent.slice(0, 3)));
+    assert.equal(line.n, 3); assert.equal(line.business_name, null);
+    const g = s.data.by_ip.find((x) => x.ip === ip);
+    assert.equal(g.count, 3); assert.equal(g.blocked, 3);
+  } finally { await guard.save({ paused: false }); }
 });
