@@ -10679,3 +10679,38 @@ test('merchant dashboard: the merchant sees what is missing for its own holders 
     assert.equal((await api('POST', '/dashboard/cards/holders/mpc_mh2/verification', { body: {} })).status, 401);
   } finally { Object.assign(config.monerails, saved); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
 });
+
+test('signup abuse: disposable mailboxes are refused; the admin list flags automatic-looking accounts; the owner suspends them in bulk without touching anything real', async () => {
+  const owner = await adminLogin('owner');
+  // refused: the exact domain, a subdomain, any case
+  for (const e of ['bot1@euploading.com', 'bot2@mail.euploading.com', 'Bot3@YOPMAIL.com']) {
+    const r = await api('POST', '/auth/register', { headers: freshIp(), body: { business_name: 'Bot Co', email: e, password: 'password123' } });
+    assert.equal(r.status, 400, e); assert.equal(r.data.error.code, 'DISPOSABLE_EMAIL');
+  }
+  // an ordinary address still works
+  const ok = await registerAndVerify({ business_name: 'Vraie Boutique', email: 'vraie-boutique@example.com', password: 'password123', onboarding: { country: 'HT', website: 'https://vraie.example.com' } });
+  // automatic-looking accounts (created before the block, or by API): flagged
+  const mk = async (email, name) => (await registerAndVerify({ business_name: name, email, password: 'password123' })).data.merchant.id;
+  const bot = await mk('fredapay2265117615@example.com', 'Jean Test');
+  const bot2 = await mk('plain-user@example.com', 'Plain User');
+  const live = await mk('flagged-live@example.com', 'Paul Test');
+  mockTables.merchants.find((m) => m.id === live).gateway_live_enabled = true;
+  const list = await api('GET', '/admin/merchants', { token: owner.token });
+  const f = (id) => (list.data.merchants.find((m) => m.id === id) || {}).flags;
+  assert.ok(f(bot).includes('number_mailbox') && f(bot).includes('test_name') && f(bot).includes('no_questionnaire'));
+  assert.ok(!f(ok.data.merchant.id).includes('no_questionnaire'), 'a signup with its questionnaire is not flagged for that');
+  // bulk suspension: only what looks automatic and has nothing real
+  const r = await api('POST', '/admin/merchants/suspend-suspects', { token: owner.token, body: { ids: [bot, bot2, live, ok.data.merchant.id, 'mch_nope'] } });
+  assert.equal(r.status, 200); assert.equal(r.data.suspended, 1);
+  const why = Object.fromEntries(r.data.skipped.map((s) => [s.id, s.why]));
+  assert.match(why[live], /Live/); assert.ok(why[ok.data.merchant.id] || why[bot2]);
+  assert.ok(mockTables.merchants.find((m) => m.id === bot).deleted_at, 'suspended');
+  assert.ok(!mockTables.merchants.find((m) => m.id === live).deleted_at, 'Live access is never touched');
+  // the suspended account cannot log in any more, and no email went to it
+  const noMail = sentEmails.filter((e) => e.to === 'fredapay2265117615@example.com' && /suspendu/i.test(e.subject || ''));
+  assert.equal(noMail.length, 0, 'silent by default');
+  // owner only
+  const admin = await adminLogin('admin').catch(() => null);
+  if (admin) assert.equal((await api('POST', '/admin/merchants/suspend-suspects', { token: admin.token, body: { ids: [bot2] } })).status, 403);
+  assert.equal((await api('POST', '/admin/merchants/suspend-suspects', { body: { ids: [bot2] } })).status, 401);
+});

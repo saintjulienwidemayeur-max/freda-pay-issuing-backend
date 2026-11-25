@@ -87,7 +87,7 @@ router.get('/openapi.yaml', async (ctx) => {
 });
 
 // ---- Dashboard auth (used by signup.html) ----
-router.post('/auth/register', rateLimit.middleware('register', 60, 60 * 60 * 1000), authHandlers.register);
+router.post('/auth/register', rateLimit.middleware('register', 15, 60 * 60 * 1000), authHandlers.register);
 router.post('/auth/login', rateLimit.middleware('login', 20, 15 * 60 * 1000), authHandlers.login);
 router.post('/auth/forgot-password', rateLimit.middleware('forgot-ip', 10, 15 * 60 * 1000), passwordResetHandlers.forgot);
 router.get('/auth/reset-info', rateLimit.middleware('reset-info', 30, 15 * 60 * 1000), passwordResetHandlers.info);
@@ -548,6 +548,7 @@ router.put('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ct
 router.del('/admin/merchants/:id/pricing', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.clearPricing(ctx); });
 router.put('/admin/merchants/:id/live', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.setLive(ctx); });
 router.put('/admin/merchants/:id/free-plan', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.setFreePlan(ctx); });
+router.post('/admin/merchants/suspend-suspects', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); if (ctx.adminRole !== 'owner') throw Object.assign(new Error('Seul le propriétaire peut suspendre en masse.'), { httpStatus: 403, code: 'INSUFFICIENT_ROLE' }); return adminMerchantHandlers.suspendSuspects(ctx); });
 router.del('/admin/merchants/:id', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.remove(ctx); });
 router.post('/admin/merchants/:id/restore', adminSession.requireAdminSession, (ctx) => { adminSession.requireComplianceRole(ctx); return adminMerchantHandlers.restore(ctx); });
 
