@@ -24,10 +24,13 @@ async function read() {
 }
 
 /** Best effort: a failure here never blocks a signup. */
-async function record(req, merchantId) {
+async function record(req, merchantId, blockedWhy) {
   try {
     const list = await read();
-    list.unshift(Object.assign({ merchant_id: merchantId, at: new Date().toISOString() }, describe(req)));
+    const entry = Object.assign({ merchant_id: merchantId || null, at: new Date().toISOString() }, describe(req), blockedWhy ? { blocked: String(blockedWhy) } : {});
+    // A flood of refusals from one address is one line with a counter, so it never pushes the real signups out of the list.
+    if (blockedWhy && list[0] && list[0].blocked === entry.blocked && list[0].ip === entry.ip) { list[0].n = (list[0].n || 1) + 1; list[0].at = entry.at; }
+    else list.unshift(entry);
     list.length = Math.min(list.length, MAX);
     const row = { value: JSON.stringify(list), updated_at: new Date().toISOString() };
     if (await supabase.selectOne('platform_settings', { key: KEY })) await supabase.update('platform_settings', { key: KEY }, row);
@@ -37,7 +40,7 @@ async function record(req, merchantId) {
 
 async function summary(limit) {
   const list = await read();
-  const ids = [...new Set(list.map((s) => s.merchant_id))];
+  const ids = [...new Set(list.map((s) => s.merchant_id).filter(Boolean))];
   const merchants = ids.length ? await supabase.select('merchants', { id: supabase.inList(ids) }, { limit: 2000 }).catch(() => []) : [];
   const by = new Map(merchants.map((m) => [m.id, m]));
   const emailRisk = require('../utils/emailRisk');
@@ -45,12 +48,12 @@ async function summary(limit) {
   const ips = new Map();
   for (const s of list) {
     const k = s.ip || '?';
-    const g = ips.get(k) || { ip: k, count: 0, first: s.at, last: s.at, from_site: 0, user_agents: new Set(), merchant_ids: [] };
-    g.count += 1; if (s.at < g.first) g.first = s.at; if (s.at > g.last) g.last = s.at; if (s.from_site) g.from_site += 1;
-    if (s.ua) g.user_agents.add(s.ua.slice(0, 80)); if (g.merchant_ids.length < 20) g.merchant_ids.push(s.merchant_id);
+    const g = ips.get(k) || { ip: k, count: 0, blocked: 0, accounts: [], first: s.at, last: s.at, from_site: 0, user_agents: new Set(), merchant_ids: [] };
+    g.count += (s.n || 1); if (s.blocked) g.blocked += (s.n || 1); if (s.at < g.first) g.first = s.at; if (s.at > g.last) g.last = s.at; if (s.from_site) g.from_site += 1;
+    if (s.ua) g.user_agents.add(s.ua.slice(0, 80)); if (s.merchant_id && g.merchant_ids.length < 50 && !g.merchant_ids.includes(s.merchant_id)) g.merchant_ids.push(s.merchant_id);
     ips.set(k, g);
   }
-  const by_ip = [...ips.values()].map((g) => ({ ip: g.ip, count: g.count, first: g.first, last: g.last, from_site: g.from_site, user_agents: [...g.user_agents].slice(0, 3), merchant_ids: g.merchant_ids })).sort((a, b) => b.count - a.count).slice(0, 50);
+  const by_ip = [...ips.values()].map((g) => ({ ip: g.ip, count: g.count, blocked: g.blocked, first: g.first, last: g.last, from_site: g.from_site, user_agents: [...g.user_agents].slice(0, 3), merchant_ids: g.merchant_ids, accounts: g.merchant_ids.map((id) => { const m = by.get(id); return m ? { id, business_name: m.business_name || null, email: m.email || null, created_at: m.created_at || null, flags: emailRisk.flagsFor(m), suspended: !!m.deleted_at } : { id, business_name: null, email: null, flags: [], suspended: false }; }) })).sort((a, b) => b.count - a.count).slice(0, 50);
   return { total: list.length, since: list.length ? list[list.length - 1].at : null, recent, by_ip };
 }
 

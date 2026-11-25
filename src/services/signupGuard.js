@@ -69,17 +69,18 @@ function siteOk(req) {
 /** Throws a generic refusal when a brake applies. */
 async function check(req, email) {
   const s = await settings();
-  const refuse = (code, why) => {
+  const refuse = async (code, why) => {
+    await require('./signupLog').record(req, null, why); // the team sees who is knocking even while everything is blocked (best effort, awaited so counters stay exact)
     const e = new Error("L'inscription n'est pas disponible pour le moment. Réessayez plus tard ou écrivez-nous à issuing@fredapay.com.");
     e.httpStatus = 403; e.code = code; e.why = why;
     return e;
   };
-  if (s.paused) throw refuse('SIGNUPS_PAUSED', 'paused');
+  if (s.paused) throw await refuse('SIGNUPS_PAUSED', 'paused');
   const ip = rateLimit.clientIp(req);
-  if (ipBlocked(ip, s.blocked_ips)) throw refuse('SIGNUP_BLOCKED', 'ip');
-  if (s.require_site && !siteOk(req)) throw refuse('SIGNUP_BLOCKED', 'not-from-site');
+  if (ipBlocked(ip, s.blocked_ips)) throw await refuse('SIGNUP_BLOCKED', 'ip');
+  if (s.require_site && !siteOk(req)) throw await refuse('SIGNUP_BLOCKED', 'not-from-site');
   const d = require('../utils/emailRisk').domainOf(email);
-  if (d && (s.blocked_domains || []).some((b) => d === b || d.endsWith(`.${b}`))) throw refuse('SIGNUP_BLOCKED', 'domain');
+  if (d && (s.blocked_domains || []).some((b) => d === b || d.endsWith(`.${b}`))) throw await refuse('SIGNUP_BLOCKED', 'domain');
 }
 
 module.exports = { settings, save, check, ipBlocked, cleanIps };
