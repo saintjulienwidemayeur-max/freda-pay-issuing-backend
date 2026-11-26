@@ -409,6 +409,44 @@ paths:
                   holder: { $ref: "#/components/schemas/CardHolder" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /cards/holders/{id}/verification:
+    get:
+      tags: [Cartes]
+      summary: Ce qui manque sur un titulaire
+      description: "Pour l'afficher dans votre propre tableau de bord ou dans l'application de votre client final : le statut de la vérification d'identité, le motif d'un refus éventuel et la liste `issues` de ce qu'il faut compléter (numéro de pièce, adresse, photos...). Les champs `auto: true` se corrigent sans action de l'utilisateur."
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: "Le titulaire, son statut, le type de pièce et les points à compléter (`issues`)." }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Cartes]
+      summary: Envoyer les informations ou documents manquants d'un titulaire
+      description: "Envoie directement à notre banque partenaire les informations complétées et les nouvelles photos du titulaire, puis relance sa vérification d'identité. Aucun passage par notre équipe. Le résultat final arrive par les webhooks `holder.verified` / `holder.rejected`. Cinq envois par titulaire et par 24 heures. Photos : JPEG ou PNG en data URI Base64, 4 Mo au plus chacune, sans reflet ni coin coupé, jamais une capture d'écran ; un passeport n'a besoin que du recto."
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id_number: { type: string, description: "Numéro de la pièce, 4 à 30 caractères (passeport : 6 à 9 lettres ou chiffres, sans espace)." }
+                birth_date: { type: string, example: "1990-01-31" }
+                document_type: { type: string, enum: [national_id, passport, driver_license, voters_card] }
+                address:
+                  type: object
+                  properties: { street: { type: string }, city: { type: string }, state: { type: string }, postal_code: { type: string } }
+                documents:
+                  type: object
+                  properties:
+                    front: { type: string, description: "data:image/jpeg;base64,..." }
+                    back: { type: string, description: "Verso (pas pour un passeport)." }
+      responses:
+        "200": { description: "Envoyé. `status` (accepted, pending, rejected...), `documents_sent`, `reason` si refus, `warning` éventuel." }
+        "400": { description: "Information ou photo invalide (code INVALID_ID_NUMBER, INVALID_DOCUMENT, PHOTO_REQUIRED...)." }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /cards:
     post:
       tags: [Cartes]
