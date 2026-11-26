@@ -12,8 +12,9 @@ const notify = require('./notify');
  *
  *   - changing to a paid plan charges the first month at once and sets the next date one calendar month later;
  *   - on that date the price is taken again from the Master Wallet (idempotent: the same period is never charged twice);
- *   - if it cannot be paid the merchant is warned once, the charge is retried every hour for `graceDays` days, and after
- *     that the account goes back to the entry plan (Gateway: Standard, Issuing: Startup);
+ *   - the price is always taken in full: if the wallet holds less, all of it is taken and the balance goes negative by the rest (the debt is
+ *     cleared by the next deposits). Only a wallet that is ALREADY negative cannot pay: the merchant is warned once, the charge is retried every
+ *     hour for `graceDays` days, and after that the account goes back to the entry plan (Gateway: Standard, Issuing: Startup);
  *   - complimentary plans (granted by the team), free plans and suspended accounts are never charged.
  */
 const PRODUCTS = {
@@ -39,6 +40,18 @@ function monthlyPriceUsd(product, planKey) {
   return Math.round(PRODUCTS[product].priceUsd(cfg) * 100) / 100;
 }
 
+const blockedNotified = new Set();
+
+/**
+ * Is this merchant's live API blocked for a product because its subscription stayed unpaid longer than the grace period?
+ * (live_<product>_unpaid_since is set by the renewal pass when a renewal could not be paid, and cleared when it is.)
+ */
+function isBlocked(merchant, product, now = Date.now()) {
+  const P = PRODUCTS[product];
+  const since = merchant && merchant[P.unpaid];
+  return !!since && now - new Date(since).getTime() >= config.billing.graceDays * 86400000;
+}
+
 async function renewOne(merchant, product, now) {
   const P = PRODUCTS[product];
   const planKey = merchant[P.plan] || P.entry;
@@ -58,10 +71,12 @@ async function renewOne(merchant, product, now) {
 
   const reference = `plan-renewal:${product}:${planKey}:${due.toISOString().slice(0, 10)}`;
   const alreadyCharged = await supabase.selectOne('ledger_entries', { merchant_id: merchant.id, reference });
+  let taken = null;
   try {
-    if (!alreadyCharged) await masterWallet.debitWithFloor(merchant.id, price, reference, merchant.id, 'live');
+    // The subscription is taken in full whatever the balance (see masterWallet.debitSubscription): what is missing becomes a negative balance.
+    if (!alreadyCharged) taken = await masterWallet.debitSubscription(merchant.id, price, reference, merchant.id, 'live');
   } catch (err) {
-    if (err.code !== 'BELOW_MINIMUM_BALANCE' && err.code !== 'INSUFFICIENT_BALANCE') throw err;
+    if (err.code !== 'WALLET_IN_DEBT' && err.code !== 'BELOW_MINIMUM_BALANCE' && err.code !== 'INSUFFICIENT_BALANCE') throw err;
     const since = merchant[P.unpaid] ? new Date(merchant[P.unpaid]) : null;
     if (!since) {
       await supabase.update('merchants', { id: merchant.id }, { [P.unpaid]: now.toISOString() });
@@ -69,9 +84,11 @@ async function renewOne(merchant, product, now) {
       return 'unpaid-warned';
     }
     if (now - since >= config.billing.graceDays * 86400000) {
-      await supabase.update('merchants', { id: merchant.id }, { [P.plan]: P.entry, [P.renews]: null, [P.unpaid]: null });
-      await notify.planDowngraded(merchant, { product, fromLabel: cfg.label, toLabel: P.plans()[P.entry].label });
-      return 'downgraded';
+      // Grace period over: the plan is NOT changed, the merchant's API (live keys) is refused until the subscription is paid (see isBlocked,
+      // used by the API-key middleware). The merchant is told once per unpaid period (in memory: a restart can repeat it once).
+      const mark = `${merchant.id}:${product}:${since.toISOString()}`;
+      if (!blockedNotified.has(mark)) { blockedNotified.add(mark); await notify.planBlocked(merchant, { product, planLabel: cfg.label, amountUsd: price }); }
+      return 'blocked';
     }
     return 'unpaid-waiting';
   }
@@ -81,7 +98,8 @@ async function renewOne(merchant, product, now) {
   const [claimed] = await supabase.update('merchants', { id: merchant.id, [P.renews]: merchant[P.renews] }, { [P.renews]: next.toISOString(), [P.unpaid]: null });
   if (claimed && !alreadyCharged) {
     await revenue.log(merchant.id, 'plan_subscription', price, 'USD', reference, 'live', 0);
-    await notify.planRenewed(merchant, { product, planLabel: cfg.label, amountUsd: price, nextDate: next });
+    if (taken && taken.debt > 0) await notify.planRenewedOnCredit(merchant, { product, planLabel: cfg.label, amountUsd: price, paidUsd: taken.paid, debtUsd: taken.debt, nextDate: next });
+    else await notify.planRenewed(merchant, { product, planLabel: cfg.label, amountUsd: price, nextDate: next });
   }
   return 'renewed';
 }
@@ -89,14 +107,14 @@ async function renewOne(merchant, product, now) {
 /** Looks at every live merchant once. Safe to run often and on several instances. */
 async function run(now = new Date()) {
   const merchants = await supabase.select('merchants', { deleted_at: supabase.isNull() }, { limit: 5000 });
-  const done = { renewed: 0, unpaid: 0, downgraded: 0 };
+  const done = { renewed: 0, unpaid: 0, blocked: 0 };
   for (const m of merchants) {
     for (const product of Object.keys(PRODUCTS)) {
       try {
         const r = await renewOne(m, product, now);
         if (r === 'renewed') done.renewed += 1;
         else if (r === 'unpaid-warned') done.unpaid += 1;
-        else if (r === 'downgraded') done.downgraded += 1;
+        else if (r === 'blocked') done.blocked += 1;
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error(`Plan renewal failed for ${m.id} (${product}): ${err.message}`);
@@ -106,10 +124,29 @@ async function run(now = new Date()) {
   return done;
 }
 
+/** The team's button: runs one merchant's renewal now (only if it is due). Returns the outcome word. */
+async function renewMerchant(merchantId, product, now = new Date()) {
+  if (!PRODUCTS[product]) throw Object.assign(new Error('Produit inconnu.'), { httpStatus: 400, code: 'INVALID_PRODUCT' });
+  const merchant = await supabase.selectOne('merchants', { id: merchantId });
+  if (!merchant) throw Object.assign(new Error('Marchand introuvable.'), { httpStatus: 404, code: 'NOT_FOUND' });
+  if (merchant.deleted_at) throw Object.assign(new Error('Compte suspendu : aucun abonnement n\'est prélevé.'), { httpStatus: 400, code: 'SUSPENDED' });
+  return renewOne(merchant, product, now);
+}
+
 function start() {
   const tick = () => run().catch((err) => console.error('Plan renewals run failed:', err.message)); // eslint-disable-line no-console
   setTimeout(tick, 90 * 1000).unref();
   setInterval(tick, config.billing.checkEveryMs).unref();
 }
 
-module.exports = { run, start, addMonths, monthlyPriceUsd, PRODUCTS };
+/** Right after money reaches a live Master Wallet: a merchant with an unpaid subscription is settled at once instead of waiting for the hourly pass. */
+async function settleAfterCredit(merchantId) {
+  const merchant = await supabase.selectOne('merchants', { id: merchantId });
+  if (!merchant || merchant.deleted_at) return;
+  for (const product of Object.keys(PRODUCTS)) {
+    if (merchant[PRODUCTS[product].unpaid]) await renewOne(merchant, product, new Date()).catch((err) => console.error(`Settling ${product} for ${merchantId} failed: ${err.message}`)); // eslint-disable-line no-console
+  }
+  require('../middleware/apiKey').clearAuthCache();
+}
+
+module.exports = { run, renewMerchant, settleAfterCredit, isBlocked, start, addMonths, monthlyPriceUsd, PRODUCTS };

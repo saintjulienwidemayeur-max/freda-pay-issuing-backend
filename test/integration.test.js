@@ -4626,7 +4626,7 @@ test('the Gateway plan renews in dollars at the platform rate, and complimentary
 });
 const ledgerBalance = (id) => require('../src/services/ledger').getBalance(id, 'master_wallet', 'USD', 'live');
 
-test('when the renewal cannot be paid: one warning, hourly retries during the grace period, then back to Startup; paying in time keeps the plan', async () => {
+test('renewal with too little money: all of it is taken (guarantee floor ignored) and the balance goes negative; a wallet already in debt cannot pay: one warning, grace period, then the live API is blocked until it is paid', async () => {
   const live = await makeLiveMerchant('renewfail', { fundUsd: 300 });
   await api('POST', '/dashboard/billing/issuing-plan', { token: live.token, body: { plan: 'premium' } }); // 500 $ ... needs the funds
   // premium costs 500: top up so the first month goes through, then drain to make the renewal impossible
@@ -4637,37 +4637,64 @@ test('when the renewal cannot be paid: one warning, hourly retries during the gr
   }
   assert.equal(planRow(live.merchantId).live_issuing_plan, 'premium');
 
+  // 1. the wallet holds less than the price: everything is taken and the balance goes NEGATIVE by the rest, the plan continues
+  const before = await ledgerBalance(live.merchantId);
+  assert.ok(before > 0 && before < 500, `balance ${before}`);
   planRow(live.merchantId).live_issuing_renews_at = daysAgo(0.01);
   const first = await planRenewals.run();
-  assert.equal(first.unpaid, 1);
+  assert.equal(first.renewed, 1);
+  assert.equal(Math.round((await ledgerBalance(live.merchantId)) * 100) / 100, Math.round((before - 500) * 100) / 100);
+  assert.equal(planRow(live.merchantId).live_issuing_plan, 'premium');
+  assert.equal(renewalMails(live.merchantId, /solde à régulariser/).length, 1);
+  assert.equal(renewalMails(live.merchantId, /Action requise/).length, 0);
+  assert.ok(new Date(planRow(live.merchantId).live_issuing_renews_at) > new Date(Date.now() + 27 * 86400000));
+
+  // 2. the next month the wallet is STILL negative: debts are not stacked: one warning, hourly retries, no block yet
+  planRow(live.merchantId).live_issuing_renews_at = daysAgo(1); // a different due date from the one charged above (the charge is idempotent per period)
+  const warn = await planRenewals.run();
+  assert.equal(warn.unpaid, 1);
   assert.ok(planRow(live.merchantId).live_issuing_unpaid_since);
   assert.equal(renewalMails(live.merchantId, /Action requise/).length, 1);
   assert.equal(planRow(live.merchantId).live_issuing_plan, 'premium'); // still on the plan during the grace period
-
   await planRenewals.run(); await planRenewals.run(); // hourly retries: no extra warning, no downgrade yet
   assert.equal(renewalMails(live.merchantId, /Action requise/).length, 1);
   assert.equal(planRow(live.merchantId).live_issuing_plan, 'premium');
 
-  // the merchant tops up in time: the next run charges it, clears the warning and restarts the month today
+  // 3. the merchant tops up in time (the debt is cleared first): the next run charges the month, clears the warning and restarts it today
   await api('POST', `/admin/merchants/${live.merchantId}/credit`, { token: live.adminToken, body: { wallet: 'master_wallet', amount: 700, mode: 'live' } });
-  const ok = await planRenewals.run();
-  assert.equal(ok.renewed, 1);
+  await new Promise((r) => setTimeout(r, 400)); // the credit itself settles the unpaid subscription
+  assert.equal((await planRenewals.run()).renewed, 0); // nothing left to do for the hourly pass
   assert.equal(planRow(live.merchantId).live_issuing_unpaid_since, null);
   assert.equal(planRow(live.merchantId).live_issuing_plan, 'premium');
   assert.ok(Math.abs(new Date(planRow(live.merchantId).live_issuing_renews_at) - planRenewals.addMonths(new Date(), 1)) < 60000);
 
   // a second failure that is NOT fixed within the grace period ends the plan
   const drained = await ledgerBalance(live.merchantId);
-  await require('../src/services/ledger').debitMasterWallet(live.merchantId, drained, 'USD', 'test-drain', null, 'live');
+  await require('../src/services/ledger').debitMasterWallet(live.merchantId, drained + 10, 'USD', 'test-drain', null, 'live'); // balance -10: already in debt
   planRow(live.merchantId).live_issuing_renews_at = daysAgo(2); // another period (a different due date from the one paid above)
   assert.equal((await planRenewals.run()).unpaid, 1);
   planRow(live.merchantId).live_issuing_unpaid_since = daysAgo(3.1);
   const end = await planRenewals.run();
-  assert.equal(end.downgraded, 1);
-  assert.equal(planRow(live.merchantId).live_issuing_plan, 'startup');
-  assert.equal(planRow(live.merchantId).live_issuing_renews_at, null);
-  assert.equal(renewalMails(live.merchantId, /s'est terminé/).length, 1);
-  assert.equal((await api('GET', '/auth/me', { token: live.token })).data.merchant.issuing_plan, 'startup');
+  assert.equal(end.blocked, 1);
+  assert.equal(planRow(live.merchantId).live_issuing_plan, 'premium'); // the plan itself is kept
+  assert.equal(renewalMails(live.merchantId, /Accès API suspendu/).length, 1);
+  await planRenewals.run(); // the block mail is sent once
+  assert.equal(renewalMails(live.merchantId, /Accès API suspendu/).length, 1);
+  // the live API of the unpaid product is refused with a message the merchant's customers can read; the other product is untouched
+  const key = await api('POST', '/dashboard/api-keys', { token: live.token, body: { mode: 'live' } });
+  assert.equal(key.status, 201, JSON.stringify(key.data));
+  const secret = key.data.secret || key.data.key || key.data.api_key;
+  const blocked = await api('GET', '/v1/cards', { token: secret });
+  assert.equal(blocked.status, 402, JSON.stringify(blocked.data));
+  assert.equal(blocked.data.error.code, 'PLAN_UNPAID');
+  assert.ok(/abonnement de l'émetteur n'a pas été payé/.test(blocked.data.error.message));
+  assert.equal((await api('GET', '/v1/balance', { token: secret })).status, 200);
+  // money arrives: the subscription is taken at once and the API works again (no waiting for the hourly pass)
+  await api('POST', `/admin/merchants/${live.merchantId}/credit`, { token: live.adminToken, body: { wallet: 'master_wallet', amount: 700, mode: 'live' } });
+  await new Promise((r) => setTimeout(r, 400));
+  require('../src/middleware/apiKey').clearAuthCache();
+  assert.equal(planRow(live.merchantId).live_issuing_unpaid_since, null);
+  assert.notEqual((await api('GET', '/v1/cards', { token: secret })).status, 402);
 });
 
 test('a paid live plan taken before renewals existed gets its cycle started now, without a surprise charge', async () => {
@@ -10804,4 +10831,32 @@ test('signup guard: refused attempts are listed with their address and reason, o
     const g = s.data.by_ip.find((x) => x.ip === ip);
     assert.equal(g.count, 3); assert.equal(g.blocked, 3);
   } finally { await guard.save({ paused: false }); }
+});
+
+test('admin subscriptions: lists paid live plans with status, takes a due one on demand (button) and all due ones at once; roles and unknown ids are handled', async () => {
+  const a = await makeLiveMerchant('subone', { fundUsd: 600 });
+  const b = await makeLiveMerchant('subtwo', { fundUsd: 600 });
+  for (const m of [a, b]) assert.equal((await api('POST', '/dashboard/billing/issuing-plan', { token: m.token, body: { plan: 'pro' } })).status, 200);
+  assert.equal((await api('GET', '/admin/subscriptions')).status, 401);
+  let r = await api('GET', '/admin/subscriptions', { token: a.adminToken });
+  assert.equal(r.status, 200);
+  const rowA = () => r.data.subscriptions.find((x) => x.merchant_id === a.merchantId && x.product === 'issuing');
+  assert.equal(rowA().status, 'ok'); assert.equal(rowA().price_usd, 150); assert.equal(rowA().plan, 'pro');
+  assert.ok(r.data.summary.count >= 2 && r.data.summary.monthly_usd >= 300);
+  // both fall due: the list says so, the button takes one, the global button takes the other
+  planRow(a.merchantId).live_issuing_renews_at = daysAgo(1);
+  planRow(b.merchantId).live_issuing_renews_at = daysAgo(1);
+  r = await api('GET', '/admin/subscriptions', { token: a.adminToken });
+  assert.equal(rowA().status, 'due'); assert.ok(r.data.summary.overdue >= 2);
+  const balA = await ledgerBalance(a.merchantId);
+  const one = await api('POST', `/admin/subscriptions/${a.merchantId}/issuing/charge`, { token: a.adminToken });
+  assert.equal(one.status, 200); assert.equal(one.data.result, 'renewed');
+  assert.equal(Math.round((balA - (await ledgerBalance(a.merchantId))) * 100) / 100, 150);
+  const again = await api('POST', `/admin/subscriptions/${a.merchantId}/issuing/charge`, { token: a.adminToken });
+  assert.equal(again.data.result, 'not-due'); // never charged twice
+  const all = await api('POST', '/admin/subscriptions/run', { token: a.adminToken });
+  assert.equal(all.status, 200); assert.ok(all.data.renewed >= 1);
+  assert.ok(new Date(planRow(b.merchantId).live_issuing_renews_at) > new Date());
+  assert.equal((await api('POST', '/admin/subscriptions/nope/issuing/charge', { token: a.adminToken })).status, 404);
+  assert.equal((await api('POST', `/admin/subscriptions/${a.merchantId}/bogus/charge`, { token: a.adminToken })).status, 400);
 });

@@ -125,4 +125,27 @@ async function notifyLowBalance(merchantId, balance) {
   await brevo.sendEmail({ to: merchant.email, toName: merchant.business_name, subject, html, text });
 }
 
-module.exports = { debitWithFloor, notifyLowBalance, notifyLowBalanceThrottled };
+/**
+ * Debits a plan SUBSCRIPTION (monthly renewal). Unlike a voluntary operation it is not stopped by the guarantee floor: the full price is
+ * taken. If the wallet holds less than the price, everything it holds is taken and the balance goes NEGATIVE by the rest (that debt is
+ * cleared by the next deposits, before any card or withdrawal can use the money). A wallet that is already negative is refused (WALLET_IN_DEBT):
+ * the debt is never stacked from one month to the next.
+ * Returns { paid, debt, balance_after }.
+ */
+async function debitSubscription(merchantId, amount, reference, relatedId, mode) {
+  const m = mode === 'live' ? 'live' : 'sandbox';
+  return withLock(`${m}:${merchantId}`, async () => {
+    const current = await ledger.getBalance(merchantId, 'master_wallet', 'USD', m);
+    if (current < 0) {
+      const err = new Error(`Le Master Wallet est déjà à découvert (${current} $).`);
+      err.code = 'WALLET_IN_DEBT'; err.httpStatus = 400;
+      throw err;
+    }
+    await ledger.debitMasterWallet(merchantId, amount, 'USD', reference, relatedId, m);
+    const after = round2(current - amount);
+    notifyLowBalanceThrottled(merchantId, after, m).catch(() => {});
+    return { paid: round2(Math.min(current, amount)), debt: round2(Math.max(0, amount - current)), balance_after: after };
+  });
+}
+
+module.exports = { debitSubscription, debitWithFloor, notifyLowBalance, notifyLowBalanceThrottled };
