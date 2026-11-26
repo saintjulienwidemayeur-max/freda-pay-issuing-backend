@@ -338,6 +338,9 @@ router.post('/v1/cards/holder-profile', apiKey.requireApiKey, cardHandlers.submi
 router.get('/v1/cards/holders', apiKey.requireApiKey, cardHandlers.listHolders);
 router.post('/v1/cards/holders', apiKey.requireApiKey, cardHandlers.createHolder);
 router.get('/v1/cards/holders/:id', apiKey.requireApiKey, cardHandlers.getHolder);
+// What is missing on a holder, and the way to send it (number, address, document type, photos): straight to the card partner, from the merchant's own app or dashboard.
+router.get('/v1/cards/holders/:id/verification', apiKey.requireApiKey, cardHandlers.holderVerificationInfo);
+router.post('/v1/cards/holders/:id/verification', apiKey.requireApiKey, cardHandlers.submitHolderVerification);
 router.post('/v1/cards', apiKey.requireApiKey, cardHandlers.createCard);
 router.get('/v1/cards', apiKey.requireApiKey, cardHandlers.list);
 router.get('/v1/cards/:id', apiKey.requireApiKey, cardHandlers.get);

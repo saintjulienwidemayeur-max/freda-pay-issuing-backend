@@ -10722,6 +10722,39 @@ test('merchant dashboard: the merchant sees what is missing for its own holders 
   } finally { Object.assign(config.monerails, saved); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
 });
 
+test('merchant API: what is missing on a holder and how to send it (number, address, document type, photos) straight to the card partner, with the merchant\'s own API key', async () => {
+  const config = require('../src/config'); const saved = Object.assign({}, config.monerails);
+  const issuer = require('../src/services/cardIssuer');
+  const { server, st } = await monerailsMock(4567);
+  Object.assign(config.monerails, { baseUrl: 'http://localhost:4567/v1', testKey: 'mr_test_sandboxkey123', webhookSecret: 'whsec_api' });
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  try {
+    await issuer.saveSettings({ new_cards: 'monerails', merchant_issuer: {} });
+    const mine = await registerAndVerify({ business_name: 'Api Holders', email: 'api-holders@example.com', password: 'password123' });
+    const other = await registerAndVerify({ business_name: 'Api Other', email: 'api-other@example.com', password: 'password123' });
+    const mid = mine.data.merchant.id;
+    const key = (await api('POST', '/dashboard/api-keys', { token: mine.data.session_token, body: { mode: 'test' } })).data.secret;
+    const otherKey = (await api('POST', '/dashboard/api-keys', { token: other.data.session_token, body: { mode: 'test' } })).data.secret;
+    st.holders.push({ id: 'ch_ah1', object: 'cardholder', id_document: 'national_id', verification: { status: 'pending', reason: null } });
+    const now = new Date().toISOString();
+    mockTables.maplerad_customers.push(
+      { id: 'mpc_ah1', merchant_id: mid, mode: 'sandbox', status: 'enrolled', first_name: 'Ana', last_name: 'Un', email: 'ah1@example.com', country: 'HT', dob: '1990-01-01', identification_number: 'NIN-1', address: { street: "3 Rue d'Haïti", city: 'Jacmel', state: 'Sud-Est' }, monerails_cardholder_id: 'ch_ah1', monerails_status: 'pending', created_at: now, updated_at: now },
+    );
+    const info = await api('GET', '/v1/cards/holders/mpc_ah1/verification', { token: key });
+    assert.equal(info.status, 200, JSON.stringify(info.data));
+    assert.ok(Array.isArray(info.data.issues)); assert.ok(!/monerails/i.test(JSON.stringify(info.data)), 'no partner name');
+    const sent = await api('POST', '/v1/cards/holders/mpc_ah1/verification', { token: key, body: { id_number: 'NIN-0000009', address: { street: "3 Rue d'Haïti", city: 'Jacmel', state: 'Sud-Est' }, document_type: 'national_id', documents: { front: png, back: png } } });
+    assert.equal(sent.status, 200, JSON.stringify(sent.data)); assert.equal(sent.data.documents_sent, true);
+    assert.ok(st.verificationBodies.length >= 1, 'sent to the partner');
+    // not another merchant's holder; no key, no access
+    assert.equal((await api('GET', '/v1/cards/holders/mpc_ah1/verification', { token: otherKey })).status, 404);
+    assert.equal((await api('POST', '/v1/cards/holders/mpc_ah1/verification', { token: otherKey, body: {} })).status, 404);
+    assert.equal((await api('GET', '/v1/cards/holders/mpc_ah1/verification')).status, 401);
+    // a bad image is refused before anything is sent
+    assert.equal((await api('POST', '/v1/cards/holders/mpc_ah1/verification', { token: key, body: { documents: { front: 'not-an-image' } } })).status, 400);
+  } finally { Object.assign(config.monerails, saved); await issuer.saveSettings({ new_cards: 'maplerad', merchant_issuer: {} }); await new Promise((r) => server.close(r)); }
+});
+
 test('signup abuse: disposable mailboxes are refused; the admin list flags automatic-looking accounts; the owner suspends them in bulk without touching anything real', async () => {
   const owner = await adminLogin('owner');
   // refused: the exact domain, a subdomain, any case
