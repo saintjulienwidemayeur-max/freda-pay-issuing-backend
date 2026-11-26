@@ -92,6 +92,11 @@ async function requireApiKey(ctx) {
     );
   }
 
+  // An unpaid subscription (past the grace period) stops the live API of that product: the merchant's own customers are told why.
+  if (mode === 'live' && require('../services/planRenewals').isBlocked(merchant, isIssuingRoute ? 'issuing' : 'gateway')) {
+    throw httpError(402, 'PLAN_UNPAID', "Service indisponible : l'abonnement de l'émetteur n'a pas été payé. Veuillez contacter l'émetteur.");
+  }
+
   ctx.merchantId = merchant.id;
   ctx.merchant = merchant;
   ctx.apiKeyMode = mode;

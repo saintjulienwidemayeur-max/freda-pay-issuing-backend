@@ -318,6 +318,22 @@ function planRenewed(merchant, { product, planLabel, amountUsd, nextDate }) {
   }), 'plan-renewed');
 }
 
+function planRenewedOnCredit(merchant, { product, planLabel, amountUsd, paidUsd, debtUsd, nextDate }) {
+  return dispatch(merchant, buildEmail({
+    subject: `Votre plan ${planLabel} a été renouvelé : solde à régulariser`,
+    eyebrow: 'Abonnement',
+    tone: 'warning',
+    heading: `Plan ${PRODUCT_LABEL[product]} ${planLabel} renouvelé : ${usd2(debtUsd)} à régulariser`,
+    paragraphs: [
+      hello(merchant),
+      `Votre plan **${planLabel}** (${PRODUCT_LABEL[product]}) a été renouvelé pour **${usd2(amountUsd)}**. Votre Master Wallet ne contenait que **${usd2(paidUsd)}** : nous avons tout prélevé, et votre solde affiche maintenant **-${usd2(debtUsd)}**.`,
+      'Ce montant sera déduit de votre prochain dépôt. Tant que le solde est négatif, vous ne pouvez pas créer ni recharger de cartes.',
+      `Prochain renouvellement : **${dateFr(nextDate)}**.`,
+    ],
+    button: { label: 'Ajouter des fonds', url: String(DASHBOARD) },
+  }), 'plan-renewed-on-credit');
+}
+
 function planPaymentFailed(merchant, { product, planLabel, amountUsd, until }) {
   return dispatch(merchant, buildEmail({
     subject: `Action requise : renouvellement de votre plan ${planLabel}`,
@@ -327,10 +343,25 @@ function planPaymentFailed(merchant, { product, planLabel, amountUsd, until }) {
     paragraphs: [
       hello(merchant),
       `Le renouvellement de votre plan **${planLabel}** (${PRODUCT_LABEL[product]}) coûte **${usd2(amountUsd)}**, mais votre Master Wallet n'a pas assez de fonds disponibles.`,
-      `Ajoutez des fonds avant le **${dateFr(until)}** : nous réessayons automatiquement. Passé cette date, votre compte repasse au plan gratuit.`,
+      `Ajoutez des fonds avant le **${dateFr(until)}** : nous réessayons automatiquement. Passé cette date, votre accès API sera suspendu jusqu'au paiement, et vos clients verront que l'abonnement de l'émetteur n'est pas payé.`,
     ],
     button: { label: 'Ajouter des fonds', url: String(DASHBOARD) },
   }), 'plan-payment-failed');
+}
+
+function planBlocked(merchant, { product, planLabel, amountUsd }) {
+  return dispatch(merchant, buildEmail({
+    subject: `Accès API suspendu : abonnement ${planLabel} impayé`,
+    eyebrow: 'Abonnement',
+    tone: 'warning',
+    heading: 'Votre accès API est suspendu',
+    paragraphs: [
+      hello(merchant),
+      `Votre plan **${planLabel}** (${PRODUCT_LABEL[product]}) n'a pas pu être payé (**${usd2(amountUsd)}**) dans le délai prévu. Votre accès API est donc suspendu et vos clients voient que l'abonnement de l'émetteur n'est pas payé.`,
+      'Ajoutez des fonds à votre Master Wallet : l\'abonnement est prélevé automatiquement et l\'accès revient aussitôt.',
+    ],
+    button: { label: 'Ajouter des fonds', url: String(DASHBOARD) },
+  }), 'plan-blocked');
 }
 
 function planDowngraded(merchant, { product, fromLabel, toLabel }) {
@@ -378,4 +409,4 @@ function passwordChanged(to, name) {
   }), 'password-changed');
 }
 
-module.exports = { twoFactorReminder, cardCreationFailed, cardRemovedByAdmin, planRenewed, planPaymentFailed, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited, guaranteeChanged };
+module.exports = { twoFactorReminder, cardCreationFailed, cardRemovedByAdmin, planRenewed, planRenewedOnCredit, planPaymentFailed, planBlocked, planDowngraded, bankPayoutSent, bankPayoutRejected, bankAccountChanged, diagnosticTest, passwordReset, passwordChanged, dispatch, buildEmail, verificationApproved, verificationRejected, accountSuspended, accountRestored, liveGranted, issuingDecision, walletCredited, depositRejected, walletDebited, guaranteeChanged };

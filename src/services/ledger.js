@@ -61,7 +61,10 @@ async function refundGatewayPayout(merchantId, amount, currency, reference, rela
   return record({ merchantId, wallet: 'gateway', type: 'payout_refund', amount: Math.abs(amount), currency, reference, relatedId, mode });
 }
 async function creditMasterWallet(merchantId, amount, currency, reference, relatedId, mode) {
-  return record({ merchantId, wallet: 'master_wallet', type: 'wallet_topup', amount, currency, reference, relatedId, mode });
+  const entry = await record({ merchantId, wallet: 'master_wallet', type: 'wallet_topup', amount, currency, reference, relatedId, mode });
+  // A merchant whose subscription is unpaid is settled as soon as money arrives (best effort, never delays the credit).
+  if (mode === 'live' && !/^(plan-renewal|debit-rollback):/.test(String(reference || ''))) setImmediate(() => require('./planRenewals').settleAfterCredit(merchantId).catch(() => {}));
+  return entry;
 }
 
 async function debitMasterWallet(merchantId, amount, currency, reference, relatedId, mode) {
